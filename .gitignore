@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Database
+applications.db
+applications.db-wal
+applications.db-shm
+
+# Cache
+.cache/
+
+# Resumes (may contain PII)
+resumes/
+/resume.pdf
+*.docx
+
+# Local ApplyPilot data and credentials
+private/
+.private/
+.env
+.env.*
+browser-data/
+auth/
+
+# IDE
+.vscode/
+.idea/
+
+# Playwright MCP
+.playwright-mcp/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+
+# Logs
+logs/
+*.log
+nohup.out
+
+# Profile (contains PII)
+profile.yaml
+
+# Screenshots (may contain PII from live sessions)
+*.png
+
+# Broken empty directory
+{adapters,utils}/
