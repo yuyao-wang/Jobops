@@ -1,0 +1,7 @@
+# Repository-scoped Codex skill metadata.
+interface:
+  display_name: "Job Profile"
+  short_description: "Maintain private verified candidate facts"
+  default_prompt: "Use $job-profile to inspect or update my private verified candidate data."
+policy:
+  allow_implicit_invocation: true

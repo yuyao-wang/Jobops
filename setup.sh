@@ -1,74 +1,34 @@
-#!/bin/bash
-# ============================================
-# MR.Jobs Setup Script
-# ============================================
+#!/usr/bin/env bash
+# Local Jobops bootstrap. Candidate data is never created in this repository.
 
-set -e
+set -euo pipefail
 
-echo "🚀 MR.Jobs Setup"
-echo "================="
-echo ""
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
 
-# Check Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ Python 3 not found. Install Python 3.10+ first."
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "Python 3.11 or newer is required." >&2
     exit 1
 fi
-echo "✅ Python: $(python3 --version)"
-
-# Check Node.js (needed for Claude Code CLI)
-if ! command -v node &> /dev/null; then
-    echo "❌ Node.js not found. Install Node.js 18+ first."
-    echo "   brew install node  (macOS)"
-    echo "   or visit https://nodejs.org"
+if ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+    echo "Python 3.11 or newer is required." >&2
     exit 1
 fi
-echo "✅ Node.js: $(node --version)"
 
-# Check/Install Claude Code CLI
-if ! command -v claude &> /dev/null; then
-    echo ""
-    echo "📦 Installing Claude Code CLI..."
-    npm install -g @anthropic-ai/claude-code
-    echo "⚠️  Run 'claude auth' to authenticate before using MR.Jobs."
-else
-    echo "✅ Claude CLI: $(claude --version 2>/dev/null || echo 'installed')"
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m playwright install chromium
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "Dependencies installed. Jobops application execution currently requires macOS Keychain."
+    echo "Run the offline test suite with: .venv/bin/python -m pytest -q"
+    exit 0
 fi
 
-# Install Python dependencies
-echo ""
-echo "📦 Installing Python dependencies..."
-pip install -r requirements.txt --break-system-packages 2>/dev/null || pip install -r requirements.txt
+.venv/bin/python jobctl.py init
 
-# Install Playwright browsers
-echo ""
-echo "🌐 Installing Playwright browsers (this takes a minute)..."
-python3 -m playwright install chromium
-
-# Create .cache directory
-mkdir -p .cache
-
-# Check for profile
-if [ ! -f "profile.yaml" ]; then
-    echo ""
-    echo "⚠️  profile.yaml exists but needs to be customized!"
-    echo "   Edit profile.yaml with your personal info before running."
-fi
-
-# Check for resume
-if [ ! -f "resume.pdf" ]; then
-    echo ""
-    echo "⚠️  No resume.pdf found in project directory."
-    echo "   Place your resume as resume.pdf here, or update resume_path in profile.yaml."
-fi
-
-echo ""
-echo "============================================"
-echo "✅ Setup complete!"
-echo ""
-echo "Next steps:"
-echo "  1. Edit profile.yaml with your info"
-echo "  2. Place your resume.pdf in this directory"
-echo "  3. Run: claude auth  (if not already authenticated)"
-echo "  4. Run: python3 main.py discover"
-echo "============================================"
+echo "Jobops is ready. Private data lives outside this checkout."
+echo "Migrate an existing workflow with:"
+echo "  .venv/bin/python jobctl.py migrate /path/to/applypilot-workflow --legacy-profile /path/to/ignored/profile.yaml"
+echo "Then inspect the queue with: .venv/bin/python jobctl.py queue --list"

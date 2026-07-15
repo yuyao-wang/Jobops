@@ -1,0 +1,7 @@
+# Repository-scoped Codex skill metadata.
+interface:
+  display_name: "Job Materials"
+  short_description: "Prepare tier-aware resumes and cover letters"
+  default_prompt: "Use $job-materials to prepare truthful materials for the next important job."
+policy:
+  allow_implicit_invocation: true

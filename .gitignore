@@ -9,6 +9,9 @@ venv/
 applications.db
 applications.db-wal
 applications.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Cache
 .cache/
@@ -16,15 +19,46 @@ applications.db-shm
 # Resumes (may contain PII)
 resumes/
 /resume.pdf
+*.pdf
 *.docx
+*.pages
+*.rtf
 
 # Local ApplyPilot data and credentials
 private/
 .private/
+.agents/*
+!.agents/skills/
+!.agents/skills/**
+.codex/
 .env
 .env.*
+!.env.example
 browser-data/
-auth/
+auth-state/
+*.har
+*storage-state*.json
+*storage_state*.json
+cookies*.json
+*.pem
+*.key
+*.p12
+*.pfx
+/browser/
+/queue/
+/documents/
+/evidence/
+/facts.json
+/verified-answers.json
+/policy.json
+/job_pool.csv
+candidate_profile.json
+answer_bank.md
+application_rules.md
+resume_routing.md
+
+# Local upstream checkout used only during migration
+/mr-jobs/
 
 # IDE
 .vscode/
@@ -49,6 +83,7 @@ profile.yaml
 
 # Screenshots (may contain PII from live sessions)
 *.png
+!tests/fixtures/**/*.png
 
 # Broken empty directory
 {adapters,utils}/

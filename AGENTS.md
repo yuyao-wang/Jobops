@@ -1,203 +1,77 @@
-# MR.Jobs Agent Instructions
+# Jobops Agent Guide
 
-This file tells Claude Code (or any AI agent) how the MR.Jobs system works so each new session can immediately understand and operate the system.
+Jobops is a Codex-native, privacy-first job application operating system. Codex coordinates policy, materials, and exceptions; deterministic adapters execute known ATS forms.
 
-## Local ApplyPilot Execution Boundary
+## Non-negotiable boundaries
 
-This checkout can import a private ApplyPilot workflow into the ignored
-`profile.yaml` file with `scripts/import_applypilot.py`.
+- Real candidate data lives in `~/Library/Application Support/Jobops` or `JOBOPS_HOME`, never in this repository.
+- ATS and mailbox account passwords plus the permit HMAC key live in macOS Keychain. Optional AI-provider API tokens may be supplied only through runtime environment variables and must never be persisted. Never pass a password, token, cookie, recovery code, or mailbox secret in argv, CSV, YAML, JSON, logs, prompts, fixtures, or Git.
+- Never invent or infer identity, legal name, work authorization, sponsorship, employment, education, compensation, EEO/self-identification, criminal/conflict answers, dates, metrics, or portfolio claims.
+- Never bypass CAPTCHA, MFA, account locks, anti-bot controls, or mailbox security warnings.
+- A submit click is not success. Only `SUBMITTED_VERIFIED` with an eligible `EvidenceRef` is submitted.
+- `SUBMIT_UNKNOWN` is a hard no-retry state until a human reconciles it.
+- Never run application episodes concurrently. Respect both run and `browser:chromium` leases.
+- Outreach, cold email, LinkedIn networking, and follow-up remain disabled unless a separate extension is explicitly enabled.
 
-- Low-risk applications may be submitted automatically when
-  `auto_submission.enabled` and `auto_submission.low_risk_only` are both true.
-- A low-risk application has a verified resume upload, only confirmed profile or
-  answer-bank values, no unknown required custom question, and no login, 2FA,
-  CAPTCHA, anti-bot, payment, permission, or missing-material interruption.
-- Do not invent or infer identity, legal status, work authorization,
-  sponsorship, compensation, employment or education facts, security clearance,
-  relocation, voluntary self-identification, metrics, or portfolio claims.
-- Stop and classify the job as needing user action when a required answer is not
-  covered by confirmed data or when the form wording materially differs from the
-  stored answer.
-- Count a submission only after explicit confirmation text or a confirmation
-  page is observed. A clicked Submit button without confirmation is not success.
-- Keep `profile.yaml`, resumes, browser state, credentials, screenshots, and the
-  ApplyPilot workflow private and outside Git.
-- Keep the dashboard bound to localhost unless the user explicitly requests a
-  secured remote deployment.
-
-## What This Is
-
-A **production-grade local job hunting system** that:
-
-1. **Discovers** jobs from Greenhouse, Lever, Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google, RemoteOK, and custom career pages
-2. **Scores** each job against the user's profile using Claude CLI (`claude -p`)
-3. **Tracks** everything in a local SQLite database (`applications.db`)
-4. **Displays** a web dashboard at `http://localhost:8080`
-5. **Applies** to matching jobs via Playwright browser automation
-6. **Monitors** email for application status updates (rejections, interviews, offers)
-7. **Runs continuously** via background scheduler + macOS LaunchAgent
-
-## Architecture
-
-```
-main.py                    # CLI entry point (discover, apply, server, reset, rescore, stats)
-profile.yaml               # User config: personal info, skills, search queries, preferences
-applications.db            # SQLite database (WAL mode for concurrent access)
-
-utils/
-  brain.py                 # Claude CLI wrapper (scoring, profile analysis, form analysis)
-  tracker.py               # SQLite CRUD + event broadcasting
-  discovery.py             # Pluggable job source registry + deduplication
-  jobspy_source.py         # python-jobspy integration (Indeed/LinkedIn/Glassdoor/etc.)
-  rss_source.py            # RSS feeds (RemoteOK)
-  career_page_source.py    # Custom career page scraping via Playwright + Claude
-  resume_parser.py         # PDF resume text extraction (pdfplumber)
-  email_checker.py         # IMAP email status monitoring
-  answers.py               # Cached answer pattern matcher for common form questions
-  events.py                # EventBus singleton for WebSocket broadcasting
-
-dashboard/
-  server.py                # FastAPI + WebSocket + REST API
-  templates/index.html     # Single-page dashboard (Tailwind + Alpine.js + Chart.js)
-  static/app.js            # Dashboard JavaScript
-  static/style.css         # Minimal custom styles
-
-adapters/
-  greenhouse.py            # Greenhouse ATS form automation
-  generic.py               # AI-driven generic form filler (any job site)
-
-scheduler.py               # APScheduler background jobs (discover, score, email check)
-service/install.sh         # macOS LaunchAgent installer
-service/uninstall.sh       # macOS LaunchAgent uninstaller
-```
-
-## Key Commands
+## Runtime commands
 
 ```bash
-# Start the dashboard + scheduler (main way to run)
-python3.11 main.py server --port 8080
-
-# CLI-only operations
-python3.11 main.py discover    # Find and score jobs
-python3.11 main.py apply       # Discover + score + apply (dry-run by default)
-python3.11 main.py apply --live # Actually submit applications
-python3.11 main.py rescore     # Re-score all unscored jobs
-python3.11 main.py reset       # Clear database
-python3.11 main.py stats       # View stats
-
-# Install as background service
-bash service/install.sh        # Runs on login, restarts on crash
-bash service/uninstall.sh      # Stop and remove
+.venv/bin/python jobctl.py init
+.venv/bin/python jobctl.py policy
+.venv/bin/python jobctl.py mailbox --host imap.example.com
+.venv/bin/python jobctl.py queue --list
+.venv/bin/python jobctl.py apply-csv --limit 1
+.venv/bin/python jobctl.py status
+.venv/bin/python jobctl.py submit-reviewed --run-id run-... --approve
 ```
 
-## Scoring System
+`apply-csv` stops at Review by default. `--approve-gate-a` is an explicit review of prepared materials. Human Gate B is never accepted in the same invocation: inspect the persisted Review, then use `submit-reviewed --run-id ... --approve`. Never infer either human approval.
 
-- Score 0-100 per job, set in `brain.py:match_job()`
-- Uses Claude CLI (`claude -p --output-format json`) with the CLAUDECODE env var stripped to avoid nested session errors
-- Profile matching considers: roles, primary/secondary skills, location, remote preference, ideal job description, favorite companies (+10 bonus)
-- Minimum score threshold in `profile.yaml` -> `preferences.min_match_score` (default 65)
-- Scoring data is stored in `applications.db`: `match_score`, `reasoning`, `cover_letter` columns
-- The `score_profile()` method analyzes the user's resume + profile for job market readiness
+## Tier treatment
 
-## Database Schema
+- High: bespoke resume, visual QA, narrative cover letter grounded in a true experience and company/role alignment; human Gate A and Gate B in low-risk mode.
+- Medium: targeted resume/letter; Codex Gate A and human Gate B.
+- Low: approved existing variant and letter only when required; Codex may issue both gates if no risk signal exists.
 
-Table: `applications`
+High and Medium must load a valid `documents/generated/<job_id>/manifest.json` from Private Home before browser launch. The manifest binds artifact hashes, facts QA, job specificity, and visual QA; High also binds a true narrative-alignment attestation. Preparing a missing manifest is Codex work through `job-materials`, not a human handoff.
 
-- `id` (TEXT PRIMARY KEY) - Job ID from source platform
-- `title`, `company`, `platform`, `url`, `apply_url`, `location`, `description`
-- `match_score` (INTEGER 0-100), `reasoning`, `cover_letter`
-- `status`: discovered | matched | applied | skipped | failed | interviewing | offer | rejected | withdrawn | archived
-- `salary_min`, `salary_max`, `date_posted`, `source`, `notes`, `tags`
-- `applied_at`, `discovered_at`, `metadata` (JSON)
+## Execution architecture
 
-## Email Integration
+- `jobctl.py`: public CLI and private queue projection.
+- `core/`: Private Home, profile projection, bundles, policy, outcomes, Event Ledger, leases, permits, browser broker, and application engine.
+- `adapters/protocol.py`: shared deterministic lifecycle.
+- `adapters/{greenhouse,lever,ashby,jobvite,workday}.py`: supported ATS implementations.
+- `adapters/generic_ai/`: bounded observer, fingerprinter, resolver, executor, verifier, and value-free cache.
+- `adapters/stagehand_adapter.py`: small legacy boolean façade; production routing must not use `adapters/legacy/stagehand_monolith.py`.
+- `auth/`: Security.framework credential provider and optional mailbox correlation.
+- `workers/node/`: versioned JSON-lines coexistence bridge; no payload in argv.
+- `.agents/skills/`: auto-discovered, repository-scoped Codex workflows; no candidate data.
 
-Three ways to check email for application updates:
+The normal supported-ATS path must make zero model calls. A generic semantic request may contain compact control structure only, is limited to one call per run, and must use a tool-free backend approved for untrusted browser input; agentic Codex/Claude CLIs fail closed. Values are injected and verified locally.
 
-1. **IMAP (built-in)**: Configure in `profile.yaml` under `email:` section with IMAP server + app password
-2. **LocalMind MCP**: The system has `mcp__localmind__localmind_email` tool available to read Gmail directly. Use this to check for application status emails from ATS domains (greenhouse.io, lever.co, workday.com, etc.)
-3. **Dashboard button**: Click "Check Email" on the dashboard to trigger a check
+## Outcomes and permits
 
-When checking emails, look for:
+Every adapter returns `ApplicationOutcome`. Preserve exact statuses and exit codes. Do not collapse a blocker into a boolean in new code.
 
-- Rejection keywords: "unfortunately", "not moving forward", "other candidates"
-- Interview keywords: "schedule an interview", "next step", "phone screen"
-- Offer keywords: "offer letter", "pleased to offer"
-- Match detected emails to tracked jobs by company name and update status accordingly
+Gate A binds the preflight application bundle. Gate B binds hashed browser read-backs and uploaded bytes from a Review persisted in an earlier invocation, then recomputed immediately before submission. Both permits are signed, expiring, and one-time. Lease validation, Gate B consumption, and submission-intent reservation happen immediately before the click.
 
-## MCP Tools Available
+## Private profile changes
 
-### Email & Calendar
+Use `PrivateHome` and `CandidateVault`; do not read ignored legacy `profile.yaml` in production. A new answer record needs a canonical key, verified value, source, sensitivity, scope, confirmation time, and optional expiry. Ask the user when a required sensitive answer is new or ambiguous.
 
-- `mcp__localmind__localmind_email` - Read unread Gmail messages (needs valid OAuth — re-auth LocalMind if `invalid_grant`)
-- `mcp__localmind__localmind_email_send` - Send email (always confirm with user first)
-- `mcp__localmind__localmind_email_reply` - Reply to email thread
-- `mcp__localmind__localmind_calendar` - Check calendar for interview scheduling
-- `mcp__localmind__localmind_calendar_create` - Create calendar events for interviews
+## Testing
 
-### Job Discovery via MCP (Claude Code agent can use these directly)
+Use synthetic identities and sanitized fixtures only.
 
-- `WebSearch` - Search the web for job listings. Use `utils/mcp_source.py:get_all_search_queries(profile)` to generate optimized queries
-- `mcp__playwright__browser_navigate` + `mcp__playwright__browser_snapshot` - Navigate to career pages and capture job listings
-- `mcp__playwright__browser_click` - Interact with career pages (pagination, filters)
-- `mcp__github__search_repositories` - Find companies with open-source presence (often hiring)
-
-### MCP Job Discovery Workflow (for Claude Code agents)
-
-When the user asks to find jobs, or as a supplement to automated discovery:
-
-1. **Load profile**: Read `profile.yaml` to get roles, skills, locations, favorites
-2. **Generate search queries**:
-   ```python
-   from utils.mcp_source import get_all_search_queries, parse_web_search_results, ingest_jobs
-   queries = get_all_search_queries(profile)
-   ```
-3. **Run WebSearch for each query**: Call `WebSearch` MCP tool with each query string
-4. **Parse results**: Call `parse_web_search_results(results, source)` to normalize
-5. **Ingest into tracker**: Call `ingest_jobs(job_dicts)` or POST `/api/ingest` with `{"jobs": [...]}`
-6. **Optionally browse career pages**: Use Playwright MCP to navigate to specific career pages, take snapshots, extract jobs
-
-This gives the system a **Claude-native fallback** that works even when python-jobspy is rate-limited or blocked. The MCP search results go through the same scoring pipeline as all other sources.
-
-### MCP Ingestion API
-
-POST `/api/ingest` accepts `{"jobs": [{"id": "...", "title": "...", "company": "...", "url": "...", ...}]}`
-and saves them to the tracker. Use this from Claude Code after WebSearch or Playwright discovery.
-
-## REST API Endpoints
-
-| Method | Path                           | Description                                              |
-| ------ | ------------------------------ | -------------------------------------------------------- |
-| GET    | `/api/jobs`                    | List jobs (filter by status, company, min_score, search) |
-| GET    | `/api/jobs/{id}`               | Single job detail                                        |
-| PATCH  | `/api/jobs/{id}`               | Update status or notes                                   |
-| DELETE | `/api/jobs/{id}`               | Remove job                                               |
-| GET    | `/api/stats`                   | Dashboard statistics                                     |
-| GET    | `/api/stats/timeline`          | Applications over time                                   |
-| GET    | `/api/stats/scores`            | Score distribution                                       |
-| POST   | `/api/discover`                | Trigger discovery run                                    |
-| POST   | `/api/rescore/{id}`            | Re-score a job                                           |
-| POST   | `/api/score-all`               | Score all unscored jobs                                  |
-| POST   | `/api/ingest`                  | Ingest MCP-discovered jobs into tracker                  |
-| POST   | `/api/check-email`             | Check email for status updates                           |
-| GET    | `/api/scheduler/status`        | Scheduler state                                          |
-| POST   | `/api/scheduler/trigger/{job}` | Manually trigger scheduled job                           |
-| WS     | `/ws`                          | WebSocket for real-time updates                          |
-
-## Common Tasks for an Agent
-
-1. **User wants to find jobs**: Run `python3.11 main.py discover` or hit POST `/api/discover`
-2. **User asks about scoring**: Read from DB or explain the scoring criteria in brain.py
-3. **User wants to check application status**: Use `mcp__localmind__localmind_email` to read Gmail, then match to tracked jobs
-4. **User wants to modify search**: Edit `profile.yaml` search/skills sections
-5. **User reports a bug**: Check logs at `logs/server.log`, check DB state, check profile.yaml config
-6. **User wants to add a company**: Add to `target_boards` (Greenhouse/Lever) or `custom_career_pages` in profile.yaml
-
-## Dependencies
-
-```
-playwright, pyyaml, httpx, python-jobspy, feedparser, pdfplumber,
-fastapi, uvicorn, jinja2, apscheduler
+```bash
+.venv/bin/python -m pytest -q --ignore=tests/test_real_forms.py
+.venv/bin/python -m pytest -q tests/test_ats_adapter_contract.py tests/test_workday_adapter.py
 ```
 
-Install: `pip install -r requirements.txt && playwright install chromium`
+Do not run `tests/test_real_forms.py` or submit to a live site as part of routine validation. Contract metrics and live-site metrics must be reported separately.
+
+Before committing, run compile checks, `git diff --check`, the five Skill validators, and a privacy scan for candidate values, secrets, absolute private paths, cookies, and unredacted screenshots.
+
+## Compatibility
+
+This repository preserves MR.Jobs Git history and MIT licensing. `main.py`, dashboard/discovery utilities, and the legacy façade remain during migration. New application execution belongs in `jobctl`, the core engine, and structured adapters; do not add safety-sensitive behavior to the legacy monolith.

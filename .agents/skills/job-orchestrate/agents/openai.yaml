@@ -1,0 +1,7 @@
+# Repository-scoped Codex skill metadata.
+interface:
+  display_name: "Job Orchestrate"
+  short_description: "Run a safe, tier-aware application queue"
+  default_prompt: "Use $job-orchestrate to plan and run the next jobs in my private queue."
+policy:
+  allow_implicit_invocation: true

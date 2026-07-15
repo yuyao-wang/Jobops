@@ -25,7 +25,7 @@ from unittest.mock import patch, MagicMock, AsyncMock, PropertyMock
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from adapters.stagehand_adapter import (
+from adapters.legacy.stagehand_monolith import (
     _cache_key,
     _load_cached_action,
     _save_cached_action,
@@ -359,7 +359,7 @@ def test_cache_key_safe_characters():
 
 def test_cache_save_and_load(tmp_path):
     """Cached actions should persist to disk and load back."""
-    import adapters.stagehand_adapter as mod
+    import adapters.legacy.stagehand_monolith as mod
     original_dir = mod.CACHE_DIR
     mod.CACHE_DIR = tmp_path
 
@@ -380,7 +380,7 @@ def test_cache_load_missing():
 
 def test_cache_save_overwrite(tmp_path):
     """Saving to an existing key should overwrite."""
-    import adapters.stagehand_adapter as mod
+    import adapters.legacy.stagehand_monolith as mod
     original_dir = mod.CACHE_DIR
     mod.CACHE_DIR = tmp_path
 
@@ -399,7 +399,7 @@ def test_cache_save_overwrite(tmp_path):
 
 def test_domain_cache_save_and_load(tmp_path):
     """Domain cache should save and load field mappings."""
-    import adapters.stagehand_adapter as mod
+    import adapters.legacy.stagehand_monolith as mod
     original_dir = mod.CACHE_DIR
     mod.CACHE_DIR = tmp_path
 
@@ -807,7 +807,7 @@ async def test_smart_router_non_greenhouse_uses_cli_adapter():
     """Non-Greenhouse URLs should use CLI adapter."""
     mock_page = AsyncMock()
 
-    with patch("adapters.stagehand_adapter.apply_stagehand", new_callable=AsyncMock) as mock_sh:
+    with patch("adapters.legacy.stagehand_monolith.apply_stagehand", new_callable=AsyncMock) as mock_sh:
         mock_sh.return_value = True
 
         result = await apply_smart(
@@ -828,7 +828,7 @@ async def test_smart_router_fallback_to_generic():
     mock_page = AsyncMock()
     mock_gen_mod = _mock_generic_module()
 
-    with patch("adapters.stagehand_adapter.is_stagehand_available", return_value=False):
+    with patch("adapters.legacy.stagehand_monolith.is_stagehand_available", return_value=False):
         with patch.dict("sys.modules", {"adapters.generic": mock_gen_mod}):
             mock_gen_mod.apply_generic.return_value = True
 
@@ -857,7 +857,7 @@ async def test_smart_router_greenhouse_then_cli_then_generic():
     }):
         mock_gh_mod.apply_greenhouse.return_value = False  # Greenhouse fails
 
-        with patch("adapters.stagehand_adapter.apply_stagehand", new_callable=AsyncMock) as mock_sh:
+        with patch("adapters.legacy.stagehand_monolith.apply_stagehand", new_callable=AsyncMock) as mock_sh:
             mock_sh.return_value = False  # CLI adapter fails too
             mock_gen_mod.apply_generic.return_value = True
 
@@ -884,7 +884,7 @@ async def test_smart_router_greenhouse_exception_fallback():
     with patch.dict("sys.modules", {"adapters.greenhouse": mock_gh_mod}):
         mock_gh_mod.apply_greenhouse.side_effect = Exception("Greenhouse crash")
 
-        with patch("adapters.stagehand_adapter.apply_stagehand", new_callable=AsyncMock) as mock_sh:
+        with patch("adapters.legacy.stagehand_monolith.apply_stagehand", new_callable=AsyncMock) as mock_sh:
             mock_sh.return_value = True
 
             result = await apply_smart(
@@ -912,7 +912,7 @@ async def test_apply_stagehand_confirmation_page():
     mock_page.evaluate = AsyncMock(return_value=0)
     mock_page.title = AsyncMock(return_value="Application Submitted")
 
-    with patch("adapters.stagehand_adapter._detect_page_state", new_callable=AsyncMock) as mock_detect:
+    with patch("adapters.legacy.stagehand_monolith._detect_page_state", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = "confirmation"
 
         result = await apply_stagehand(
@@ -957,19 +957,19 @@ async def test_apply_stagehand_form_analysis_with_dry_run():
     # Mock _detect_page_state to return "form"
     # Mock get_form_snapshot to return our test data
     # Mock fill/click operations
-    with patch("adapters.stagehand_adapter._detect_page_state", new_callable=AsyncMock) as mock_detect:
+    with patch("adapters.legacy.stagehand_monolith._detect_page_state", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = "form"
 
-        with patch("adapters.stagehand_adapter.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
+        with patch("adapters.legacy.stagehand_monolith.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
             mock_snap.return_value = (MOCK_A11Y_TREE, MOCK_FORM_SUMMARY)
 
-            with patch("adapters.stagehand_adapter._fill_form_step", new_callable=AsyncMock) as mock_fill:
+            with patch("adapters.legacy.stagehand_monolith._fill_form_step", new_callable=AsyncMock) as mock_fill:
                 mock_fill.return_value = 4
 
-                with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+                with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
                     mock_verify.return_value = []
 
-                    with patch("adapters.stagehand_adapter._handle_navigation_step", new_callable=AsyncMock) as mock_nav:
+                    with patch("adapters.legacy.stagehand_monolith._handle_navigation_step", new_callable=AsyncMock) as mock_nav:
                         mock_nav.return_value = "dry_run_stop"
 
                         result = await apply_stagehand(
@@ -1010,14 +1010,14 @@ async def test_apply_stagehand_multi_step_wizard():
     mock_brain = MagicMock()
     mock_brain.ask_json = MagicMock(return_value=MOCK_FORM_ANALYSIS)
 
-    with patch("adapters.stagehand_adapter._detect_page_state", side_effect=mock_detect_state):
-        with patch("adapters.stagehand_adapter.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
+    with patch("adapters.legacy.stagehand_monolith._detect_page_state", side_effect=mock_detect_state):
+        with patch("adapters.legacy.stagehand_monolith.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
             mock_snap.return_value = (MOCK_A11Y_TREE, MOCK_FORM_SUMMARY)
-            with patch("adapters.stagehand_adapter._fill_form_step", new_callable=AsyncMock) as mock_fill:
+            with patch("adapters.legacy.stagehand_monolith._fill_form_step", new_callable=AsyncMock) as mock_fill:
                 mock_fill.return_value = 3
-                with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+                with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
                     mock_verify.return_value = []
-                    with patch("adapters.stagehand_adapter._handle_navigation_step", side_effect=mock_nav):
+                    with patch("adapters.legacy.stagehand_monolith._handle_navigation_step", side_effect=mock_nav):
                         result = await apply_stagehand(
                             mock_page,
                             "https://example.com/apply",
@@ -1040,15 +1040,15 @@ async def test_apply_stagehand_max_steps():
     mock_brain = MagicMock()
     mock_brain.ask_json = MagicMock(return_value=MOCK_FORM_ANALYSIS)
 
-    with patch("adapters.stagehand_adapter._detect_page_state", new_callable=AsyncMock) as mock_detect:
+    with patch("adapters.legacy.stagehand_monolith._detect_page_state", new_callable=AsyncMock) as mock_detect:
         mock_detect.return_value = "form"
-        with patch("adapters.stagehand_adapter.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
+        with patch("adapters.legacy.stagehand_monolith.get_form_snapshot", new_callable=AsyncMock) as mock_snap:
             mock_snap.return_value = (MOCK_A11Y_TREE, MOCK_FORM_SUMMARY)
-            with patch("adapters.stagehand_adapter._fill_form_step", new_callable=AsyncMock) as mock_fill:
+            with patch("adapters.legacy.stagehand_monolith._fill_form_step", new_callable=AsyncMock) as mock_fill:
                 mock_fill.return_value = 0
-                with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+                with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
                     mock_verify.return_value = []
-                    with patch("adapters.stagehand_adapter._handle_navigation_step", new_callable=AsyncMock) as mock_nav:
+                    with patch("adapters.legacy.stagehand_monolith._handle_navigation_step", new_callable=AsyncMock) as mock_nav:
                         mock_nav.return_value = "next"  # always says "next" so we never finish
 
                         result = await apply_stagehand(
@@ -1428,7 +1428,7 @@ async def test_verify_and_retry_all_pass():
     """Should return 0 when all fields pass verification."""
     mock_page = AsyncMock()
 
-    with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+    with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
         mock_verify.return_value = []
 
         result = await _verify_and_retry(
@@ -1451,8 +1451,8 @@ async def test_verify_and_retry_retries_failed():
             return ["First Name"]
         return []
 
-    with patch("adapters.stagehand_adapter._verify_fields", side_effect=mock_verify):
-        with patch("adapters.stagehand_adapter._fill_field_resilient", new_callable=AsyncMock) as mock_fill:
+    with patch("adapters.legacy.stagehand_monolith._verify_fields", side_effect=mock_verify):
+        with patch("adapters.legacy.stagehand_monolith._fill_field_resilient", new_callable=AsyncMock) as mock_fill:
             mock_fill.return_value = True
 
             result = await _verify_and_retry(
@@ -1467,10 +1467,10 @@ async def test_verify_and_retry_exhausts_retries():
     """Should return count of still-failed fields after max retries."""
     mock_page = AsyncMock()
 
-    with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+    with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
         mock_verify.return_value = ["First Name", "Email"]
 
-        with patch("adapters.stagehand_adapter._fill_field_resilient", new_callable=AsyncMock) as mock_fill:
+        with patch("adapters.legacy.stagehand_monolith._fill_field_resilient", new_callable=AsyncMock) as mock_fill:
             mock_fill.return_value = False  # All retries fail
 
             result = await _verify_and_retry(
@@ -1485,7 +1485,7 @@ async def test_verify_and_retry_zero_retries():
     """With max_retries=0, should not retry at all."""
     mock_page = AsyncMock()
 
-    with patch("adapters.stagehand_adapter._verify_fields", new_callable=AsyncMock) as mock_verify:
+    with patch("adapters.legacy.stagehand_monolith._verify_fields", new_callable=AsyncMock) as mock_verify:
         mock_verify.return_value = ["First Name"]
 
         result = await _verify_and_retry(

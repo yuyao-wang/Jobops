@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <main data-automation-id="primaryQuestionnairePage">
+      <h1>Application Questions</h1>
+      <label for="work-authorization">Are you legally authorized to work in this country?</label>
+      <select id="work-authorization" data-automation-id="workAuthorization" required>
+        <option value="">Select one</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </select>
+      <div data-automation-id="countryQuestion">
+        <span data-automation-id="formLabel">Country</span>
+        <button
+          role="combobox"
+          aria-haspopup="listbox"
+          aria-required="true"
+          data-automation-id="countryDropdown"
+          onclick="document.querySelector('[role=listbox]').style.display = 'block'"
+        >Select one</button>
+        <div role="listbox" style="display:none">
+          <div
+            role="option"
+            data-value="Canada"
+            onclick="const button = document.querySelector('[role=combobox]'); button.textContent = 'Canada'; button.dataset.selectedValue = 'Canada'; this.parentElement.style.display = 'none'"
+          >Canada</div>
+          <div role="option" data-value="United States">United States</div>
+        </div>
+      </div>
+      <button data-automation-id="bottom-navigation-next-button">Next</button>
+    </main>
+  </body>
+</html>

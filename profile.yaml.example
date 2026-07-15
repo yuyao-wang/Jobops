@@ -1,3 +1,6 @@
+# Legacy compatibility example only. Production Jobops reads verified facts and
+# answers from its repository-external Private Home. Every answer below is
+# intentionally empty: confirm it in the private vault before any application.
 personal:
   first_name: Your
   last_name: Name
@@ -27,17 +30,17 @@ preferences:
   exclude_companies:
   - ExampleBadCorp
 common_answers:
-  authorized_to_work: 'Yes'
-  require_sponsorship: 'No'
-  years_experience: '5'
-  willing_to_relocate: Open to discussion
-  salary_expectation: Open to discuss based on total compensation
-  earliest_start_date: 2 weeks notice
-  how_did_you_hear: Online job board
-  gender: Prefer not to say
-  race_ethnicity: Prefer not to say
-  veteran_status: I am not a veteran
-  disability_status: Prefer not to say
+  authorized_to_work: ''
+  require_sponsorship: ''
+  years_experience: ''
+  willing_to_relocate: ''
+  salary_expectation: ''
+  earliest_start_date: ''
+  how_did_you_hear: ''
+  gender: ''
+  race_ethnicity: ''
+  veteran_status: ''
+  disability_status: ''
 target_boards:
   greenhouse:
   - anthropic
@@ -88,11 +91,12 @@ rate_limits:
 # persistent Chromium because Playwright cannot reuse Safari cookies.
 browser:
   preferred_handoff_browser: safari
-  chromium_user_data_dir: private/browser-data/chromium
+  chromium_user_data_dir: ~/Library/Application Support/Jobops/browser/chromium
   slow_mo_ms: 100
 
 # Workday passwords are stored in macOS Keychain under a tenant-specific
-# mr-jobs.workday.* service; never put a password in this file.
+# jobops.workday.* service (legacy mr-jobs.workday.* entries are migrated);
+# never put a password in this file.
 workday:
   auto_login: true
   auto_register: true
@@ -105,21 +109,24 @@ email:
   enabled: false
   imap_server: imap.gmail.com
   email: ''
-  app_password: ''
+  # Store the secret in Keychain under this service and the email as account.
+  keychain_service: jobops.mailbox.imap.imap.gmail.com
   check_interval_hours: 12
 
-# AI Backend Configuration (optional — defaults to claude_cli for everything)
+# AI Backend Configuration (optional — Jobops defaults trusted work to local Codex)
+# ATS/mailbox passwords and the permit HMAC key stay in macOS Keychain. Optional
+# AI-provider API tokens are read from runtime environment variables only; they
+# are never persisted in this file or Private Home.
 # Each component can independently use a different LLM backend.
 ai:
-  default_backend: claude_cli
+  default_backend: codex_cli
   backends:
-    claude_cli:
-      timeout: 120
     codex_cli:
       # Uses the locally authenticated Codex CLI. Omit model to use Codex config.
       timeout: 180
     openai_api:
       # Export OPENAI_API_KEY instead of storing the secret in this file.
+      # Literal API keys are rejected; ${OPENAI_API_KEY} is also accepted.
       api_key_env: OPENAI_API_KEY
       model: gpt-5.4-mini
       base_url: https://api.openai.com/v1
@@ -135,10 +142,12 @@ ai:
     #   model: llama3
     #   timeout: 120
   components:
-    scoring: claude_cli
-    # Any component may be switched to codex_cli or openai_api.
-    cover_letter: claude_cli
-    resume_tailoring: claude_cli
-    form_analysis: claude_cli
-    email_classification: claude_cli
-    profile_analysis: claude_cli
+    scoring: codex_cli
+    # Trusted components may use codex_cli or openai_api.
+    cover_letter: codex_cli
+    resume_tailoring: codex_cli
+    # Required only when --semantic-mapper handles untrusted browser labels.
+    # In a local-Codex-only setup, omit --semantic-mapper and hand off unknowns.
+    form_analysis: openai_api
+    email_classification: openai_api
+    profile_analysis: codex_cli

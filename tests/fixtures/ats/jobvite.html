@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Sanitized Jobvite Fixture</title></head>
+<body>
+  <main>
+    <form id="jvApplicationForm" class="jv-application-form" novalidate>
+      <label for="jvFirstName">First name</label><input id="jvFirstName" name="firstName" required>
+      <label for="jvLastName">Last name</label><input id="jvLastName" name="lastName" required>
+      <label for="jvEmail">Email</label><input id="jvEmail" name="email" type="email" required>
+      <label for="jvPhone">Phone</label><input id="jvPhone" name="phone" type="tel">
+      <label for="jvResume">Resume</label><input id="jvResume" name="resume" type="file" required>
+      <label for="linkedin">LinkedIn</label><input id="linkedin" name="linkedinUrl" type="url">
+      <label for="authorization">Are you legally authorized to work in this location?</label>
+      <select id="authorization" name="authorization" required>
+        <option value="">Select</option><option value="yes">Yes</option><option value="no">No</option>
+      </select>
+      <button class="jv-button-primary" type="submit">Submit application</button>
+    </form>
+    <section id="jvThankYou" data-application-id="JOBVITE-SYNTHETIC" hidden>
+      Thank you. Your application was received.
+    </section>
+  </main>
+  <script>
+    window.fixtureSubmitCount = 0;
+    document.querySelector('form').addEventListener('submit', event => {
+      event.preventDefault(); window.fixtureSubmitCount += 1;
+      document.querySelector('#jvThankYou').hidden = false;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "@jobops/node-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal Node.js capability bridge for the Jobops Python orchestrator",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node worker.mjs",
+    "check": "node --check worker.mjs && node --check lib/probe.mjs && node --check lib/protocol.mjs"
+  },
+  "license": "MIT"
+}

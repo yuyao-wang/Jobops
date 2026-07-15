@@ -6,8 +6,10 @@ Caches extracted text to avoid re-parsing every time.
 import hashlib
 from pathlib import Path
 
-CACHE_DIR = Path(__file__).parent.parent / ".cache"
-CACHE_DIR.mkdir(exist_ok=True)
+from core.private_home import PRIVATE_DIRECTORY_MODE, PrivateHome
+
+
+CACHE_DIR = PrivateHome.discover().paths.cache / "resume-text"
 
 
 def extract_resume_text(resume_path: str) -> str:
@@ -20,8 +22,13 @@ def extract_resume_text(resume_path: str) -> str:
         return ""
 
     # Cache key based on file content hash
-    file_hash = hashlib.md5(path.read_bytes()).hexdigest()
-    cache_file = CACHE_DIR / f"resume_{file_hash}.txt"
+    file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    home = PrivateHome.discover()
+    paths = home.ensure()
+    cache_dir = paths.cache / "resume-text"
+    cache_dir.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
+    cache_dir.chmod(PRIVATE_DIRECTORY_MODE)
+    cache_file = cache_dir / f"resume_{file_hash}.txt"
 
     if cache_file.exists():
         return cache_file.read_text()
@@ -44,5 +51,5 @@ def extract_resume_text(resume_path: str) -> str:
         return ""
 
     # Cache the result
-    cache_file.write_text(text)
+    home.write_text(cache_file, text)
     return text

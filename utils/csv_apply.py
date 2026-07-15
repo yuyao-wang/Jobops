@@ -1,8 +1,8 @@
 """CSV-backed application queue helpers.
 
-This module deliberately treats the CSV as data only.  It does not import or
-invoke any external job-search workflow; MR.Jobs remains responsible for the
-browser automation and submission decision.
+This module deliberately treats the CSV as data only. It does not import or
+invoke any external job-search workflow; the Jobops engine remains responsible
+for browser execution, permits, and submission decisions.
 """
 
 from __future__ import annotations

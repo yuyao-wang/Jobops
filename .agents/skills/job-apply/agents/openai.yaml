@@ -1,0 +1,7 @@
+# Repository-scoped Codex skill metadata.
+interface:
+  display_name: "Job Apply"
+  short_description: "Drive one ATS application safely to Review"
+  default_prompt: "Use $job-apply to take the next approved job to Review without guessing answers."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,106 @@
+{
+  "posting_url": "https://exampleco.wd5.myworkdayjobs.com/External/job/example",
+  "stages": [
+    {
+      "route": "autofillWithResume",
+      "automation_ids": ["autofillWithResume", "resumeUpload"],
+      "heading": "Autofill with Resume",
+      "fields": [
+        {
+          "selector": "[data-automation-id=\"resumeUpload\"]",
+          "automationId": "resumeUpload",
+          "name": "resume",
+          "label": "Resume",
+          "kind": "file",
+          "required": true,
+          "options": []
+        }
+      ]
+    },
+    {
+      "route": "myInformation",
+      "automation_ids": ["myInformation"],
+      "heading": "My Information",
+      "fields": [
+        {
+          "selector": "[data-automation-id=\"legalNameSection_firstName\"]",
+          "automationId": "legalNameSection_firstName",
+          "name": "firstName",
+          "label": "First Name",
+          "kind": "text",
+          "required": true,
+          "options": []
+        },
+        {
+          "selector": "[data-automation-id=\"legalNameSection_lastName\"]",
+          "automationId": "legalNameSection_lastName",
+          "name": "lastName",
+          "label": "Last Name",
+          "kind": "text",
+          "required": true,
+          "options": []
+        }
+      ]
+    },
+    {
+      "route": "myExperience",
+      "automation_ids": ["myExperience"],
+      "heading": "My Experience",
+      "fields": []
+    },
+    {
+      "route": "applicationQuestions",
+      "automation_ids": ["applicationQuestions"],
+      "heading": "Application Questions",
+      "fields": [
+        {
+          "selector": "[data-automation-id=\"motivationQuestion\"]",
+          "automationId": "motivationQuestion",
+          "name": "motivation",
+          "label": "Why are you interested in this synthetic role?",
+          "kind": "textarea",
+          "required": true,
+          "options": []
+        }
+      ]
+    },
+    {
+      "route": "voluntaryDisclosures",
+      "automation_ids": ["voluntaryDisclosures"],
+      "heading": "Voluntary Disclosures",
+      "fields": [
+        {
+          "selector": "[data-automation-id=\"gender\"]",
+          "automationId": "gender",
+          "name": "gender",
+          "label": "Gender",
+          "kind": "text",
+          "required": true,
+          "options": []
+        }
+      ]
+    },
+    {
+      "route": "selfIdentify",
+      "automation_ids": ["selfIdentify"],
+      "heading": "Self Identify",
+      "fields": [
+        {
+          "selector": "[data-automation-id=\"disabilityStatus\"]",
+          "automationId": "disabilityStatus",
+          "name": "disabilityStatus",
+          "label": "Disability status",
+          "kind": "text",
+          "required": true,
+          "options": []
+        }
+      ]
+    },
+    {
+      "route": "review",
+      "automation_ids": ["reviewPage"],
+      "heading": "Review Your Application",
+      "fields": []
+    }
+  ]
+}

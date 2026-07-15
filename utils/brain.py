@@ -1,16 +1,5 @@
-"""
-Claude Code CLI Brain — Uses `claude` CLI as the reasoning engine.
+"""Legacy Brain façade backed by Jobops' Codex-oriented LLM registry."""
 
-Instead of paying for API calls, this shells out to the Claude Code CLI
-which is included in your Pro/Max subscription.
-
-Supports pluggable LLM backends via profile.yaml `ai` section.
-When a profile with `ai` config is provided, requests are routed through
-the configured backend per component. Without a profile, falls back to
-direct Claude CLI calls (original behavior).
-"""
-
-import os
 import subprocess
 import json
 import re
@@ -18,8 +7,12 @@ import hashlib
 from pathlib import Path
 from typing import Optional
 
-CACHE_DIR = Path(__file__).parent.parent / ".cache"
-CACHE_DIR.mkdir(exist_ok=True)
+from core.private_home import PRIVATE_DIRECTORY_MODE, PrivateHome
+
+
+# Compatibility name only. Calls resolve JOBOPS_HOME again so an environment
+# override made after import is still honored.
+CACHE_DIR = PrivateHome.discover().paths.cache / "llm"
 
 
 class ClaudeBrain:
@@ -31,11 +24,11 @@ class ClaudeBrain:
         self._verify_cli()
 
     def _verify_cli(self):
-        """Check that claude CLI is installed and accessible (skipped if not needed)."""
+        """Check the legacy no-profile CLI eagerly; configured backends are lazy."""
         # Skip CLI check if profile uses a non-CLI backend for all components
         if self.profile:
             ai_config = self.profile.get("ai", {})
-            default = ai_config.get("default_backend", "claude_cli")
+            default = ai_config.get("default_backend", "codex_cli")
             components = ai_config.get("components", {})
             all_backends = set(components.values()) | {default}
             if "claude_cli" not in all_backends:
@@ -43,24 +36,23 @@ class ClaudeBrain:
                     print(f"  🧠 Using configured backends: {', '.join(all_backends)}")
                 return
 
+        cli_name = "claude" if self.profile else "codex"
+
         try:
             result = subprocess.run(
-                ["claude", "--version"],
+                [cli_name, "--version"],
                 capture_output=True, text=True, timeout=10
             )
             if result.returncode != 0:
                 raise RuntimeError(
-                    "Claude CLI not responding. Install with: "
-                    "npm install -g @anthropic-ai/claude-code"
+                    f"{cli_name} CLI is not responding; configure an available backend"
                 )
             if self.verbose:
                 version = result.stdout.strip()
-                print(f"  🧠 Claude CLI ready: {version}")
+                print(f"  AI CLI ready: {version}")
         except FileNotFoundError:
             raise RuntimeError(
-                "Claude CLI not found. Install with:\n"
-                "  npm install -g @anthropic-ai/claude-code\n"
-                "Then run: claude auth"
+                f"{cli_name} CLI was not found; configure an available backend"
             )
 
     def ask(self, prompt: str, timeout: int = 120, component: str = "general") -> str:
@@ -69,56 +61,54 @@ class ClaudeBrain:
 
         When a profile with `ai` config is available, routes through the
         pluggable backend for the given component. Otherwise falls back to
-        direct Claude CLI calls (original behavior).
+        the hardened local Codex backend for trusted prompts.
         """
         if self.verbose:
-            preview = prompt[:80].replace('\n', ' ')
-            print(f"  AI: {preview}...")
+            prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12]
+            print(f"  AI request: component={component}, sha256={prompt_digest}")
 
         # Route through pluggable backend if profile is available
         if self.profile:
             from utils.llm import get_backend
-            backend = get_backend(component, self.profile)
+            backend = get_backend(
+                component,
+                self.profile,
+                require_untrusted_input_safe=component == "form_analysis",
+            )
             return backend.ask(prompt, timeout=timeout)
 
-        # Fallback: direct Claude CLI (original behavior)
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "json"],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env
-        )
+        # No-profile calls are trusted-only and use the hardened local Codex
+        # boundary. Form labels require an explicitly configured tool-free
+        # backend instead of silently reaching an agentic CLI.
+        if component == "form_analysis":
+            from utils.llm import UnsafeLLMBackendError
 
-        if result.returncode != 0:
-            error_msg = result.stderr.strip() or "Unknown error"
-            raise RuntimeError(f"Claude CLI error: {error_msg}")
+            raise UnsafeLLMBackendError(
+                "form_analysis contains untrusted browser input and requires "
+                "an explicitly configured tool-free backend"
+            )
+        from utils.llm import CodexCLIBackend
 
-        # Parse the JSON output
-        try:
-            data = json.loads(result.stdout)
-            # Claude Code JSON output has a "result" field
-            return data.get("result", result.stdout)
-        except json.JSONDecodeError:
-            # Fallback: return raw stdout
-            return result.stdout.strip()
+        return CodexCLIBackend().ask(prompt, timeout=timeout)
 
     def ask_json(self, prompt: str, timeout: int = 120, component: str = "general") -> dict:
         """Ask the LLM and parse JSON from the response."""
         # Route through pluggable backend if profile is available
         if self.profile:
             from utils.llm import get_backend
-            backend = get_backend(component, self.profile)
+            backend = get_backend(
+                component,
+                self.profile,
+                require_untrusted_input_safe=component == "form_analysis",
+            )
             return backend.ask_json(prompt, timeout=timeout)
 
-        # Fallback: original behavior
+        # Fallback: hardened local Codex behavior.
         full_prompt = prompt + (
             "\n\nIMPORTANT: Respond ONLY with valid JSON. "
             "No markdown fencing, no explanation, no preamble. Just the JSON object."
         )
-        raw = self.ask(full_prompt, timeout=timeout)
+        raw = self.ask(full_prompt, timeout=timeout, component=component)
 
         # Strip markdown code fences if present
         cleaned = raw.strip()
@@ -129,23 +119,28 @@ class ClaudeBrain:
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
-            if self.verbose:
-                print(f"  Warning: JSON parse failed, raw response:\n{raw[:500]}")
-            raise ValueError(f"LLM didn't return valid JSON: {e}")
+            raise ValueError(
+                f"LLM did not return valid JSON ({type(e).__name__})"
+            ) from None
 
     def ask_cached(self, prompt: str, cache_key: Optional[str] = None) -> str:
         """Ask with disk caching — useful for repeated identical questions."""
         if cache_key is None:
-            cache_key = hashlib.md5(prompt.encode()).hexdigest()
+            cache_key = hashlib.sha256(prompt.encode()).hexdigest()
 
-        cache_file = CACHE_DIR / f"{cache_key}.txt"
+        home = PrivateHome.discover()
+        paths = home.ensure()
+        cache_dir = paths.cache / "llm"
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=PRIVATE_DIRECTORY_MODE)
+        cache_dir.chmod(PRIVATE_DIRECTORY_MODE)
+        cache_file = cache_dir / f"{cache_key}.txt"
         if cache_file.exists():
             if self.verbose:
                 print(f"  💾 Cache hit: {cache_key}")
             return cache_file.read_text()
 
         result = self.ask(prompt)
-        cache_file.write_text(result)
+        home.write_text(cache_file, result)
         return result
 
     def match_job(self, job_description: str, profile: dict, resume_text: str = "") -> dict:

@@ -576,11 +576,10 @@ def main():
 Examples:
   python main.py discover                          # Find & score jobs
   python main.py apply --dry-run                   # Fill forms, don't submit
-  python main.py apply                             # Actually submit applications
+  python main.py apply                             # Legacy dry-run compatibility
   python main.py single https://boards.greenhouse.io/company/jobs/123
-  python main.py single https://jobs.lever.co/company/abc --live
+  python jobctl.py apply-csv --limit 1             # Permit-gated execution
   python main.py apply-csv job_pool.csv --resume-dir resumes/pdf --preview
-  python main.py apply-csv job_pool.csv --resume-dir resumes/pdf --live
   python main.py workday-session <url> --browser safari
   python main.py workday-keychain <url> --action status
   python main.py stats                             # View application stats
@@ -597,13 +596,13 @@ Examples:
     apply_parser.add_argument("--dry-run", action="store_true", default=True,
                               help="Fill forms but don't submit (default)")
     apply_parser.add_argument("--live", action="store_true",
-                              help="Actually submit applications")
+                              help="Disabled: use permit-gated jobctl")
 
     # single
     single_parser = subparsers.add_parser("single", help="Apply to a single URL")
     single_parser.add_argument("url", help="Job posting URL")
     single_parser.add_argument("--live", action="store_true",
-                               help="Actually submit (default: dry run)")
+                               help="Disabled: use permit-gated jobctl")
     single_parser.add_argument("--company", default="",
                                help="Company name, used to resolve aggregator URLs")
     single_parser.add_argument("--title", default="",
@@ -636,7 +635,7 @@ Examples:
     )
     csv_parser.add_argument(
         "--live", action="store_true",
-        help="Actually submit; default is a non-submitting dry run",
+        help="Disabled: use permit-gated jobctl",
     )
     csv_parser.add_argument(
         "--continue-on-failure", action="store_true",
@@ -684,6 +683,13 @@ Examples:
     server_parser.add_argument("--host", default="127.0.0.1", help="Host (default: 127.0.0.1)")
 
     args = parser.parse_args()
+
+    if args.command in {"apply", "single", "apply-csv"} and args.live:
+        parser.error(
+            "legacy live application execution is disabled because it bypasses "
+            "Jobops permits and the Event Ledger; use jobctl.py apply-csv and "
+            "jobctl.py submit-reviewed"
+        )
 
     if args.command == "stats":
         print_stats()

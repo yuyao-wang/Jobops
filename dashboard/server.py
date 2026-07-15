@@ -14,6 +14,7 @@ import asyncio
 import base64
 import copy
 import json
+import ipaddress
 import logging
 import shutil
 from datetime import datetime
@@ -1607,6 +1608,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Start the uvicorn server.  Called from main.py or directly."""
+    normalized_host = str(host or "").strip().casefold()
+    loopback = normalized_host == "localhost"
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(normalized_host).is_loopback
+        except ValueError:
+            loopback = False
+    if not loopback:
+        raise RuntimeError(
+            "The legacy dashboard has no authentication and may bind only to a "
+            "literal loopback address"
+        )
     import uvicorn
 
     print(f"\n  Dashboard running at: http://localhost:{port}")

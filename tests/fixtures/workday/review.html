@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <link rel="canonical" href="https://exampleco.wd5.myworkdayjobs.com/External/job/example/review">
+  </head>
+  <body>
+    <main data-automation-id="reviewPage">
+      <h1>Review Your Application</h1>
+      <p>Review the information before submitting.</p>
+      <button
+        data-automation-id="bottom-navigation-next-button"
+        onclick="window.submitCount = (window.submitCount || 0) + 1; document.querySelector('main').dataset.automationId = 'applicationSubmitted'; document.querySelector('main').innerHTML = '<h1>Application submitted</h1><p>Thank you for applying.</p>'"
+      >Submit</button>
+    </main>
+  </body>
+</html>

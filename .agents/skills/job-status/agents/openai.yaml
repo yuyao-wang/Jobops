@@ -1,0 +1,7 @@
+# Repository-scoped Codex skill metadata.
+interface:
+  display_name: "Job Status"
+  short_description: "Analyze outcomes, blockers, and evidence"
+  default_prompt: "Use $job-status to summarize recent application outcomes and blockers."
+policy:
+  allow_implicit_invocation: true

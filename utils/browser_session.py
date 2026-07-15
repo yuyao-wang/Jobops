@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.private_home import PrivateHome
+
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -24,12 +26,21 @@ class BrowserSession:
 
 
 def chromium_user_data_dir(profile: dict) -> Path:
-    """Resolve the private persistent Chromium profile directory."""
-    browser = profile.get("browser", {})
-    configured = browser.get("chromium_user_data_dir", "private/browser-data/chromium")
-    path = Path(configured).expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return path
+    """Return Chromium state under an owned, repository-external Private Home.
+
+    ``browser.chromium_user_data_dir`` is intentionally ignored. It existed in
+    legacy profiles and could redirect cookies/session state into the checkout
+    or a shared directory.
+    """
+
+    configured_home = str(profile.get("private_home") or "").strip()
+    home = (
+        PrivateHome(Path(configured_home).expanduser())
+        if configured_home
+        else PrivateHome.discover()
+    )
+    paths = home.ensure()
+    return home.contained_path(paths.chromium_profile)
 
 
 async def launch_browser_session(playwright, profile: dict, headless: bool = False) -> BrowserSession:

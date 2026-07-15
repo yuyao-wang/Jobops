@@ -1,7 +1,8 @@
 """
-Email checker — Monitors inbox for application status updates.
-Connects via IMAP to detect rejections, interview invites, and offers.
-Supports Gmail (with app password), Outlook, and generic IMAP.
+Legacy email checker — monitors application status through IMAP.
+
+Mailbox secrets are read from the credential provider, never from profile
+files.  New verification flows use ``auth.mailbox`` and narrow time windows.
 """
 
 import imaplib
@@ -9,6 +10,8 @@ import email
 from email.header import decode_header
 from datetime import datetime, timedelta
 from typing import Optional
+
+from auth.credentials import CredentialStore, MacOSSecurityCredentialStore
 
 
 # Known ATS and recruiter email domains
@@ -21,7 +24,11 @@ ATS_DOMAINS = [
 ]
 
 
-def check_emails(profile: dict) -> list:
+def check_emails(
+    profile: dict,
+    *,
+    credential_store: CredentialStore | None = None,
+) -> list:
     """
     Check email for application-related messages.
     Returns list of detected status updates.
@@ -32,10 +39,16 @@ def check_emails(profile: dict) -> list:
 
     imap_server = email_config.get("imap_server", "imap.gmail.com")
     email_addr = email_config.get("email", "")
-    password = email_config.get("app_password", "")
+    service = str(
+        email_config.get("keychain_service")
+        or f"jobops.mailbox.imap.{imap_server.casefold()}"
+    )
+    password = (credential_store or MacOSSecurityCredentialStore()).get(
+        service, email_addr
+    ) if email_addr else None
 
     if not email_addr or not password:
-        print("  ⚠ Email not configured (missing email or app_password)")
+        print("  ⚠ Email not configured (missing address or Keychain credential)")
         return []
 
     results = []
