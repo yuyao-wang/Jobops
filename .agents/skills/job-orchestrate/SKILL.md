@@ -19,7 +19,8 @@ Coordinate Jobops; do not drive routine browser clicks yourself.
    - Low: route an approved existing resume; policy may authorize both gates when no risk signal exists.
 4. Use `.venv/bin/python jobctl.py apply-csv --limit 1` for one Review episode. Human Gate A uses `--approve-gate-a` only after material review. Human Gate B must be temporally separate: after showing the persisted Review and receiving a new explicit confirmation, run `.venv/bin/python jobctl.py submit-reviewed --run-id <run-id> --approve`.
 5. Read the structured Outcome. Continue only after `REVIEW_READY` or `SUBMITTED_VERIFIED`. Resolve `MATERIALS_REQUIRED` yourself through `$job-materials`. Stop for the user on `SUBMIT_UNKNOWN`, account lock, CAPTCHA, MFA, email-verification fallback, a new sensitive required answer, or a human permit request.
-6. Summarize the run with `$job-status` using ledger data, not browser memory.
+6. Do not classify a normal login or registration page as a handoff. Use the tenant-scoped Keychain credential when present; otherwise let `$job-apply` create the account automatically. Verification is the handoff boundary, and all safe fields must already be complete before the page is shown to the user.
+7. Summarize the run with `$job-status` using ledger data, not browser memory.
 
 ## Invariants
 

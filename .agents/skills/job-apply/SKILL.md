@@ -14,13 +14,14 @@ Run one bounded application episode. Playwright adapters execute; Codex handles 
 1. Inspect the next row with `.venv/bin/python jobctl.py queue --list --limit 1` and its tier with `.venv/bin/python jobctl.py policy`.
 2. Ensure `$job-materials` has prepared the required tier-specific material. Do not silently substitute a missing requested resume variant.
 3. Run `.venv/bin/python jobctl.py apply-csv --limit 1` to reach Review. Supported Greenhouse, Lever, Ashby, Jobvite, and Workday forms should use zero model calls.
-4. If the Outcome is `REVIEW_READY`, report the review and permit requirement. Do not translate this into “submitted.”
-5. For a human Gate B, first show the persisted Review and run ID. Only after a new explicit confirmation, run `.venv/bin/python jobctl.py submit-reviewed --run-id <run-id> --approve`. There is no same-invocation Gate B preapproval. Low-tier policy may use `apply-csv --submit`, but the core still consumes both bound permits.
-6. Accept success only as `SUBMITTED_VERIFIED` with evidence. Treat `SUBMIT_UNKNOWN` as a hard no-retry handoff.
+4. Treat authentication as an internal state, not a user task. Read the tenant-scoped credential from macOS Keychain first. If none exists and policy allows registration, generate a strong password, persist and read it back from Keychain before entering it, create the account, leave optional marketing subscriptions off, and accept only required account/privacy terms. Do not ask the user to log in or create the account.
+5. If the Outcome is `REVIEW_READY`, report the review and permit requirement. Do not translate this into “submitted.”
+6. For a human Gate B, first show the persisted Review and run ID. Only after a new explicit confirmation, run `.venv/bin/python jobctl.py submit-reviewed --run-id <run-id> --approve`. There is no same-invocation Gate B preapproval. Low-tier policy may use `apply-csv --submit`, but the core still consumes both bound permits.
+7. Accept success only as `SUBMITTED_VERIFIED` with evidence. Treat `SUBMIT_UNKNOWN` as a hard no-retry handoff.
 
 ## Handoffs
 
-Stop and tell the user exactly what remains when the Outcome identifies CAPTCHA, MFA, email-verification fallback, account lock, a new sensitive required question, or human Gate A/Gate B. When materials are missing, invoke `$job-materials` yourself and retry Review; do not ask the user to author them. Prefer Safari for a user-visible handoff when requested, but automated execution and reusable sessions remain in leased persistent Chromium.
+Stop and tell the user exactly what remains only when the Outcome identifies CAPTCHA, MFA, email-verification fallback, account lock, a new sensitive required question, or human Gate A/Gate B. Fill every safe registration field before a CAPTCHA handoff so the user performs only the verification gesture. After verification, resume automatically, activate account creation/sign-in, and return to the application. When materials are missing, invoke `$job-materials` yourself and retry Review; do not ask the user to author them. Prefer Safari for a user-visible handoff when requested, but automated execution and reusable sessions remain in leased persistent Chromium.
 
 ## Safety
 

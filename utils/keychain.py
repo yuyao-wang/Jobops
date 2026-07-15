@@ -6,8 +6,6 @@ Security.framework directly.  No password is ever passed to a subprocess.
 
 from __future__ import annotations
 
-import secrets
-import string
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -17,6 +15,7 @@ from auth.credentials import (
     MacOSSecurityCredentialStore,
 )
 from auth.workday_hosts import is_trusted_workday_host
+from auth.passwords import generate_strong_password
 
 
 KEYCHAIN_PREFIX = "jobops.workday"
@@ -140,23 +139,6 @@ def delete_workday_credential(
 ) -> bool:
     backend = store or default_credential_store()
     return backend.delete(workday_service(job_url), email)
-
-
-def generate_strong_password(length: int = 24) -> str:
-    """Generate a password containing common Workday character classes."""
-    if length < 16:
-        raise ValueError("password length must be at least 16")
-    required = [
-        secrets.choice(string.ascii_uppercase),
-        secrets.choice(string.ascii_lowercase),
-        secrets.choice(string.digits),
-        secrets.choice("!@#$%^&*_-+="),
-    ]
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*_-+="
-    remaining = [secrets.choice(alphabet) for _ in range(length - len(required))]
-    chars = required + remaining
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
 
 
 def _validated_workday_host(job_url: str) -> str:

@@ -6,6 +6,8 @@ Jobops turns a private CSV queue into resumable, evidence-backed job application
 
 The repository is public-safe by design. Candidate facts, verified answers, resumes, generated materials, queue state, browser sessions, evidence, and logs live in a repository-external Private Home. ATS and mailbox account passwords plus the permit HMAC key live in macOS Keychain. Optional AI-provider API tokens are read from runtime environment variables only and are never persisted in the repository or Private Home.
 
+Login and account registration are automated states, not routine user tasks. Jobops checks a host-and-tenant-scoped Keychain item first; when none exists and policy allows registration, it generates a strong password, verifies the Keychain write before form entry, completes safe registration fields, keeps optional marketing consent disabled, and accepts required account/privacy terms. It pauses only at CAPTCHA, MFA, email verification that the optional mailbox agent cannot complete, or an account lock. The page is handed off with all other safe fields already complete, then resumed automatically after verification.
+
 ## Current status
 
 The implementation now includes:
@@ -16,6 +18,7 @@ The implementation now includes:
 - a shared Adapter Protocol with deterministic Greenhouse, Lever, Ashby, and Jobvite adapters;
 - a deterministic Workday login, registration, email-verification handoff, multi-stage application, Review, submit, and confirmation state machine;
 - a macOS Security.framework credential backend that never passes passwords in process arguments;
+- host-and-tenant-scoped Keychain credentials for long-tail ATS account registration;
 - a compact generic adapter split into observer, fingerprinter, resolver, executor, verifier, and value-free recipe cache;
 - a persistent Chromium browser broker and Safari human-handoff option;
 - a versioned JSON-lines Node worker bridge so Node and Python can coexist while Python remains the production adapter runtime;
