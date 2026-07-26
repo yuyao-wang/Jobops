@@ -446,7 +446,12 @@ async def test_apply_smart_routes_workday_without_generic_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_launch_browser_session_uses_persistent_context(tmp_path):
     page = object()
-    context = SimpleNamespace(pages=[page], close=AsyncMock())
+    context = SimpleNamespace(
+        pages=[page],
+        close=AsyncMock(),
+        cookies=AsyncMock(return_value=[]),
+        add_cookies=AsyncMock(),
+    )
     launch = AsyncMock(return_value=context)
     playwright = SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=launch))
     profile = {
@@ -466,6 +471,48 @@ async def test_launch_browser_session_uses_persistent_context(tmp_path):
     assert not (tmp_path / "escaped-chromium").exists()
     await session.close()
     context.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_browser_session_persists_and_restores_session_cookies(tmp_path):
+    private_home = tmp_path / "private-home"
+    profile = {"private_home": str(private_home), "browser": {}}
+    session_cookie = {
+        "name": "synthetic-session",
+        "value": "private-cookie-value",
+        "domain": "career.example.test",
+        "path": "/",
+        "expires": -1,
+        "httpOnly": True,
+        "secure": True,
+        "sameSite": "None",
+    }
+    first_context = SimpleNamespace(
+        pages=[object()],
+        close=AsyncMock(),
+        cookies=AsyncMock(return_value=[session_cookie]),
+        add_cookies=AsyncMock(),
+    )
+    second_context = SimpleNamespace(
+        pages=[object()],
+        close=AsyncMock(),
+        cookies=AsyncMock(return_value=[session_cookie]),
+        add_cookies=AsyncMock(),
+    )
+    launch = AsyncMock(side_effect=[first_context, second_context])
+    playwright = SimpleNamespace(
+        chromium=SimpleNamespace(launch_persistent_context=launch)
+    )
+
+    first = await launch_browser_session(playwright, profile)
+    await first.close()
+    state_path = private_home / "browser" / "chromium-session-cookies.json"
+    assert state_path.is_file()
+    assert state_path.stat().st_mode & 0o777 == 0o600
+
+    second = await launch_browser_session(playwright, profile)
+    second_context.add_cookies.assert_awaited_once_with([session_cookie])
+    await second.close()
 
 
 @pytest.mark.asyncio

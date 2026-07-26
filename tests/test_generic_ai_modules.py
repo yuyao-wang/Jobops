@@ -13,6 +13,7 @@ import json
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,6 +31,7 @@ from adapters.generic_ai.executor import (
 from adapters.generic_ai.fingerprinter import fingerprint_form, fingerprint_review
 from adapters.generic_ai.models import FormControl, FormIR, FormOption
 from adapters.generic_ai.observer import observe_form
+from adapters.generic_ai.observer import infer_stage
 from adapters.generic_ai.resolver import (
     AnswerResolver,
     ResolvedField,
@@ -299,6 +301,126 @@ def test_known_fields_resolve_locally_without_a_model():
         ("email", SYNTHETIC_EMAIL)
     ]
     brain.ask_json.assert_not_called()
+
+
+def test_password_control_marks_authentication_stage():
+    controls = [{"input_type": "email"}, {"input_type": "password"}]
+    assert infer_stage("https://careers.example.invalid/signin", "Sign In", controls, []) == "authenticate"
+
+
+@pytest.mark.asyncio
+async def test_generic_login_uses_tenant_keychain_credential(
+    tmp_path, monkeypatch
+):
+    email = _control(index=0, selector="#email")
+    password = FormControl(
+        index=1,
+        role="textbox",
+        tag="input",
+        input_type="password",
+        label="Password",
+        required=True,
+        selector="#password",
+    )
+    form = FormIR(
+        platform="generic",
+        tenant="careers.example.invalid",
+        stage="authenticate",
+        url_path="/signin",
+        controls=(email, password),
+        metadata={
+            "auth_submit_selector": "#sign-in",
+            "captcha_present": False,
+        },
+    )
+    sign_in = MagicMock()
+    sign_in.count = AsyncMock(return_value=1)
+    sign_in.click = AsyncMock()
+    page = MagicMock()
+    page.url = "https://careers.example.invalid/signin"
+    page.fill = AsyncMock()
+    page.locator = MagicMock(return_value=sign_in)
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.get_site_credential",
+        lambda *args, **kwargs: SimpleNamespace(password="synthetic-secret"),
+    )
+
+    handled = await GenericAIAdapter(
+        cache=RecipeCache(tmp_path / "cache")
+    )._handle_authentication(
+        page=page,
+        form=form,
+        profile={"personal": {"email": SYNTHETIC_EMAIL}},
+        credential_store=object(),
+        tenant="Synthetic Co",
+        run_id="run-auth",
+        job_id="job-auth",
+    )
+
+    assert handled is True
+    assert page.fill.await_count == 2
+    sign_in.click.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generic_login_recognizes_text_username_field(tmp_path, monkeypatch):
+    username = FormControl(
+        index=0,
+        role="textbox",
+        tag="input",
+        input_type="text",
+        label="",
+        name="username",
+        element_id="username",
+        aria_label="Email Address:",
+        required=True,
+        selector="#username",
+    )
+    password = FormControl(
+        index=1,
+        role="textbox",
+        tag="input",
+        input_type="password",
+        label="Password",
+        required=True,
+        selector="#password",
+    )
+    form = FormIR(
+        platform="successfactors",
+        tenant="Scotiabank",
+        stage="authenticate",
+        url_path="/careers",
+        controls=(username, password),
+        metadata={"auth_submit_selector": "#sign-in", "captcha_present": False},
+    )
+    sign_in = MagicMock()
+    sign_in.count = AsyncMock(return_value=1)
+    sign_in.click = AsyncMock()
+    page = MagicMock()
+    page.url = "https://career17.sapsf.com/careers?company=scotiabank"
+    page.fill = AsyncMock()
+    page.locator = MagicMock(return_value=sign_in)
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.get_site_credential",
+        lambda *args, **kwargs: SimpleNamespace(password="synthetic-secret"),
+    )
+
+    handled = await GenericAIAdapter(
+        cache=RecipeCache(tmp_path / "cache")
+    )._handle_authentication(
+        page=page,
+        form=form,
+        profile={"personal": {"email": SYNTHETIC_EMAIL}},
+        credential_store=object(),
+        tenant="Scotiabank",
+        run_id="run-auth-text",
+        job_id="job-auth-text",
+    )
+
+    assert handled is True
+    assert page.fill.await_args_list[0].args == ("#username", SYNTHETIC_EMAIL)
+    assert page.fill.await_args_list[1].args == ("#password", "synthetic-secret")
+    sign_in.click.assert_awaited_once()
 
 
 def test_preferred_name_uses_the_explicit_private_fact():
@@ -751,6 +873,50 @@ async def test_adapter_normal_known_form_reaches_review_with_zero_model_calls(
     brain.ask_json.assert_not_called()
     fill.assert_awaited_once()
     observe.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_adapter_never_treats_empty_landing_page_as_review(
+    tmp_path, monkeypatch
+):
+    landing = FormIR(
+        platform="generic",
+        tenant="careers.example.invalid",
+        stage="form",
+        url_path="/jobs/42",
+        controls=(),
+        submit_selector="#apply-now",
+        submit_text="Apply now",
+    )
+    page = MagicMock()
+    page.url = "https://careers.example.invalid/jobs/42"
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.observe_form",
+        AsyncMock(side_effect=(landing, landing)),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.execute_resolved_fields",
+        AsyncMock(return_value=FillReport(0, 0, (), ())),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.verify_fields",
+        AsyncMock(return_value=VerificationReport(True, (), ())),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.detect_submission_evidence",
+        AsyncMock(return_value=None),
+    )
+
+    outcome = await GenericAIAdapter(cache=RecipeCache(tmp_path / "cache")).run(
+        page=page,
+        job_url=page.url,
+        profile=_profile(),
+        run_id="run-landing",
+        job_id="job-landing",
+    )
+
+    assert outcome.status is OutcomeStatus.FAILED_UNSUPPORTED
+    assert outcome.reason_code is ReasonCode.UNSUPPORTED_ATS
 
 
 @pytest.mark.asyncio
@@ -1293,6 +1459,34 @@ def test_review_and_confirmation_detection_require_explicit_state():
     assert is_review_ready(_form(), valid)
     assert not is_review_ready(_form(submit=False), valid)
     assert not is_review_ready(_form(), VerificationReport(False, (), ("required",)))
+
+    landing_page = FormIR(
+        platform="generic",
+        tenant="careers.example.invalid",
+        stage="form",
+        url_path="/jobs/42",
+        controls=(),
+        submit_selector="#apply-now",
+        submit_text="Apply now",
+    )
+    assert not is_review_ready(landing_page, valid)
+
+    verified_single_page = FormIR(
+        platform="generic",
+        tenant="careers.example.invalid",
+        stage="form",
+        url_path="/jobs/42/apply",
+        controls=(_control(),),
+        submit_selector="#submit",
+        submit_text="Submit application",
+    )
+    verified = VerificationReport(
+        True,
+        (),
+        (),
+        readback_hashes=((0, "email", "a" * 64),),
+    )
+    assert is_review_ready(verified_single_page, verified)
 
     assert is_confirmation_text("Your application has been submitted successfully.")
     assert is_confirmation_text("Thank you for applying to Example Corp")

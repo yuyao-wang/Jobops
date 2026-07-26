@@ -280,4 +280,14 @@ async def verify_fields(page, form: FormIR, fields: list[ResolvedField]) -> Veri
 
 
 def is_review_ready(form: FormIR, report: VerificationReport) -> bool:
-    return bool(form.submit_selector or form.submit_text) and report.valid
+    if not bool(form.submit_selector or form.submit_text) or not report.valid:
+        return False
+
+    # A careers landing page can expose an "Apply now" control while having
+    # no application fields at all.  An empty verification report is therefore
+    # not evidence that an application is ready to submit.  Permit an empty
+    # report only on an explicitly observed Review stage; single-page forms
+    # must have at least one locally verified field or uploaded material.
+    return form.stage == "review" or bool(
+        report.readback_hashes or report.material_content_hashes
+    )

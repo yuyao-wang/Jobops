@@ -673,6 +673,7 @@ async def cmd_apply_csv(args: argparse.Namespace) -> int:
                         mailbox_verifier=mailbox_verifier,
                         brain=brain,
                         platform_hint=application.row.get("source", ""),
+                        tenant=application.company,
                         lease_ttl_seconds=args.lease_ttl,
                         browser_lease=browser.lease,
                     )
@@ -817,10 +818,79 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
                 mailbox_verifier=mailbox_verifier,
                 brain=brain,
                 platform_hint=application.row.get("source", ""),
+                tenant=application.company,
                 lease_ttl_seconds=args.lease_ttl,
                 browser_lease=browser.lease,
             )
     _project_csv_outcome(csv_path, application, outcome)
+    print(outcome.to_json())
+    return int(outcome.exit_code)
+
+
+def cmd_invalidate_review(args: argparse.Namespace) -> int:
+    """Append a correction when a persisted Review fails later validation."""
+
+    home = PrivateHome(Path(args.home).expanduser().resolve()) if args.home else PrivateHome.discover()
+    vault = CandidateVault.load(home)
+    csv_path = Path(args.csv).expanduser().resolve() if args.csv else vault.paths.job_queue
+    resume_dir = (
+        Path(args.resume_dir).expanduser().resolve()
+        if args.resume_dir
+        else vault.paths.master_documents
+    )
+    engine = JobApplicationEngine.from_private_home(
+        home=home,
+        credential_store=MacOSSecurityCredentialStore(),
+    )
+    run = engine.ledger.get_run(args.run_id)
+    if run.state != OutcomeStatus.REVIEW_READY.value:
+        raise ValueError("only a persisted REVIEW_READY run can be invalidated")
+
+    candidates = load_csv_queue(
+        csv_path,
+        resume_dir,
+        priorities="High,Medium,Low",
+        statuses="Ready for review,Needs user",
+        limit=0,
+    )
+    matches: list[CSVApplication] = []
+    for candidate in candidates:
+        try:
+            candidate_job = JobSpec(
+                url=candidate.url,
+                company=candidate.company,
+                title=candidate.title,
+                tier=priority_to_tier(candidate.row.get("priority", "")),
+            )
+        except ValueError:
+            continue
+        if candidate_job.job_id == run.job_id:
+            matches.append(candidate)
+    if len(matches) != 1:
+        raise ValueError(
+            "invalidated run must match exactly one Ready-for-review CSV row"
+        )
+
+    prior = dict(run.outcome or {})
+    outcome = ApplicationOutcome.needs_user(
+        run_id=run.run_id,
+        job_id=run.job_id,
+        status=OutcomeStatus.NEEDS_USER,
+        phase=OutcomePhase.REVIEW,
+        reason_code=ReasonCode.VALIDATION_FAILED,
+        message=(
+            "Recorded Review was invalidated because no verified application "
+            "fields or explicit Review-stage evidence were present"
+        ),
+        adapter=str(prior.get("adapter") or "generic_ai"),
+        checkpoint="review.invalidated.empty-verification",
+        details={
+            "invalidated_run_state": OutcomeStatus.REVIEW_READY.value,
+            "safe_to_retry_fill": True,
+        },
+    )
+    engine.record_outcome(outcome)
+    _project_csv_outcome(csv_path, matches[0], outcome)
     print(outcome.to_json())
     return int(outcome.exit_code)
 
@@ -881,6 +951,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--headless", action="store_true")
     submit_parser.add_argument("--lease-ttl", type=float, default=1800.0)
 
+    invalidate_parser = subparsers.add_parser(
+        "invalidate-review",
+        help="Append a safe correction for a falsely detected Review",
+    )
+    invalidate_parser.add_argument("--run-id", required=True)
+    invalidate_parser.add_argument("--csv", default="")
+    invalidate_parser.add_argument("--resume-dir", default="")
+
     subparsers.add_parser("policy", help="Show tier-specific material and permit policy")
     status_parser = subparsers.add_parser("status", help="Summarize the event ledger")
     status_parser.add_argument("--run-id", default="")
@@ -911,6 +989,8 @@ def main() -> int:
             return asyncio.run(cmd_apply_csv(args))
         if args.command == "submit-reviewed":
             return asyncio.run(cmd_submit_reviewed(args))
+        if args.command == "invalidate-review":
+            return cmd_invalidate_review(args)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         parser.exit(int(ExitCode.INVALID_INPUT), f"jobctl: {exc}\n")
     return int(ExitCode.INTERNAL_ERROR)

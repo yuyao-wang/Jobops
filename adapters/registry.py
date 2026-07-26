@@ -103,6 +103,7 @@ class AdapterRegistry:
                 job_id=request.job_id,
                 platform=request.platform_hint or "generic",
                 tenant=request.tenant,
+                credential_store=request.credential_store,
                 gate_b_token=request.gate_b_permit,
                 gate_b_validator=request.gate_b_validator,
                 navigate=request.navigate,

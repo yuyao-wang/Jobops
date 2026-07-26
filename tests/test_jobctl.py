@@ -109,6 +109,62 @@ def test_cli_defaults_to_review_not_submit() -> None:
     assert args.semantic_mapper is False
 
 
+def test_invalidate_review_appends_correction_and_requeues(
+    monkeypatch, tmp_path: Path
+) -> None:
+    application = SimpleNamespace(
+        url="https://example.test/jobs/1",
+        company="Synthetic Co",
+        title="Test Engineer",
+        row={"priority": "Medium"},
+    )
+    job = jobctl.JobSpec(
+        url=application.url,
+        company=application.company,
+        title=application.title,
+        tier=jobctl.priority_to_tier("Medium"),
+    )
+    run = SimpleNamespace(
+        run_id="run-false-review",
+        job_id=job.job_id,
+        state=OutcomeStatus.REVIEW_READY.value,
+        outcome={"adapter": "generic_ai"},
+    )
+    record = MagicMock()
+    engine = SimpleNamespace(
+        ledger=SimpleNamespace(get_run=lambda run_id: run),
+        record_outcome=record,
+    )
+    vault = SimpleNamespace(
+        paths=SimpleNamespace(
+            job_queue=tmp_path / "queue.csv",
+            master_documents=tmp_path / "documents",
+        )
+    )
+    monkeypatch.setattr(jobctl.CandidateVault, "load", lambda *args, **kwargs: vault)
+    monkeypatch.setattr(jobctl, "MacOSSecurityCredentialStore", lambda: object())
+    monkeypatch.setattr(
+        jobctl,
+        "JobApplicationEngine",
+        SimpleNamespace(from_private_home=lambda **kwargs: engine),
+    )
+    monkeypatch.setattr(jobctl, "load_csv_queue", lambda *args, **kwargs: [application])
+    project = MagicMock()
+    monkeypatch.setattr(jobctl, "_project_csv_outcome", project)
+    args = build_parser().parse_args(
+        ["--home", str(tmp_path), "invalidate-review", "--run-id", run.run_id]
+    )
+
+    exit_code = jobctl.cmd_invalidate_review(args)
+
+    assert exit_code == int(ExitCode.NEEDS_USER)
+    correction = record.call_args.args[0]
+    assert correction.status is OutcomeStatus.NEEDS_USER
+    assert correction.reason_code is ReasonCode.VALIDATION_FAILED
+    assert correction.details["safe_to_retry_fill"] is True
+    project.assert_called_once_with(vault.paths.job_queue, application, correction)
+
+
 def test_unsafe_semantic_backend_fails_before_browser_start(
     monkeypatch, tmp_path: Path
 ) -> None:

@@ -25,9 +25,19 @@ _SNAPSHOT_SCRIPT = r"""() => {
             return `#${CSS.escape(el.id)}`;
         }
         if (el.name) return `${el.tagName.toLowerCase()}[name="${quote(el.name)}"]`;
+        if (el.tagName === 'A' && el.getAttribute('href')) {
+            return `a[href="${quote(el.getAttribute('href'))}"]`;
+        }
         const aria = el.getAttribute('aria-label');
         if (aria) return `${el.tagName.toLowerCase()}[aria-label="${quote(aria)}"]`;
         if (el.placeholder) return `${el.tagName.toLowerCase()}[placeholder="${quote(el.placeholder)}"]`;
+        const text = clean(el.innerText || el.value || '', 120);
+        if ((el.tagName === 'BUTTON' || el.type === 'submit' || el.type === 'button') && text) {
+            if (el.tagName === 'INPUT') {
+                return `input[type="${quote(el.type)}"][value="${quote(el.value)}"]`;
+            }
+            return `${el.tagName.toLowerCase()}:has-text("${quote(text)}")`;
+        }
         return `${el.tagName.toLowerCase()}:nth-of-type(${Array.from(el.parentElement?.children || []).filter(
             sibling => sibling.tagName === el.tagName
         ).indexOf(el) + 1})`;
@@ -76,9 +86,36 @@ _SNAPSHOT_SCRIPT = r"""() => {
         })) : []
     }));
     const buttonText = (el) => clean(el?.innerText || el?.value || el?.getAttribute('aria-label'), 120);
-    const buttons = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"]')).filter(visible);
-    const submit = buttons.find(el => /\b(submit|send application|apply now|apply)\b/i.test(buttonText(el)));
-    const next = buttons.find(el => /\b(next|continue|save and continue|review)\b/i.test(buttonText(el)));
+    const buttons = Array.from(document.querySelectorAll(
+        'button, input[type="submit"], [role="button"]'
+    )).filter(visible);
+    const targetHref = (el) => clean(
+        el.getAttribute('href') || el.getAttribute('formaction') ||
+        el.closest('a[href]')?.getAttribute('href') || '', 500
+    );
+    const isApplicationEntry = (el) => {
+        const text = buttonText(el);
+        const href = targetHref(el);
+        return Boolean(href) && /\bapply(?:\s+now)?\b/i.test(text) &&
+            /(?:^|[/?=&_-])apply(?:[/?=&_-]|$)/i.test(href);
+    };
+    const navigationElements = Array.from(document.querySelectorAll(
+        'button, input[type="submit"], [role="button"], a[href]'
+    )).filter(visible);
+    const entry = navigationElements.find(isApplicationEntry);
+    const submit = buttons.find(el =>
+        el !== entry && /\b(submit|send application|apply now|apply)\b/i.test(buttonText(el))
+    );
+    const next = buttons.find(el =>
+        /\b(next|continue|save and continue|review)\b/i.test(buttonText(el))
+    ) || entry;
+    const authElements = Array.from(document.querySelectorAll('button, a[href], [role="button"]')).filter(visible);
+    const authSubmit = authElements.find(el => /^(?:sign\s*in|log\s*in|login)$/i.test(buttonText(el)));
+    const createAccount = authElements.find(el => /create\s+(?:an\s+)?account|register/i.test(buttonText(el)));
+    const captchaPresent = Boolean(document.querySelector(
+        'iframe[src*="recaptcha"], iframe[title*="recaptcha"], [data-sitekey], ' +
+        'textarea[name="g-recaptcha-response"], textarea[name="h-captcha-response"]'
+    ));
     const errors = Array.from(document.querySelectorAll(
         '[role="alert"], [aria-invalid="true"], .field-error, .validation-error, .error-message'
     )).filter(visible).map(el => clean(el.innerText)).filter(Boolean).slice(0, 20);
@@ -87,10 +124,15 @@ _SNAPSHOT_SCRIPT = r"""() => {
         /application submitted|application received|thank you for applying|review your application|please review/i.test(line)
     ).slice(0, 8).map(line => clean(line, 200));
     return {
-        controls, errors,
+        controls: entry ? [] : controls, errors,
         next_selector: next ? selectorFor(next) : '', next_text: buttonText(next),
         submit_selector: submit ? selectorFor(submit) : '', submit_text: buttonText(submit),
-        page_text_hints: hints
+        page_text_hints: hints,
+        metadata: {
+            auth_submit_selector: authSubmit ? selectorFor(authSubmit) : '',
+            create_account_selector: createAccount ? selectorFor(createAccount) : '',
+            captcha_present: captchaPresent
+        }
     };
 }"""
 
@@ -99,6 +141,8 @@ def infer_stage(url: str, title: str, controls: list[dict], hints: list[str]) ->
     haystack = " ".join((url, title, *(hint for hint in hints))).casefold()
     if any(phrase in haystack for phrase in ("application submitted", "application received", "thank you for applying")):
         return "confirmation"
+    if any(control.get("input_type") == "password" for control in controls):
+        return "authenticate"
     if "review" in haystack:
         return "review"
     if any(control.get("input_type") == "file" for control in controls):

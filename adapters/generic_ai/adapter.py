@@ -5,7 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from typing import Any
+from urllib.parse import urlparse
+
+from auth.credentials import CredentialStore
+from auth.site_credentials import get_site_credential, site_service
 
 from core.outcomes import (
     ApplicationOutcome,
@@ -28,6 +33,7 @@ from .verifier import detect_submission_evidence, is_review_ready, verify_fields
 
 
 ADAPTER_NAME = "generic_ai"
+AUTH_CHALLENGE_TIMEOUT_SECONDS = 600.0
 
 
 def _digest_untrusted(value: Any) -> str:
@@ -109,6 +115,189 @@ class GenericAIAdapter:
         except Exception:
             await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
 
+    async def _handle_authentication(
+        self,
+        *,
+        page,
+        form: FormIR,
+        profile: dict[str, Any],
+        credential_store: CredentialStore | None,
+        tenant: str,
+        run_id: str,
+        job_id: str,
+    ) -> ApplicationOutcome | bool | None:
+        """Fill a normal login internally and wait only for verification."""
+
+        password_controls = [
+            control
+            for control in form.controls
+            if control.input_type == "password" and not control.disabled
+        ]
+        if not password_controls:
+            return None
+        email_controls = [
+            control
+            for control in form.controls
+            if not control.disabled
+            and (
+                control.input_type == "email"
+                or str(control.autocomplete or "").casefold() in {"email", "username"}
+                or str(control.name or "").casefold() in {"email", "username", "user_name"}
+                or str(control.element_id or "").casefold() in {"email", "username", "user_name"}
+                or "email" in str(control.aria_label or "").casefold()
+            )
+        ]
+        email = str(profile.get("personal", {}).get("email") or "").strip()
+        host = (urlparse(str(getattr(page, "url", "") or "")).hostname or "").casefold()
+        credential_tenant = str(tenant or host).strip()
+        if not email or not host or credential_store is None:
+            return ApplicationOutcome.needs_user(
+                run_id=run_id,
+                job_id=job_id,
+                status=OutcomeStatus.NEEDS_USER_LOGIN,
+                phase=OutcomePhase.AUTHENTICATE,
+                reason_code=ReasonCode.LOGIN_REQUIRED,
+                message="Automatic login could not resolve the verified account identity",
+                adapter=self.name,
+                checkpoint="generic.auth.identity",
+            )
+
+        credential_scope = site_service(
+            str(getattr(page, "url", "") or ""), credential_tenant
+        )
+        lookup_error = ""
+        try:
+            credential = get_site_credential(
+                str(getattr(page, "url", "") or ""),
+                credential_tenant,
+                email,
+                store=credential_store,
+            )
+        except Exception as exc:
+            credential = None
+            lookup_error = type(exc).__name__
+        if credential is None:
+            create_selector = str(form.metadata.get("create_account_selector") or "")
+            if create_selector:
+                try:
+                    locator = page.locator(create_selector)
+                    if await locator.count() == 1:
+                        await locator.click()
+                        await asyncio.sleep(1)
+                        return True
+                except Exception:
+                    pass
+            return ApplicationOutcome.needs_user(
+                run_id=run_id,
+                job_id=job_id,
+                status=OutcomeStatus.NEEDS_USER_LOGIN,
+                phase=OutcomePhase.AUTHENTICATE,
+                reason_code=ReasonCode.LOGIN_REQUIRED,
+                message="No reusable ATS credential was available for automatic login",
+                adapter=self.name,
+                checkpoint="generic.auth.credential",
+                details={
+                    "credential_scope": credential_scope,
+                    "lookup_error": lookup_error,
+                },
+            )
+
+        try:
+            for control in email_controls:
+                await page.fill(control.selector, email)
+            for control in password_controls:
+                await page.fill(control.selector, credential.password)
+        except Exception as exc:
+            return ApplicationOutcome(
+                run_id=run_id,
+                job_id=job_id,
+                status=OutcomeStatus.FAILED_RETRYABLE,
+                phase=OutcomePhase.AUTHENTICATE,
+                reason_code=ReasonCode.RETRYABLE_BROWSER_ERROR,
+                message="Automatic login fields could not be filled",
+                adapter=self.name,
+                retryable=True,
+                details=_safe_browser_error("AUTH_FILL_FAILED", exc),
+            )
+
+        captcha_present = bool(form.metadata.get("captcha_present"))
+        if captcha_present:
+            print(
+                json.dumps(
+                    {
+                        "jobops_handoff": "CAPTCHA",
+                        "action": "complete_verification_only",
+                        "run_id": run_id,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            deadline = asyncio.get_running_loop().time() + AUTH_CHALLENGE_TIMEOUT_SECONDS
+            while asyncio.get_running_loop().time() < deadline:
+                try:
+                    password_still_visible = False
+                    for control in password_controls:
+                        if await page.locator(control.selector).count() == 1:
+                            password_still_visible = True
+                            break
+                    if not password_still_visible:
+                        return True
+                    solved = await page.evaluate(
+                        """() => Boolean(
+                            document.querySelector('textarea[name="g-recaptcha-response"]')?.value ||
+                            document.querySelector('textarea[name="h-captcha-response"]')?.value
+                        )"""
+                    )
+                    if solved:
+                        break
+                except Exception:
+                    return True
+                await asyncio.sleep(0.5)
+            else:
+                return ApplicationOutcome.needs_user(
+                    run_id=run_id,
+                    job_id=job_id,
+                    status=OutcomeStatus.NEEDS_USER_CAPTCHA,
+                    phase=OutcomePhase.AUTHENTICATE,
+                    reason_code=ReasonCode.CAPTCHA,
+                    message="CAPTCHA verification is still required",
+                    adapter=self.name,
+                    checkpoint="generic.auth.captcha",
+                )
+
+        submit_selector = str(form.metadata.get("auth_submit_selector") or "")
+        if not submit_selector:
+            return ApplicationOutcome.needs_user(
+                run_id=run_id,
+                job_id=job_id,
+                status=OutcomeStatus.NEEDS_USER_LOGIN,
+                phase=OutcomePhase.AUTHENTICATE,
+                reason_code=ReasonCode.LOGIN_REQUIRED,
+                message="The validated login control could not be located",
+                adapter=self.name,
+                checkpoint="generic.auth.submit",
+            )
+        try:
+            locator = page.locator(submit_selector)
+            if await locator.count() != 1:
+                raise RuntimeError("login control is not unique")
+            await locator.click()
+            await asyncio.sleep(1)
+            return True
+        except Exception as exc:
+            return ApplicationOutcome(
+                run_id=run_id,
+                job_id=job_id,
+                status=OutcomeStatus.FAILED_RETRYABLE,
+                phase=OutcomePhase.AUTHENTICATE,
+                reason_code=ReasonCode.RETRYABLE_BROWSER_ERROR,
+                message="Automatic login could not be activated",
+                adapter=self.name,
+                retryable=True,
+                details=_safe_browser_error("AUTH_SUBMIT_FAILED", exc),
+            )
+
     async def run(
         self,
         *,
@@ -122,6 +311,7 @@ class GenericAIAdapter:
         job_id: str,
         platform: str = "generic",
         tenant: str = "",
+        credential_store: CredentialStore | None = None,
         navigate: bool = True,
         max_steps: int = 12,
         gate_b_token: str | None = None,
@@ -189,6 +379,20 @@ class GenericAIAdapter:
                     checkpoint=f"generic.step.{step}",
                     details=_safe_browser_error("FORM_OBSERVATION_FAILED", exc),
                 )
+
+            auth_result = await self._handle_authentication(
+                page=page,
+                form=form,
+                profile=profile,
+                credential_store=credential_store,
+                tenant=tenant,
+                run_id=run_id,
+                job_id=job_id,
+            )
+            if isinstance(auth_result, ApplicationOutcome):
+                return auth_result
+            if auth_result is True:
+                continue
 
             fingerprint = fingerprint_form(form)
             recipe = self.cache.load(fingerprint)
@@ -399,6 +603,52 @@ class GenericAIAdapter:
                     await asyncio.sleep(1)
                     continue
 
+            # Some legacy ATS shells finish navigation before their login or
+            # application controls render. Polling a value-free DOM snapshot is
+            # safer and cheaper than classifying a transient empty page.
+            if (
+                not fresh_form.controls
+                and not fresh_form.next_selector
+                and not fresh_form.next_text
+                and not fresh_form.submit_selector
+                and not fresh_form.submit_text
+                and step < max_steps
+            ):
+                await asyncio.sleep(1)
+                continue
+
+            if os.environ.get("JOBOPS_DEBUG_FORM_SHAPES") == "1":
+                print(
+                    json.dumps(
+                        {
+                            "jobops_form_shape": {
+                                "stage": fresh_form.stage,
+                                "url_path": fresh_form.url_path,
+                                "next_text": fresh_form.next_text,
+                                "submit_text": fresh_form.submit_text,
+                                "controls": [
+                                    {
+                                        "index": control.index,
+                                        "role": control.role,
+                                        "type": control.input_type,
+                                        "label": str(control.label or control.aria_label)[:160],
+                                        "name": str(control.name)[:80],
+                                        "required": control.required,
+                                        "options": [
+                                            str(option.label)[:80]
+                                            for option in control.options[:12]
+                                        ],
+                                    }
+                                    for control in fresh_form.controls
+                                ],
+                            }
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+
             return ApplicationOutcome(
                 run_id=run_id,
                 job_id=job_id,
@@ -408,7 +658,17 @@ class GenericAIAdapter:
                 message="No deterministic next or review transition was found",
                 adapter=self.name,
                 checkpoint=f"generic.step.{step}",
-                details={"model_calls": model_calls, "form_fingerprint": fingerprint},
+                details={
+                    "model_calls": model_calls,
+                    "form_fingerprint": fingerprint,
+                    "stage": fresh_form.stage,
+                    "url_path": fresh_form.url_path,
+                    "control_count": len(fresh_form.controls),
+                    "next_present": bool(fresh_form.next_selector or fresh_form.next_text),
+                    "submit_present": bool(
+                        fresh_form.submit_selector or fresh_form.submit_text
+                    ),
+                },
             )
 
         return ApplicationOutcome(
