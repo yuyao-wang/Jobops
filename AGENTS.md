@@ -80,6 +80,11 @@ Before committing, run compile checks, `git diff --check`, the five Skill valida
 - Those four human development documents may mix Chinese and English. User-facing, business-facing, and software-consumed documentation and every machine-readable contract must be English.
 - Update the one corresponding authoritative document whenever product scope, architecture boundaries, domain rules, contracts, or verified capabilities change.
 
+## Git publication
+
+- Publish completed repository changes directly to `main`; do not create `codex/*` branches unless the user explicitly requests one.
+- Commits created by Codex must keep the repository-configured user as the author and include `Co-authored-by: Codex <267193182+codex@users.noreply.github.com>`.
+
 ## Compatibility
 
 This repository preserves MR.Jobs Git history and MIT licensing. `main.py`, dashboard/discovery utilities, and the legacy façade remain during migration. New application execution belongs in `jobctl`, the core engine, and structured adapters; do not add safety-sensitive behavior to the legacy monolith.
