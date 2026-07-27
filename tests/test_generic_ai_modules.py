@@ -38,6 +38,10 @@ from adapters.generic_ai.resolver import (
     Sensitivity,
     map_unknown_controls,
 )
+from adapters.generic_ai.semantic_mapper import (
+    FakeSemanticMapper,
+    MappingResponse,
+)
 from adapters.generic_ai.verifier import (
     SubmissionEvidence,
     VerificationReport,
@@ -518,6 +522,36 @@ def test_third_party_contact_never_inherits_candidate_data_or_model_mapping():
     assert "structural confirmation" in phone_result.reason
 
 
+def test_model_mapping_needs_candidate_self_semantics_not_input_type_alone():
+    resolver = AnswerResolver(_profile())
+    ambiguous = FormControl(
+        index=0,
+        role="textbox",
+        tag="input",
+        input_type="email",
+        label="Primary electronic contact",
+        required=True,
+        selector="#contact",
+    )
+    candidate_self = FormControl(
+        index=1,
+        role="textbox",
+        tag="input",
+        input_type="email",
+        label="Your primary electronic contact",
+        required=True,
+        selector="#your-contact",
+    )
+
+    ambiguous_result = resolver.resolve(ambiguous, "email")
+    candidate_result = resolver.resolve(candidate_self, "email")
+
+    assert not isinstance(ambiguous_result, ResolvedField)
+    assert "structural confirmation" in ambiguous_result.reason
+    assert isinstance(candidate_result, ResolvedField)
+    assert candidate_result.value == SYNTHETIC_EMAIL
+
+
 def test_exact_verified_question_answer_is_allowed_without_fuzzy_matching():
     question = "How did you hear about this specific role?"
     resolver = AnswerResolver(
@@ -730,6 +764,131 @@ def test_semantic_mapper_redacts_identity_echoed_by_browser_text():
     prompt = brain.ask_json.call_args.args[0]
     assert SYNTHETIC_EMAIL not in prompt
     assert "[PRIVATE]" in prompt
+
+
+@pytest.mark.asyncio
+async def test_adapter_accepts_protocol_mapper_without_a_model_provider(
+    tmp_path, monkeypatch
+):
+    control = FormControl(
+        index=3,
+        role="textbox",
+        tag="input",
+        input_type="email",
+        label="Your primary electronic contact",
+        required=True,
+        selector="#contact",
+    )
+    form = _form(control)
+    page = MagicMock()
+    page.url = "https://careers.example.invalid/jobs/42/apply"
+    mapper = FakeSemanticMapper((MappingResponse.for_key(3, "email"),))
+    legacy_brain = MagicMock()
+
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.observe_form", AsyncMock(side_effect=(form, form))
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.execute_resolved_fields",
+        AsyncMock(return_value=FillReport(1, 1, (), ())),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.verify_fields",
+        AsyncMock(return_value=VerificationReport(True, (), ())),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.detect_submission_evidence",
+        AsyncMock(return_value=None),
+    )
+
+    outcome = await GenericAIAdapter(
+        cache=RecipeCache(tmp_path / "cache"),
+        semantic_mapper=mapper,
+    ).run(
+        page=page,
+        job_url=page.url,
+        profile=_profile(),
+        brain=legacy_brain,
+        run_id="run-contract-mapped",
+        job_id="job-contract-mapped",
+    )
+
+    assert outcome.status is OutcomeStatus.REVIEW_READY
+    assert outcome.details["model_calls"] == 1
+    assert len(mapper.calls) == 1
+    legacy_brain.ask_json.assert_not_called()
+    request = mapper.calls[0][0]
+    assert request.index == control.index
+    assert not hasattr(request, "selector")
+    assert SYNTHETIC_EMAIL not in json.dumps(request.to_dict())
+    assert SYNTHETIC_PHONE not in json.dumps(request.to_dict())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("canonical_key", "expected_status", "expected_reason"),
+    (
+        (
+            "work_authorization",
+            OutcomeStatus.NEEDS_USER_SENSITIVE_ANSWER,
+            ReasonCode.SENSITIVE_ANSWER_REQUIRED,
+        ),
+        (
+            "unknown",
+            OutcomeStatus.NEEDS_USER,
+            ReasonCode.UNKNOWN_REQUIRED_QUESTION,
+        ),
+    ),
+)
+async def test_nonmapped_protocol_responses_never_reach_browser_execution(
+    tmp_path,
+    monkeypatch,
+    canonical_key,
+    expected_status,
+    expected_reason,
+):
+    control = FormControl(
+        index=4,
+        role="combobox",
+        tag="select",
+        label="Unrecognized required question",
+        required=True,
+        selector="#unknown",
+    )
+    mapper = FakeSemanticMapper((MappingResponse.for_key(4, canonical_key),))
+    execute = AsyncMock(
+        side_effect=AssertionError("non-mapped response must not execute")
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.observe_form",
+        AsyncMock(return_value=_form(control)),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.detect_submission_evidence",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "adapters.generic_ai.adapter.execute_resolved_fields",
+        execute,
+    )
+
+    outcome = await GenericAIAdapter(
+        cache=RecipeCache(tmp_path / "cache"),
+        semantic_mapper=mapper,
+    ).run(
+        page=MagicMock(url="https://careers.example.invalid/jobs/42/apply"),
+        job_url="https://careers.example.invalid/jobs/42/apply",
+        profile=_profile(),
+        run_id=f"run-{canonical_key}",
+        job_id=f"job-{canonical_key}",
+    )
+
+    assert outcome.status is expected_status
+    assert outcome.reason_code is expected_reason
+    assert outcome.details["unresolved"][0]["sensitivity"] == (
+        "legal" if canonical_key == "work_authorization" else "personal"
+    )
+    execute.assert_not_awaited()
 
 
 def test_prompt_redactions_cover_all_locally_injected_answer_sources():
@@ -965,7 +1124,7 @@ async def test_adapter_unknown_mapping_uses_exactly_one_value_free_model_call(
         role="textbox",
         tag="input",
         input_type="email",
-        label="Primary electronic contact",
+        label="Your primary electronic contact",
         required=True,
         selector="#contact",
     )
@@ -1011,7 +1170,7 @@ async def test_adapter_unknown_mapping_uses_exactly_one_value_free_model_call(
 
 
 @pytest.mark.asyncio
-async def test_model_failure_is_redacted_and_becomes_safe_user_handoff(
+async def test_mapper_failure_is_redacted_and_becomes_safe_user_handoff(
     tmp_path, monkeypatch
 ):
     control = FormControl(
@@ -1024,9 +1183,8 @@ async def test_model_failure_is_redacted_and_becomes_safe_user_handoff(
     )
     page = MagicMock()
     page.url = "https://careers.example.invalid/jobs/42/apply"
-    brain = MagicMock()
-    brain.ask_json.side_effect = RuntimeError(
-        f"provider failed while processing {SYNTHETIC_EMAIL}"
+    mapper = FakeSemanticMapper(
+        error=RuntimeError(f"provider failed while processing {SYNTHETIC_EMAIL}")
     )
     monkeypatch.setattr(
         "adapters.generic_ai.adapter.observe_form", AsyncMock(return_value=_form(control))
@@ -1036,11 +1194,13 @@ async def test_model_failure_is_redacted_and_becomes_safe_user_handoff(
         AsyncMock(return_value=None),
     )
 
-    outcome = await GenericAIAdapter(cache=RecipeCache(tmp_path / "cache")).run(
+    outcome = await GenericAIAdapter(
+        cache=RecipeCache(tmp_path / "cache"),
+        semantic_mapper=mapper,
+    ).run(
         page=page,
         job_url=page.url,
         profile=_profile(),
-        brain=brain,
         run_id="run-model-error",
         job_id="job-model-error",
     )
@@ -1050,7 +1210,7 @@ async def test_model_failure_is_redacted_and_becomes_safe_user_handoff(
     assert outcome.details["model_calls"] == 1
     assert outcome.details["classification_failed"] is True
     assert SYNTHETIC_EMAIL not in outcome.to_json()
-    brain.ask_json.assert_called_once()
+    assert len(mapper.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -1108,7 +1268,7 @@ async def test_model_classification_budget_is_one_call_for_entire_run(
         role="textbox",
         tag="input",
         input_type="email",
-        label="Primary electronic contact",
+        label="Your primary electronic contact",
         required=True,
         selector="#contact-one",
     )

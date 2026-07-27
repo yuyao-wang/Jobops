@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jobops.local/contracts/job-posting.schema.json",
+  "title": "JobPosting",
+  "description": "A normalized, versioned job posting. Discovery-source identity is separate from the ATS application target.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "revision",
+    "source_platform",
+    "source_job_id",
+    "source_url",
+    "company",
+    "title",
+    "location",
+    "work_mode",
+    "posted_at",
+    "observed_at",
+    "application_url",
+    "ats_type",
+    "description",
+    "content_hash",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "source_job_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
+    },
+    "source_url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "company": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "location": {
+      "type": "string",
+      "maxLength": 320
+    },
+    "work_mode": {
+      "type": "string",
+      "enum": [
+        "ONSITE",
+        "HYBRID",
+        "REMOTE",
+        "UNKNOWN"
+      ]
+    },
+    "posted_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "application_url": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "ats_type": {
+      "type": "string",
+      "enum": [
+        "greenhouse",
+        "lever",
+        "ashby",
+        "jobvite",
+        "workday",
+        "custom",
+        "unknown"
+      ]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100000
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "NORMALIZED",
+        "ANALYZED",
+        "PRIORITIZED",
+        "READY",
+        "QUEUED",
+        "DUPLICATE",
+        "EXCLUDED",
+        "SKIPPED",
+        "EXPIRED"
+      ]
+    }
+  }
+}

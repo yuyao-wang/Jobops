@@ -29,6 +29,7 @@ from .fingerprinter import fingerprint_form, fingerprint_review
 from .models import FormIR
 from .observer import observe_form
 from .resolver import AnswerResolver, Sensitivity, map_unknown_controls
+from .semantic_mapper import MappingRequest, MappingResponse, SemanticMapper
 from .verifier import detect_submission_evidence, is_review_ready, verify_fields
 
 
@@ -54,6 +55,49 @@ def _control_digest(control: Any) -> str:
         projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _validated_semantic_mappings(
+    requests: tuple[MappingRequest, ...],
+    responses: tuple[MappingResponse, ...],
+) -> tuple[dict[int, str], frozenset[int]]:
+    """Validate the whole mapper result before exposing any proposal locally."""
+
+    if not isinstance(responses, tuple):
+        raise TypeError("semantic mapper must return a tuple")
+    requested_indices = {request.index for request in requests}
+    response_indices: set[int] = set()
+    validated: list[MappingResponse] = []
+    for response in responses:
+        if not isinstance(response, MappingResponse):
+            raise TypeError("semantic mapper returned an invalid response")
+        checked = MappingResponse(
+            index=response.index,
+            canonical_key=response.canonical_key,
+            status=response.status,
+        )
+        if checked.index not in requested_indices:
+            raise ValueError("semantic mapper returned an unrequested index")
+        if checked.index in response_indices:
+            raise ValueError("semantic mapper returned a duplicate index")
+        response_indices.add(checked.index)
+        validated.append(checked)
+
+    internal_keys = {
+        "email": "email",
+        "phone_number": "phone",
+    }
+    mapped = {
+        response.index: internal_keys[response.canonical_key]
+        for response in validated
+        if response.status == "mapped"
+    }
+    needs_review = frozenset(
+        response.index
+        for response in validated
+        if response.status == "needs_review"
+    )
+    return mapped, needs_review
 
 
 def _safe_failure(failure: Any, *, code: str) -> dict[str, Any]:
@@ -100,11 +144,17 @@ class GenericAIAdapter:
     name = ADAPTER_NAME
     protocol_version = "1.0"
 
-    def __init__(self, *, cache: RecipeCache | None = None):
+    def __init__(
+        self,
+        *,
+        cache: RecipeCache | None = None,
+        semantic_mapper: SemanticMapper | None = None,
+    ):
         if cache is None:
             paths = PrivateHome.discover().ensure()
             cache = RecipeCache(paths.private_recipes)
         self.cache = cache
+        self.semantic_mapper = semantic_mapper
 
     async def _load_page(self, page, job_url: str) -> None:
         current = str(getattr(page, "url", "") or "")
@@ -338,6 +388,7 @@ class GenericAIAdapter:
         )
         model_calls = 0
         classification_failed = False
+        mapper_review_indices: frozenset[int] = frozenset()
 
         for step in range(1, max_steps + 1):
             evidence = await detect_submission_evidence(page)
@@ -408,15 +459,34 @@ class GenericAIAdapter:
                 )
 
             resolved, unresolved = resolver.resolve_form(form, semantic_mappings)
-            if unresolved and brain is not None and model_calls == 0:
+            mapper_available = self.semantic_mapper is not None or brain is not None
+            if unresolved and mapper_available and model_calls == 0:
                 unknown_controls = [field.control for field in unresolved]
                 model_calls += 1
                 try:
-                    mapped = map_unknown_controls(
-                        brain,
-                        unknown_controls,
-                        private_values=resolver.prompt_redactions(),
-                    )
+                    if self.semantic_mapper is not None:
+                        private_values = resolver.prompt_redactions()
+                        requests = tuple(
+                            MappingRequest.from_control(
+                                control,
+                                private_values=private_values,
+                            )
+                            for control in unknown_controls[: MappingRequest.MAX_BATCH_SIZE]
+                        )
+                        responses = await self.semantic_mapper.map_controls(requests)
+                        mapped, review_indices = _validated_semantic_mappings(
+                            requests,
+                            responses,
+                        )
+                        mapper_review_indices = review_indices
+                    else:
+                        # Transitional compatibility path for the existing CLI.
+                        # New integrations depend on SemanticMapper instead.
+                        mapped = map_unknown_controls(
+                            brain,
+                            unknown_controls,
+                            private_values=resolver.prompt_redactions(),
+                        )
                 except Exception:
                     # Model/CLI errors are deliberately reduced to a redacted
                     # classification failure. Candidate values and provider
@@ -428,7 +498,7 @@ class GenericAIAdapter:
                     resolved, unresolved = resolver.resolve_form(form, semantic_mappings)
 
             if unresolved:
-                sensitive = any(
+                sensitive = bool(mapper_review_indices) or any(
                     field.sensitivity
                     in {Sensitivity.LEGAL, Sensitivity.COMPENSATION, Sensitivity.VOLUNTARY_SELF_ID}
                     for field in unresolved
@@ -458,7 +528,11 @@ class GenericAIAdapter:
                                 "index": item.control.index,
                                 "control_digest": _control_digest(item.control),
                                 "reason_code": "UNMAPPED_REQUIRED_CONTROL",
-                                "sensitivity": item.sensitivity.value,
+                                "sensitivity": (
+                                    Sensitivity.LEGAL.value
+                                    if item.control.index in mapper_review_indices
+                                    else item.sensitivity.value
+                                ),
                             }
                             for item in unresolved
                         ],

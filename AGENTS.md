@@ -27,13 +27,11 @@ Jobops is a Codex-native, privacy-first job application operating system. Codex 
 
 `apply-csv` stops at Review by default. `--approve-gate-a` is an explicit review of prepared materials. Human Gate B is never accepted in the same invocation: inspect the persisted Review, then use `submit-reviewed --run-id ... --approve`. Never infer either human approval.
 
-## Tier treatment
+## Application policy boundary
 
-- High: bespoke resume, visual QA, narrative cover letter grounded in a true experience and company/role alignment; human Gate A and Gate B in low-risk mode.
-- Medium: targeted resume/letter; Codex Gate A and human Gate B.
-- Low: approved existing variant and letter only when required; Codex may issue both gates if no risk signal exists.
+The authoritative P0–P3 material, approval, and queue rules live in `development_doc/DOMAIN_AND_RULES.md`; do not duplicate or silently reinterpret them here. The legacy High/Medium/Low runtime mapping is a compatibility surface and must not consume a new `PriorityDecision` until it is migrated.
 
-High and Medium must load a valid `documents/generated/<job_id>/manifest.json` from Private Home before browser launch. The manifest binds artifact hashes, facts QA, job specificity, and visual QA; High also binds a true narrative-alignment attestation. Preparing a missing manifest is Codex work through `job-materials`, not a human handoff.
+Any bespoke or targeted plan—legacy High/Medium—must load a valid `documents/generated/<job_id>/manifest.json` from Private Home before browser launch. The manifest binds artifact hashes, facts QA, job specificity, and visual QA; bespoke material also binds a true narrative-alignment attestation. Preparing a missing manifest is Codex work through `job-materials`, not a human handoff.
 
 ## Execution architecture
 
@@ -71,6 +69,16 @@ Use synthetic identities and sanitized fixtures only.
 Do not run `tests/test_real_forms.py` or submit to a live site as part of routine validation. Contract metrics and live-site metrics must be reported separately.
 
 Before committing, run compile checks, `git diff --check`, the five Skill validators, and a privacy scan for candidate values, secrets, absolute private paths, cookies, and unredacted screenshots.
+
+## Engineering and documentation discipline
+
+- Build the smallest end-to-end vertical slice and define its contract before implementation.
+- Never let model output directly execute a high-risk action.
+- Every bug fix requires a sanitized regression test.
+- Do not add an abstraction, component, service, framework, or document without a distinct current responsibility.
+- Keep authoritative development information in `development_doc/PRODUCT.md`, `ARCHITECTURE.md`, `DOMAIN_AND_RULES.md`, or `CONTRACTS_AND_TESTS.md`; do not create overlapping design documents.
+- Those four human development documents may mix Chinese and English. User-facing, business-facing, and software-consumed documentation and every machine-readable contract must be English.
+- Update the one corresponding authoritative document whenever product scope, architecture boundaries, domain rules, contracts, or verified capabilities change.
 
 ## Compatibility
 

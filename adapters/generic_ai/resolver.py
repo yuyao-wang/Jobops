@@ -75,6 +75,13 @@ _THIRD_PARTY_IDENTITY_TERMS = (
     "company contact",
 )
 
+_CANDIDATE_SELF_TERMS = (
+    "your",
+    "candidate",
+    "applicant",
+    "personal",
+)
+
 
 def _looks_like_third_party_identity(text: str) -> bool:
     return any(term in text for term in _THIRD_PARTY_IDENTITY_TERMS) and any(
@@ -132,10 +139,18 @@ def semantic_mapping_is_compatible(control: FormControl, key: str) -> bool:
 
     input_type = control.input_type.casefold()
     autocomplete = control.autocomplete.replace("-", "_").casefold()
+    has_candidate_self_semantics = any(
+        re.search(rf"\b{re.escape(term)}\b", control.semantic_text, re.IGNORECASE)
+        for term in _CANDIDATE_SELF_TERMS
+    )
     if key == "email":
-        return input_type == "email" or autocomplete == "email"
+        return has_candidate_self_semantics and (
+            input_type == "email" or autocomplete == "email"
+        )
     if key == "phone":
-        return input_type == "tel" or autocomplete == "tel"
+        return has_candidate_self_semantics and (
+            input_type == "tel" or autocomplete == "tel"
+        )
     if key == "first_name":
         return autocomplete == "given_name"
     if key == "last_name":

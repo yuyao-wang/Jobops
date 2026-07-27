@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jobops.local/contracts/mapping-result.schema.json",
+  "title": "Semantic Mapper Result",
+  "description": "One validated, non-executable classification for a requested form control.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "index",
+    "canonical_key",
+    "status"
+  ],
+  "properties": {
+    "index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "canonical_key": {
+      "type": "string",
+      "enum": [
+        "email",
+        "phone_number",
+        "work_authorization",
+        "unknown"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "mapped",
+        "needs_review",
+        "unsupported"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "canonical_key": {
+          "const": "email"
+        },
+        "status": {
+          "const": "mapped"
+        }
+      }
+    },
+    {
+      "properties": {
+        "canonical_key": {
+          "const": "phone_number"
+        },
+        "status": {
+          "const": "mapped"
+        }
+      }
+    },
+    {
+      "properties": {
+        "canonical_key": {
+          "const": "work_authorization"
+        },
+        "status": {
+          "const": "needs_review"
+        }
+      }
+    },
+    {
+      "properties": {
+        "canonical_key": {
+          "const": "unknown"
+        },
+        "status": {
+          "const": "unsupported"
+        }
+      }
+    }
+  ]
+}
