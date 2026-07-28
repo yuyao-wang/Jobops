@@ -931,6 +931,7 @@ def _validate_policy(
         raw_preference_text=policy.raw_preference_text,
         hard_constraints=policy.hard_constraints,
         soft_preferences=policy.soft_preferences,
+        preparation_admission=policy.preparation_admission,
     )
     if expected_hash != policy.policy_content_hash:
         raise ValueError("policy content hash is invalid")

@@ -10,14 +10,18 @@ This document is the authority for domain objects, lifecycle states, and busines
 | `SourceObservation` | connector 返回的一条原始岗位观察；尚不是规范化岗位 | source, external ID/URL, observed time |
 | `DiscoveryRun` | 一次 manual/scheduled collection 及各 source 结果 | run ID, profile version, trigger |
 | `JobPosting` | 标准化后的岗位及其可申请目标 | `job_id`, source identity, content hash, revision |
+| `AcceptedJobIntent` | 某个 subject 在成功 Discovery 后明确接受的 add/apply 业务意图；不是执行许可 | subject ID, job ID, intent, proposal ID, Discovery run ID |
 | `PrioritizationPolicyDraft` | AI 对用户自然语言策略的结构化解释；尚未生效 | draft ID, subject ID, interpreter version, expiry |
 | `PrioritizationPolicy` | 用户审核并批准的不可变求职策略 snapshot | policy ID, subject ID, version, content hash |
 | `JobAnalysis` | 从某个 JD revision 提取的结构化 requirements 和 unknowns | job revision, analyzer version |
 | `PriorityProposal` | Priority Agent 对单个岗位的 typed 建议；不是正式业务决定 | job/policy/candidate bindings, agent/prompt/model versions |
 | `PriorityDecision` | Validation Gate 接受的 P0–P3、EXCLUDED 或 NEEDS_USER 及解释 | job revision/hash, policy version, candidate summary version, agent versions |
 | `CandidateEvidence` | 可用于判断或材料的已验证候选人事实 | evidence ID, source, sensitivity, scope, verification time |
+| `ResumeCandidate` | subject 显式注册、hash 校验且可供后续基础简历选择的只读 artifact projection | subject ID, stable resume ID, artifact hash, trusted summary hash |
+| `ResumeSelectionDecision` | 针对一个 ApplicationPlan 自动选择的不可变基础简历绑定 | plan/job binding, candidate-set hash, source resume ID/hash, selector versions |
+| `SourceResumeProjection` | 受管理源简历的忠实、可引用结构投影；不是 CandidateEvidence | subject/resume/artifact hash, parser version, projection hash |
 | `ResumeVersion` | 已审批、可追溯的基础或定制简历 | resume ID, revision, artifact hash, evidence bindings |
-| `ApplicationPlan` | 本次申请的材料策略、回答范围和审批要求 | job revision, priority decision, policy version |
+| `ApplicationPlan` | automation-first 的单职位准备授权、阶段、运行时用户要求和人工例外策略 | subject/job revision, priority decision, policy version, accepted intent, instruction hash |
 | `MaterialPackage` | Resume、Cover Letter 和 answers 的不可变申请材料包 | plan, evidence IDs, artifact hashes, package revision |
 | `ApprovalDecision` | Gate A 或 Gate B 的明确审批记录 | actor, binding digest, decision time |
 | `ApprovalPermit` | 由审批产生的签名、限时、一次性执行能力 | gate, run, digest, expiry, nonce |
@@ -72,6 +76,124 @@ ACTIVE → SUPERSEDED
 A draft is an AI proposal and has no effect on Priority. Approval creates an
 immutable version. Approving changed content supersedes the previous active
 version without rewriting its content or historical decisions.
+
+### Accepted job intent
+
+- An accepted intent is persisted only after Discovery accepts the proposal
+  and returns the formal `job_id` and Discovery run identity.
+- It is immutable, subject-specific and separate from `JobPosting`,
+  process-local `PendingIntake`, Priority and the Application Engine's
+  submission-intent reservation.
+- `REQUEST_APPLICATION` has precedence over `ADD_JOB` for the same subject and
+  job. A later `ADD_JOB` does not cancel an existing request; cancellation
+  requires a future explicit typed action.
+- Missing historical intent is `NOT_FOUND`. Priority, timestamps, conversation
+  state and job source never imply application intent.
+- `REQUEST_APPLICATION` permits later read models to consider preparation
+  eligibility; it does not create an `ApplicationPlan`, approve materials,
+  reserve Submit or authorize execution.
+
+### `ApplicationPlan`
+
+- A plan is created only from one explicitly selected P1d4 `RUNNABLE` item.
+  Priority, policy and accepted-intent bindings come from that same snapshot;
+  the creator does not perform independent repository lookups.
+- The immutable identity binds subject, job revision/content hash, formal
+  Decision ID, policy ID/version/hash, accepted REQUEST_APPLICATION intent,
+  priority, plan contract version, fixed stages and the exact runtime
+  instruction hash. Creation time is audit metadata, not identity.
+- The default policy is `AUTOMATION_FIRST`. Safe resume selection/tailoring,
+  cover-letter work, answer drafting, Fact QA, Visual QA and material assembly
+  proceed asynchronously without requiring the user to remain present.
+- `DEFER_ITEM_AND_CONTINUE` means an unresolved human-only issue pauses only the
+  current job. A later Human Attention Queue records that exception while other
+  jobs continue; P2a1 defines the policy but does not implement that queue.
+- User preparation instructions are plan-scoped runtime data, preserved
+  exactly and never written to static Agent instructions or another job.
+- A plan permits preparation to begin. It does not mean materials are complete,
+  satisfy Gate A, authorize browser execution or authorize submission.
+
+### Trusted resume candidates
+
+- Only an artifact explicitly registered from Private Home
+  `documents/master/` can become a `ResumeCandidate`; loose
+  `default_resume`, `resume_variants` and runtime fallback paths are not
+  candidates.
+- Registration reads the actual PDF or DOCX bytes, computes SHA-256 locally
+  and copies them to an immutable, subject-scoped preparation artifact path.
+  A caller-provided hash is never authoritative.
+- The selection-safe summary is accepted only from an authenticated caller as
+  either verified or user-confirmed data. P2a2 performs no model inference or
+  resume selection.
+- Candidate identity binds subject, artifact hash/type, display name, exact
+  summary and its trust metadata, selectable status and contract version.
+  `recorded_at` is audit metadata. Changed content creates a different record;
+  identical registration returns the original immutable record.
+- Reads re-hash the managed artifact. A missing artifact, mismatched bytes or
+  corrupt record fails the complete typed read/list operation rather than
+  silently shrinking the candidate set.
+
+### Automatic base resume selection
+
+- P2a3 starts from one persisted `ApplicationPlan`, then loads one typed
+  `JobPosting` and requires exact job ID, revision and content-hash equality
+  with the plan before reading candidates.
+- The complete candidate set comes only from
+  `ResumeCandidateProvider.list_selectable(subject_id)`. No loose profile path,
+  filesystem scan or legacy routing value participates.
+- Zero candidates defers only that plan. One candidate is selected by ordinary
+  code with zero Agent calls. More than one candidate permits one bounded,
+  tool-free Agent call over the trusted JD, selection-safe projections and
+  exact plan-scoped instructions.
+- The Agent may return only one supplied resume ID, candidate contract version,
+  artifact hash and bounded rationale. Ordinary code verifies all three
+  bindings; refusal, ambiguity or an unknown/mismatched candidate defers the
+  plan without retry or a successful Decision.
+- The pre-Agent selection binding covers plan/job bindings, candidate-set
+  canonical hash, selection contract and configured Agent/prompt/model
+  versions. A completed identical binding returns the immutable existing
+  Decision without another Agent call. `selected_at` is audit metadata.
+- Selection chooses source bytes only. It does not tailor a resume, approve
+  materials, create Human Attention state or authorize execution/submission.
+
+### Source resume projection
+
+- P2a4a reads only a subject-owned `ResumeCandidate`; it never accepts an
+  external path or scans for documents. Managed bytes are re-hashed before
+  parsing and must still match the candidate artifact binding.
+- PDF projection uses deterministic page and extracted-line indices. DOCX
+  projection uses body paragraph indices and explicit table/row/cell/paragraph
+  indices. Parser normalization trims only surrounding extractor whitespace;
+  it does not rewrite, infer or complete source text.
+- Section recognition is limited to versioned heading/list rules. Content that
+  does not match those rules stays a paragraph or table-cell block.
+- Stable section, block and bullet IDs depend on artifact hash, structural
+  locator, parser version and projection contract—not path, mtime or runtime.
+- A `SourceResumeProjection` is source evidence material, not a verified
+  `CandidateEvidence` snapshot. P2a4a performs no truth/capability judgment,
+  OCR, model call, tailoring, rendering, approval or execution.
+
+### CandidateEvidence snapshot
+
+- P2a4b accepts evidence only from a typed `SourceResumeProjection` bound to
+  the subject, selected resume and artifact hash. Selection-safe summaries,
+  CandidateSummary, CandidateVault profile fields, JD content and legacy
+  profile data are not evidence inputs.
+- Every non-empty source block becomes one item in projection section/block
+  order. Text, source section/block/bullet IDs and typed locators are copied
+  exactly; no skill, responsibility, causality, number or outcome is inferred.
+- Resume-source evidence uses sensitivity `PERSONAL`, allowed scope
+  `RESUME_TAILORING`, and verification
+  `USER_PROVIDED_DOCUMENT_STATEMENT`. This means the user supplied the document;
+  it does not claim independent third-party verification.
+- Source-resume items have `verified_at=None` and `expires_at=None`. Their
+  recorded time comes from the immutable source projection. No expiry is
+  invented.
+- Evidence and snapshot IDs bind stable source and upstream immutable
+  identities, never path, mtime or runtime creation time. Changed Plan,
+  Selection, artifact, Projection or contract creates a new immutable snapshot.
+- P2a4b does not judge JD alignment, ingest additional CandidateVault evidence,
+  tailor content, run Fact/Visual QA or authorize preparation execution.
 
 ### `MaterialPackage`
 
@@ -186,6 +308,28 @@ and agent/prompt/model versions.
   execute P0–P3/EXCLUDED.
 - A manual override records actor, reason, time, and prior decision version. It cannot override a confirmed hard filter or supply a missing sensitive fact.
 
+### Preparation admission policy
+
+The approved `PrioritizationPolicy` contains a versioned preparation-admission
+snapshot. A new draft defaults to direct eligibility for P0, P1 and P2, with P3
+requiring a separate explicit promotion. These are editable policy defaults,
+not a global rule hard-coded by a downstream queue.
+
+- Directly eligible priorities and explicit-promotion priorities are typed,
+  duplicate-free, deterministically ordered and disjoint.
+- `NEEDS_USER` and `EXCLUDED` can never be configured in either set.
+- Admission changes follow draft → review → approval and create a new policy
+  content hash/version; an ACTIVE policy is never edited in place.
+- An old approved policy without this snapshot is incompatible and requires a
+  separate explicit migration before reapproval. Runtime readers do not inject
+  defaults or alter its original hash; P1a2 does not implement that migration.
+- Admission means only that a current Decision may be considered for
+  Application Preparation. It does not supply `REQUEST_APPLICATION` intent,
+  override lifecycle or Gate blockers, create an `ApplicationPlan`, authorize
+  browser/ATS execution, or authorize submission.
+- P3 promotion is policy vocabulary only in P1a2; the promotion fact and command
+  remain a later Slice.
+
 ### P0–P3 material strategy
 
 | Priority | Resume / Cover Letter | Gate A | Gate B |
@@ -196,6 +340,12 @@ and agent/prompt/model versions.
 | P3 | No automatic tailoring or execution; user must explicitly promote or queue | If promoted, use resulting tier policy | Human |
 
 P0/P1 may generate job-specific answer proposals only from the selected evidence; P2 uses exact approved facts and generates prose only when a required question cannot be answered verbatim. P1 may use a batch review UI, but each Gate A decision remains separately digest-bound.
+
+Resume tailoring remains evidence-bound. A tailored bullet should prefer
+`Action Verb + Details + Outcome`, reuse job-specific action verbs only when
+they truthfully match verified experience, and avoid weak verbs where a
+truthful precise verb exists. Every Outcome must come from CandidateEvidence;
+the model may not invent metrics, scope or impact.
 
 This is the target P0–P3 policy. The current legacy High/Medium/Low projection is incompatible and must not consume a new `PriorityDecision`; the migration gap is recorded in `CONTRACTS_AND_TESTS.md`.
 
@@ -257,9 +407,10 @@ Handoff is required for authentication/security challenges, new sensitive answer
 
 ### Queue ordering
 
-Eligible jobs are ordered by:
+Jobs admitted by the current approved policy are ordered by:
 
-1. P0, then P1, then P2; P3 only when explicitly queued;
+1. the policy's directly eligible priorities in P0→P3 order; a priority in its
+   explicit-promotion set is included only after a separate promotion fact;
 2. posting time descending, with unknown time after known time;
 3. discovery time ascending;
 4. stable `job_id`.
@@ -269,3 +420,59 @@ Final reprioritization triggers and within-tier queue policy belong to P1d.
 An explicit user priority override changes the versioned `PriorityDecision`; it cannot bypass hard filters. The queue excludes duplicates, expired/excluded jobs, active runs, verified submissions, unresolved `SUBMIT_UNKNOWN`, and entries whose required material or approval is missing.
 
 Only one application episode may run at a time. A job entering `NEEDS_USER`, `MATERIALS_REQUIRED`, or another blocker leaves the runnable set so the queue can continue with the next eligible job.
+
+### Current priority read model
+
+P1d2 is not the eligible application queue above. It is a read-only projection
+of existing priority work for one explicit subject and evaluation time:
+
+- `CURRENT`: a completed P1d1 binding exactly matches the current job, ACTIVE
+  policy, CandidateSummary, Agent/prompt/model, time, Gate and orchestration
+  versions;
+- `STALE`: completed history exists, but one or more of those immutable binding
+  fields differs;
+- `MISSING`: no completed priority orchestration exists for the job;
+- `INCOMPLETE`: the exact current binding exists but is not completed.
+
+Only `CURRENT` items expose a current Proposal and Decision. Historical
+decisions may explain staleness but never masquerade as current. The read model
+groups CURRENT, STALE, MISSING and INCOMPLETE; within CURRENT it uses only the
+persisted Decision order P0, P1, P2, P3, NEEDS_USER, EXCLUDED, then
+`validated_at` and `job_id`. It performs no reprioritization and does not decide
+application eligibility.
+
+### Selective batch reprioritization
+
+P1d3 may recompute only the `STALE` and `MISSING` items reported by one P1d2
+snapshot. `CURRENT` is skipped, and `INCOMPLETE` is never recovered or rerun by
+the batch layer. An explicit job ID absent from the snapshot is not looked up
+through another path.
+
+Every batch must be bounded by a non-empty explicit job allowlist or a positive
+`max_jobs`. Explicit IDs retain caller order after first-occurrence
+deduplication; otherwise selection retains P1d2 order. Each selected job is
+passed to P1d1 once, serially, with the same explicit evaluation time. Typed
+single-job failures do not roll back prior successes and do not prevent later
+selected jobs from running.
+
+P1d3 owns no scoring, binding, Agent, Gate or persistence behavior and has no
+batch checkpoint. Repeated execution relies on a fresh P1d2 snapshot and
+P1d1's existing atomic idempotency. A recomputed PriorityDecision remains
+informational and does not enter an application queue automatically.
+
+### Runnable Application Preparation read model
+
+P1d4 calls P1d2 once and uses the exact ACTIVE policy snapshot returned by that
+queue build. It does not repeat policy lookup or recompute Priority state. A
+job is runnable for preparation only when the P1d2 item is `CURRENT`, its
+formal Decision is qualified, the subject has an authoritative
+`REQUEST_APPLICATION` intent, the Decision priority belongs to the snapshot's
+direct preparation-admission set, and the JobPosting lifecycle remains usable.
+
+Priority never substitutes for user intent: `ADD_JOB` and an authoritative
+absence of intent are both blocked. STALE, MISSING and INCOMPLETE are not
+recomputed by this read model. NEEDS_USER and EXCLUDED remain blocked, a
+priority in the explicit-promotion set requires a separate future promotion
+fact, and a priority in neither admission set is not runnable. Intent integrity
+failure fails the whole view rather than masquerading as no intent. P1d4
+preserves P1d2 order and performs no claim, save, preparation or execution.

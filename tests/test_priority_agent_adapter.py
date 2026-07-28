@@ -33,6 +33,7 @@ from core.prioritization_policy import (
     PrioritizationPolicyStatus,
     SoftPreference,
     SoftPreferenceCategory,
+    default_preparation_admission_policy,
     policy_content_hash,
 )
 from core.priority_agent_adapter import (
@@ -111,6 +112,7 @@ def _policy(
 ) -> PrioritizationPolicy:
     hard = (_hard_constraint(),)
     soft = (_soft_preference(),)
+    admission = default_preparation_admission_policy()
     return PrioritizationPolicy(
         policy_id="synthetic-prioritization-policy-v1",
         subject_id=SUBJECT,
@@ -119,10 +121,12 @@ def _policy(
             raw_preference_text=raw_text,
             hard_constraints=hard,
             soft_preferences=soft,
+            preparation_admission=admission,
         ),
         raw_preference_text=raw_text,
         hard_constraints=hard,
         soft_preferences=soft,
+        preparation_admission=admission,
         status=PrioritizationPolicyStatus.ACTIVE,
         created_at=NOW - timedelta(days=2),
         approved_at=NOW - timedelta(days=1),

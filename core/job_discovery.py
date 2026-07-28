@@ -33,6 +33,9 @@ JOB_POSTING_STATUSES = frozenset(
         "EXPIRED",
     }
 )
+JOB_POSTING_UNAVAILABLE_STATUSES = frozenset(
+    {"DUPLICATE", "EXCLUDED", "SKIPPED", "EXPIRED"}
+)
 ATS_TYPES = frozenset(
     {"greenhouse", "lever", "ashby", "jobvite", "workday", "custom", "unknown"}
 )
@@ -193,6 +196,9 @@ class JobPostingRepositoryError(RuntimeError):
 class JobPostingReadRepository(Protocol):
     def get(self, job_id: str) -> JobPosting | None:
         """Return one current typed V1 JobPosting without modifying it."""
+
+    def list_current(self) -> tuple[JobPosting, ...]:
+        """Return current usable V1 JobPostings in stable job-ID order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +472,37 @@ class PrivateHomeJobPostingRepository:
                 "persisted JobPosting could not be loaded"
             ) from exc
 
+    def list_current(self) -> tuple[JobPosting, ...]:
+        directory = self._home.paths.job_postings
+        if not directory.is_dir():
+            return ()
+        postings: list[JobPosting] = []
+        try:
+            paths = tuple(sorted(directory.glob("*.json")))
+        except OSError as exc:
+            raise JobPostingRepositoryError(
+                "persisted JobPosting collection could not be listed"
+            ) from exc
+        for path in paths:
+            job_id = path.stem
+            if _JOB_ID_PATTERN.fullmatch(job_id) is None:
+                raise JobPostingRepositoryError(
+                    "persisted JobPosting filename is invalid"
+                )
+            try:
+                posting = _load_existing(path, job_id)
+            except RuntimeError as exc:
+                raise JobPostingRepositoryError(
+                    "persisted JobPosting could not be loaded"
+                ) from exc
+            if posting is None:
+                raise JobPostingRepositoryError(
+                    "persisted JobPosting disappeared during listing"
+                )
+            if posting.status not in JOB_POSTING_UNAVAILABLE_STATUSES:
+                postings.append(posting)
+        return tuple(sorted(postings, key=lambda item: item.job_id))
+
 
 def _persist_run(home: PrivateHome, run: DiscoveryRun) -> None:
     path = home.paths.discovery_runs / f"{run.run_id}.json"
@@ -650,6 +687,7 @@ __all__ = [
     "JobPosting",
     "JobPostingReadRepository",
     "JobPostingRepositoryError",
+    "JOB_POSTING_UNAVAILABLE_STATUSES",
     "PrivateHomeJobPostingRepository",
     "ProposalResolution",
     "ResolvedJobCandidate",

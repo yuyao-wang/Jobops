@@ -17,7 +17,8 @@ from uuid import uuid4
 from .private_home import PrivateHome
 
 
-POLICY_REPOSITORY_SCHEMA_VERSION = 1
+POLICY_REPOSITORY_SCHEMA_VERSION = 2
+PREPARATION_ADMISSION_CONTRACT_VERSION = "preparation-admission-v1"
 DEFAULT_DRAFT_TTL = timedelta(minutes=30)
 _HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
@@ -61,6 +62,13 @@ class PolicyDraftStatus(str, Enum):
 class PrioritizationPolicyStatus(str, Enum):
     ACTIVE = "ACTIVE"
     SUPERSEDED = "SUPERSEDED"
+
+
+class PreparationPriority(str, Enum):
+    P0 = "P0"
+    P1 = "P1"
+    P2 = "P2"
+    P3 = "P3"
 
 
 class PolicyOperationStatus(str, Enum):
@@ -304,6 +312,77 @@ def _validated_ambiguities(value: Any) -> tuple[str, ...]:
     return cleaned
 
 
+_PREPARATION_PRIORITY_ORDER = tuple(PreparationPriority)
+_PREPARATION_PRIORITY_RANK = {
+    priority: rank
+    for rank, priority in enumerate(_PREPARATION_PRIORITY_ORDER)
+}
+
+
+def _validated_preparation_priorities(
+    name: str,
+    value: Any,
+) -> tuple[PreparationPriority, ...]:
+    if not isinstance(value, tuple):
+        raise TypeError(f"{name} must be a tuple")
+    try:
+        priorities = tuple(PreparationPriority(item) for item in value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} contains an unsupported priority outcome"
+        ) from exc
+    if len(priorities) != len(set(priorities)):
+        raise ValueError(f"{name} must not contain duplicate priorities")
+    return tuple(sorted(priorities, key=_PREPARATION_PRIORITY_RANK.__getitem__))
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationAdmissionPolicy:
+    preparation_eligible_priorities: tuple[PreparationPriority, ...]
+    explicit_promotion_priorities: tuple[PreparationPriority, ...]
+    contract_version: str = PREPARATION_ADMISSION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        eligible = _validated_preparation_priorities(
+            "preparation_eligible_priorities",
+            self.preparation_eligible_priorities,
+        )
+        promotion = _validated_preparation_priorities(
+            "explicit_promotion_priorities",
+            self.explicit_promotion_priorities,
+        )
+        if set(eligible).intersection(promotion):
+            raise ValueError(
+                "direct and explicit-promotion priorities must not overlap"
+            )
+        if self.contract_version != PREPARATION_ADMISSION_CONTRACT_VERSION:
+            raise ValueError("preparation admission contract version is unsupported")
+        object.__setattr__(self, "preparation_eligible_priorities", eligible)
+        object.__setattr__(self, "explicit_promotion_priorities", promotion)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_version": self.contract_version,
+            "preparation_eligible_priorities": [
+                item.value for item in self.preparation_eligible_priorities
+            ],
+            "explicit_promotion_priorities": [
+                item.value for item in self.explicit_promotion_priorities
+            ],
+        }
+
+
+def default_preparation_admission_policy() -> PreparationAdmissionPolicy:
+    return PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+            PreparationPriority.P2,
+        ),
+        explicit_promotion_priorities=(PreparationPriority.P3,),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CreatePolicyDraftRequest:
     subject_id: str
@@ -373,6 +452,7 @@ class PrioritizationPolicyDraft:
     raw_preference_text: str
     hard_constraints: tuple[HardConstraint, ...]
     soft_preferences: tuple[SoftPreference, ...]
+    preparation_admission: PreparationAdmissionPolicy
     ambiguities: tuple[str, ...]
     status: PolicyDraftStatus
     created_at: datetime
@@ -419,6 +499,13 @@ class PrioritizationPolicyDraft:
                 maximum=160,
             ),
         )
+        if not isinstance(
+            self.preparation_admission,
+            PreparationAdmissionPolicy,
+        ):
+            raise TypeError(
+                "preparation_admission must be a PreparationAdmissionPolicy"
+            )
         expected = (
             PolicyDraftStatus.NEEDS_CLARIFICATION
             if self.ambiguities
@@ -438,6 +525,7 @@ class ApprovePolicyRequest:
     reviewed_raw_preference_text: str
     reviewed_hard_constraints: tuple[HardConstraint, ...]
     reviewed_soft_preferences: tuple[SoftPreference, ...]
+    reviewed_preparation_admission: PreparationAdmissionPolicy
 
     def __post_init__(self) -> None:
         if not isinstance(self.draft_id, str):
@@ -450,6 +538,14 @@ class ApprovePolicyRequest:
             raise TypeError("reviewed_hard_constraints must be a tuple")
         if not isinstance(self.reviewed_soft_preferences, tuple):
             raise TypeError("reviewed_soft_preferences must be a tuple")
+        if not isinstance(
+            self.reviewed_preparation_admission,
+            PreparationAdmissionPolicy,
+        ):
+            raise TypeError(
+                "reviewed_preparation_admission must be a "
+                "PreparationAdmissionPolicy"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,6 +557,7 @@ class PrioritizationPolicy:
     raw_preference_text: str
     hard_constraints: tuple[HardConstraint, ...]
     soft_preferences: tuple[SoftPreference, ...]
+    preparation_admission: PreparationAdmissionPolicy
     status: PrioritizationPolicyStatus
     created_at: datetime
     approved_at: datetime
@@ -527,6 +624,13 @@ class PrioritizationPolicy:
                     maximum=160,
                 ),
             )
+        if not isinstance(
+            self.preparation_admission,
+            PreparationAdmissionPolicy,
+        ):
+            raise TypeError(
+                "preparation_admission must be a PreparationAdmissionPolicy"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -546,6 +650,7 @@ class PrioritizationPolicy:
             "approved_at": _rfc3339(self.approved_at),
             "interpreter_version": self.interpreter_version,
             "previous_policy_id": self.previous_policy_id,
+            "preparation_admission": self.preparation_admission.to_dict(),
         }
 
 
@@ -642,6 +747,7 @@ def _canonical_policy_content(
     raw_preference_text: str,
     hard_constraints: tuple[HardConstraint, ...],
     soft_preferences: tuple[SoftPreference, ...],
+    preparation_admission: PreparationAdmissionPolicy,
 ) -> dict[str, Any]:
     hard = sorted(
         (item.to_dict() for item in hard_constraints),
@@ -665,6 +771,7 @@ def _canonical_policy_content(
         "raw_preference_text": _clean_raw_text(raw_preference_text),
         "hard_constraints": hard,
         "soft_preferences": soft,
+        "preparation_admission": preparation_admission.to_dict(),
     }
 
 
@@ -673,14 +780,20 @@ def policy_content_hash(
     raw_preference_text: str,
     hard_constraints: tuple[HardConstraint, ...],
     soft_preferences: tuple[SoftPreference, ...],
+    preparation_admission: PreparationAdmissionPolicy,
 ) -> str:
     """Hash only approved business content, excluding IDs, time and interpreter."""
 
+    if not isinstance(preparation_admission, PreparationAdmissionPolicy):
+        raise TypeError(
+            "preparation_admission must be a PreparationAdmissionPolicy"
+        )
     payload = json.dumps(
         _canonical_policy_content(
             raw_preference_text=raw_preference_text,
             hard_constraints=hard_constraints,
             soft_preferences=soft_preferences,
+            preparation_admission=preparation_admission,
         ),
         sort_keys=True,
         separators=(",", ":"),
@@ -700,8 +813,30 @@ def _policy_from_dict(value: Any) -> PrioritizationPolicy:
         raise ValueError("persisted policy must be an object")
     hard_raw = value.get("hard_constraints")
     soft_raw = value.get("soft_preferences")
+    admission_raw = value.get("preparation_admission")
     if not isinstance(hard_raw, list) or not isinstance(soft_raw, list):
         raise ValueError("persisted policy collections are invalid")
+    if not isinstance(admission_raw, Mapping):
+        raise PrioritizationPolicyCompatibilityError(
+            "approved policy lacks preparation admission; migration is required"
+        )
+    required_admission_keys = {
+        "contract_version",
+        "preparation_eligible_priorities",
+        "explicit_promotion_priorities",
+    }
+    if (
+        set(admission_raw) != required_admission_keys
+        or not isinstance(
+            admission_raw.get("preparation_eligible_priorities"),
+            list,
+        )
+        or not isinstance(
+            admission_raw.get("explicit_promotion_priorities"),
+            list,
+        )
+    ):
+        raise ValueError("persisted preparation admission is invalid")
     hard_constraints = tuple(
         HardConstraint(
             constraint_type=item["constraint_type"],
@@ -727,6 +862,15 @@ def _policy_from_dict(value: Any) -> PrioritizationPolicy:
         soft_raw
     ):
         raise ValueError("persisted policy collection item is invalid")
+    preparation_admission = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=tuple(
+            admission_raw["preparation_eligible_priorities"]
+        ),
+        explicit_promotion_priorities=tuple(
+            admission_raw["explicit_promotion_priorities"]
+        ),
+        contract_version=admission_raw["contract_version"],
+    )
     policy = PrioritizationPolicy(
         policy_id=value.get("policy_id"),
         subject_id=value.get("subject_id"),
@@ -740,15 +884,21 @@ def _policy_from_dict(value: Any) -> PrioritizationPolicy:
         approved_at=_parse_timestamp(value.get("approved_at"), "approved_at"),
         interpreter_version=value.get("interpreter_version"),
         previous_policy_id=value.get("previous_policy_id"),
+        preparation_admission=preparation_admission,
     )
     expected_hash = policy_content_hash(
         raw_preference_text=policy.raw_preference_text,
         hard_constraints=policy.hard_constraints,
         soft_preferences=policy.soft_preferences,
+        preparation_admission=policy.preparation_admission,
     )
     if policy.policy_content_hash != expected_hash:
         raise ValueError("persisted policy content hash is invalid")
     return policy
+
+
+class PrioritizationPolicyCompatibilityError(RuntimeError):
+    """Stored approved policy needs explicit migration for this contract."""
 
 
 class PrivateHomePrioritizationPolicyRepository:
@@ -780,12 +930,14 @@ class PrivateHomePrioritizationPolicyRepository:
             raise RuntimeError("approved prioritization policy is unreadable") from exc
         if (
             not isinstance(document, Mapping)
-            or document.get("schema_version")
-            != POLICY_REPOSITORY_SCHEMA_VERSION
             or document.get("subject_id") != clean_subject
             or not isinstance(document.get("policies"), list)
         ):
             raise RuntimeError("approved prioritization policy index is invalid")
+        if document.get("schema_version") != POLICY_REPOSITORY_SCHEMA_VERSION:
+            raise PrioritizationPolicyCompatibilityError(
+                "approved policy repository requires explicit migration"
+            )
         try:
             policies = tuple(
                 _policy_from_dict(item) for item in document["policies"]
@@ -839,6 +991,7 @@ class PrivateHomePrioritizationPolicyRepository:
         raw_preference_text: str,
         hard_constraints: tuple[HardConstraint, ...],
         soft_preferences: tuple[SoftPreference, ...],
+        preparation_admission: PreparationAdmissionPolicy,
         approved_at: datetime,
     ) -> PrioritizationPolicy:
         _require_aware("approved_at", approved_at)
@@ -849,10 +1002,18 @@ class PrivateHomePrioritizationPolicyRepository:
             require_confirmation=True,
         )
         soft = _validated_soft_preferences(soft_preferences)
+        if not isinstance(
+            preparation_admission,
+            PreparationAdmissionPolicy,
+        ):
+            raise TypeError(
+                "preparation_admission must be a PreparationAdmissionPolicy"
+            )
         content_hash = policy_content_hash(
             raw_preference_text=clean_raw,
             hard_constraints=hard,
             soft_preferences=soft,
+            preparation_admission=preparation_admission,
         )
         with self._lock:
             history = self._load(clean_subject)
@@ -887,6 +1048,7 @@ class PrivateHomePrioritizationPolicyRepository:
                 approved_at=approved_at,
                 interpreter_version=draft.interpreter_version,
                 previous_policy_id=active.policy_id if active else None,
+                preparation_admission=preparation_admission,
             )
             superseded = tuple(
                 replace(item, status=PrioritizationPolicyStatus.SUPERSEDED)
@@ -1037,6 +1199,7 @@ class PrioritizationPolicyService:
                 raw_preference_text=raw_text,
                 hard_constraints=interpretation.hard_constraints,
                 soft_preferences=interpretation.soft_preferences,
+                preparation_admission=default_preparation_admission_policy(),
                 ambiguities=interpretation.ambiguities,
                 status=status,
                 created_at=now,
@@ -1141,6 +1304,14 @@ class PrioritizationPolicyService:
                 reviewed_soft = _validated_soft_preferences(
                     request.reviewed_soft_preferences
                 )
+                reviewed_admission = request.reviewed_preparation_admission
+                if not isinstance(
+                    reviewed_admission,
+                    PreparationAdmissionPolicy,
+                ):
+                    raise TypeError(
+                        "reviewed preparation admission is invalid"
+                    )
             except PermissionError:
                 return self._policy_failure(
                     PolicyReason.HARD_CONSTRAINT_NOT_CONFIRMED,
@@ -1158,6 +1329,7 @@ class PrioritizationPolicyService:
                 raw_preference_text=reviewed_raw,
                 hard_constraints=reviewed_hard,
                 soft_preferences=reviewed_soft,
+                preparation_admission=reviewed_admission,
                 approved_at=now,
             )
             self._draft_store.mark_approved(draft_id)
@@ -1208,6 +1380,9 @@ __all__ = [
     "PolicyInterpretation",
     "PolicyOperationStatus",
     "PolicyReason",
+    "PREPARATION_ADMISSION_CONTRACT_VERSION",
+    "PreparationAdmissionPolicy",
+    "PreparationPriority",
     "PreferenceImportance",
     "PrioritizationPolicy",
     "PrioritizationPolicyDraft",
@@ -1215,8 +1390,10 @@ __all__ = [
     "PrioritizationPolicyResult",
     "PrioritizationPolicyService",
     "PrioritizationPolicyStatus",
+    "PrioritizationPolicyCompatibilityError",
     "PrivateHomePrioritizationPolicyRepository",
     "SoftPreference",
     "SoftPreferenceCategory",
+    "default_preparation_admission_policy",
     "policy_content_hash",
 ]

@@ -12,6 +12,13 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from core.accepted_job_intent import (
+    AcceptedJobIntent,
+    AcceptedJobIntentFailureReason,
+    AcceptedJobIntentRepository,
+    AcceptedJobIntentWriteResult,
+    AcceptedJobIntentWriteStatus,
+)
 from core.job_discovery import (
     DiscoveryChange,
     DiscoveryDisposition,
@@ -93,6 +100,8 @@ class CandidateSelectionReason(str, Enum):
 class PendingIntakeStatus(str, Enum):
     WAITING_FOR_ACTION = "WAITING_FOR_ACTION"
     RESOLVING = "RESOLVING"
+    PERSISTING_INTENT = "PERSISTING_INTENT"
+    INTENT_PERSISTENCE_FAILED = "INTENT_PERSISTENCE_FAILED"
     COMPLETED = "COMPLETED"
 
 
@@ -109,11 +118,16 @@ class ResolveIntakeStatus(str, Enum):
 class ResolveIntakeReason(str, Enum):
     PENDING_INTAKE_NOT_FOUND = "PENDING_INTAKE_NOT_FOUND"
     CONVERSATION_MISMATCH = "CONVERSATION_MISMATCH"
+    SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
     PENDING_INTAKE_EXPIRED = "PENDING_INTAKE_EXPIRED"
     PENDING_INTAKE_ALREADY_RESOLVED = "PENDING_INTAKE_ALREADY_RESOLVED"
     INVALID_ACTION = "INVALID_ACTION"
     PENDING_OBSERVATION_INVALID = "PENDING_OBSERVATION_INVALID"
     DISCOVERY_TEMPORARILY_UNAVAILABLE = "DISCOVERY_TEMPORARILY_UNAVAILABLE"
+    DISCOVERY_RESPONSE_INVALID = "DISCOVERY_RESPONSE_INVALID"
+    ACCEPTED_INTENT_PERSISTENCE_FAILED = (
+        "ACCEPTED_INTENT_PERSISTENCE_FAILED"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,8 +169,11 @@ class PendingIntake:
     status: PendingIntakeStatus
     created_at: datetime
     expires_at: datetime
+    resolution_subject_id: str | None = None
     selected_action: IntakeAction | None = None
     discovery_response: JobDiscoveryResponse | None = None
+    accepted_intent_write_result: AcceptedJobIntentWriteResult | None = None
+    accepted_intent_recorded_at: datetime | None = None
     resolved_at: datetime | None = None
     intent_hint: NamedJobIntentHint = NamedJobIntentHint.UNSPECIFIED
     source_candidate_set_id: str | None = None
@@ -174,6 +191,12 @@ class PendingIntake:
             SourceJobObservation,
         ):
             raise TypeError("observation must be a SourceJobObservation")
+        if self.resolution_subject_id is not None and (
+            not isinstance(self.resolution_subject_id, str)
+            or not self.resolution_subject_id.strip()
+            or len(self.resolution_subject_id) > 240
+        ):
+            raise ValueError("resolution_subject_id must be non-empty")
         if (
             self.created_at.tzinfo is None
             or self.expires_at.tzinfo is None
@@ -193,8 +216,25 @@ class PendingIntake:
             raise TypeError(
                 "discovery_response must be a JobDiscoveryResponse"
             )
+        if (
+            self.accepted_intent_write_result is not None
+            and not isinstance(
+                self.accepted_intent_write_result,
+                AcceptedJobIntentWriteResult,
+            )
+        ):
+            raise TypeError(
+                "accepted_intent_write_result must be typed"
+            )
         if self.resolved_at is not None and self.resolved_at.tzinfo is None:
             raise ValueError("resolved_at must include a timezone")
+        if (
+            self.accepted_intent_recorded_at is not None
+            and self.accepted_intent_recorded_at.tzinfo is None
+        ):
+            raise ValueError(
+                "accepted_intent_recorded_at must include a timezone"
+            )
         source_ids = (
             self.source_candidate_set_id,
             self.source_candidate_id,
@@ -210,21 +250,78 @@ class PendingIntake:
         if self.status is PendingIntakeStatus.WAITING_FOR_ACTION and (
             self.selected_action is not None
             or self.discovery_response is not None
+            or self.accepted_intent_write_result is not None
+            or self.accepted_intent_recorded_at is not None
             or self.resolved_at is not None
         ):
             raise ValueError("waiting pending intake has resolution state")
         if self.status is PendingIntakeStatus.RESOLVING and (
-            self.selected_action is None
+            self.resolution_subject_id is None
+            or self.selected_action is None
             or self.discovery_response is not None
+            or self.accepted_intent_write_result is not None
+            or self.accepted_intent_recorded_at is not None
             or self.resolved_at is not None
         ):
             raise ValueError("resolving pending intake has conflicting state")
-        if self.status is PendingIntakeStatus.COMPLETED and (
-            self.selected_action is None
+        if self.status is PendingIntakeStatus.PERSISTING_INTENT and (
+            self.resolution_subject_id is None
+            or self.selected_action is None
             or self.discovery_response is None
-            or self.resolved_at is None
+            or self.discovery_response.disposition
+            is not DiscoveryDisposition.ACCEPTED
+            or self.accepted_intent_write_result is not None
+            or self.accepted_intent_recorded_at is None
+            or self.resolved_at is not None
         ):
-            raise ValueError("completed pending intake is incomplete")
+            raise ValueError("persisting pending intake is invalid")
+        if (
+            self.status
+            is PendingIntakeStatus.INTENT_PERSISTENCE_FAILED
+            and (
+                self.selected_action is None
+                or self.resolution_subject_id is None
+                or self.discovery_response is None
+                or self.discovery_response.disposition
+                is not DiscoveryDisposition.ACCEPTED
+                or self.accepted_intent_write_result is None
+                or self.accepted_intent_write_result.status
+                is not AcceptedJobIntentWriteStatus.FAILED
+                or self.accepted_intent_recorded_at is None
+                or self.resolved_at is not None
+            )
+        ):
+            raise ValueError("failed intent persistence state is invalid")
+        if self.status is PendingIntakeStatus.COMPLETED:
+            if (
+                self.selected_action is None
+                or self.resolution_subject_id is None
+                or self.discovery_response is None
+                or self.resolved_at is None
+            ):
+                raise ValueError("completed pending intake is incomplete")
+            accepted = (
+                self.discovery_response.disposition
+                is DiscoveryDisposition.ACCEPTED
+            )
+            write_succeeded = (
+                self.accepted_intent_write_result is not None
+                and self.accepted_intent_write_result.status
+                in {
+                    AcceptedJobIntentWriteStatus.CREATED,
+                    AcceptedJobIntentWriteStatus.UNCHANGED,
+                }
+            )
+            if accepted != write_succeeded:
+                raise ValueError(
+                    "completed pending intent persistence is inconsistent"
+                )
+            if accepted != (
+                self.accepted_intent_recorded_at is not None
+            ):
+                raise ValueError(
+                    "completed pending intent timestamp is inconsistent"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,12 +579,14 @@ class NamedJobSearchResponse:
 
 @dataclass(frozen=True, slots=True)
 class ResolvePendingIntakeRequest:
+    subject_id: str
     conversation_id: str
     pending_intake_id: str
     action: IntakeAction | str
 
     def __post_init__(self) -> None:
         for name, value in (
+            ("subject_id", self.subject_id),
             ("conversation_id", self.conversation_id),
             ("pending_intake_id", self.pending_intake_id),
         ):
@@ -509,6 +608,7 @@ class ResolvePendingIntakeResponse:
     pending_intake_id: str
     selected_action: IntakeAction | None
     discovery_response: JobDiscoveryResponse | None
+    accepted_intent_write_result: AcceptedJobIntentWriteResult | None
     job_id: str | None
     change: DiscoveryChange | None
     summary: JobSummary | None
@@ -538,6 +638,16 @@ class ResolvePendingIntakeResponse:
             raise TypeError(
                 "discovery_response must be a JobDiscoveryResponse"
             )
+        if (
+            self.accepted_intent_write_result is not None
+            and not isinstance(
+                self.accepted_intent_write_result,
+                AcceptedJobIntentWriteResult,
+            )
+        ):
+            raise TypeError(
+                "accepted_intent_write_result must be typed"
+            )
         if self.summary is not None and not isinstance(self.summary, JobSummary):
             raise TypeError("summary must be a JobSummary")
         if not isinstance(self.prompt, str) or not self.prompt:
@@ -546,9 +656,11 @@ class ResolvePendingIntakeResponse:
 
 class _PendingClaimStatus(str, Enum):
     CLAIMED = "CLAIMED"
+    RESUME_INTENT_PERSISTENCE = "RESUME_INTENT_PERSISTENCE"
     REPLAY = "REPLAY"
     NOT_FOUND = "NOT_FOUND"
     CONVERSATION_MISMATCH = "CONVERSATION_MISMATCH"
+    SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
     EXPIRED = "EXPIRED"
     ALREADY_RESOLVED = "ALREADY_RESOLVED"
 
@@ -631,6 +743,7 @@ class InMemoryPendingIntakeStore:
         self,
         *,
         pending_intake_id: str,
+        subject_id: str,
         conversation_id: str,
         action: IntakeAction,
         now: datetime,
@@ -647,6 +760,14 @@ class InMemoryPendingIntakeStore:
                     _PendingClaimStatus.CONVERSATION_MISMATCH,
                     pending,
                 )
+            if (
+                pending.resolution_subject_id is not None
+                and pending.resolution_subject_id != subject_id
+            ):
+                return _PendingClaim(
+                    _PendingClaimStatus.SUBJECT_MISMATCH,
+                    pending,
+                )
             if now >= pending.expires_at:
                 self._items.pop(pending_intake_id, None)
                 return _PendingClaim(_PendingClaimStatus.EXPIRED, pending)
@@ -657,7 +778,29 @@ class InMemoryPendingIntakeStore:
                     else _PendingClaimStatus.ALREADY_RESOLVED
                 )
                 return _PendingClaim(status, pending)
-            if pending.status is PendingIntakeStatus.RESOLVING:
+            if (
+                pending.status
+                is PendingIntakeStatus.INTENT_PERSISTENCE_FAILED
+            ):
+                if pending.selected_action is not action:
+                    return _PendingClaim(
+                        _PendingClaimStatus.ALREADY_RESOLVED,
+                        pending,
+                    )
+                resumed = replace(
+                    pending,
+                    status=PendingIntakeStatus.PERSISTING_INTENT,
+                    accepted_intent_write_result=None,
+                )
+                self._items[pending_intake_id] = resumed
+                return _PendingClaim(
+                    _PendingClaimStatus.RESUME_INTENT_PERSISTENCE,
+                    resumed,
+                )
+            if pending.status in {
+                PendingIntakeStatus.RESOLVING,
+                PendingIntakeStatus.PERSISTING_INTENT,
+            }:
                 return _PendingClaim(
                     _PendingClaimStatus.ALREADY_RESOLVED,
                     pending,
@@ -665,21 +808,28 @@ class InMemoryPendingIntakeStore:
             claimed = replace(
                 pending,
                 status=PendingIntakeStatus.RESOLVING,
+                resolution_subject_id=subject_id,
                 selected_action=action,
             )
             self._items[pending_intake_id] = claimed
             return _PendingClaim(_PendingClaimStatus.CLAIMED, claimed)
 
-    def complete(
+    def retain_accepted_discovery(
         self,
         *,
         pending_intake_id: str,
         action: IntakeAction,
         discovery_response: JobDiscoveryResponse,
-        resolved_at: datetime,
+        recorded_at: datetime,
     ) -> PendingIntake:
-        if resolved_at.tzinfo is None:
-            raise ValueError("resolved_at must include a timezone")
+        """Retain accepted Discovery identity before durable intent writing."""
+        if (
+            discovery_response.disposition
+            is not DiscoveryDisposition.ACCEPTED
+        ):
+            raise ValueError("Discovery response must be accepted")
+        if recorded_at.tzinfo is None:
+            raise ValueError("recorded_at must include a timezone")
         with self._lock:
             pending = self._items.get(pending_intake_id)
             if (
@@ -688,10 +838,90 @@ class InMemoryPendingIntakeStore:
                 or pending.selected_action is not action
             ):
                 raise RuntimeError("pending intake resolution claim was lost")
+            retained = replace(
+                pending,
+                status=PendingIntakeStatus.PERSISTING_INTENT,
+                discovery_response=discovery_response,
+                accepted_intent_recorded_at=recorded_at,
+            )
+            self._items[pending_intake_id] = retained
+            return retained
+
+    def fail_intent_persistence(
+        self,
+        *,
+        pending_intake_id: str,
+        action: IntakeAction,
+        write_result: AcceptedJobIntentWriteResult,
+    ) -> PendingIntake:
+        if (
+            write_result.status
+            is not AcceptedJobIntentWriteStatus.FAILED
+        ):
+            raise ValueError("write_result must be failed")
+        with self._lock:
+            pending = self._items.get(pending_intake_id)
+            if (
+                pending is None
+                or pending.status
+                is not PendingIntakeStatus.PERSISTING_INTENT
+                or pending.selected_action is not action
+            ):
+                raise RuntimeError("pending intent persistence claim was lost")
+            failed = replace(
+                pending,
+                status=PendingIntakeStatus.INTENT_PERSISTENCE_FAILED,
+                accepted_intent_write_result=write_result,
+            )
+            self._items[pending_intake_id] = failed
+            return failed
+
+    def complete(
+        self,
+        *,
+        pending_intake_id: str,
+        action: IntakeAction,
+        discovery_response: JobDiscoveryResponse,
+        resolved_at: datetime,
+        accepted_intent_write_result: (
+            AcceptedJobIntentWriteResult | None
+        ) = None,
+    ) -> PendingIntake:
+        if resolved_at.tzinfo is None:
+            raise ValueError("resolved_at must include a timezone")
+        with self._lock:
+            pending = self._items.get(pending_intake_id)
+            accepted = (
+                discovery_response.disposition
+                is DiscoveryDisposition.ACCEPTED
+            )
+            expected_status = (
+                PendingIntakeStatus.PERSISTING_INTENT
+                if accepted
+                else PendingIntakeStatus.RESOLVING
+            )
+            write_succeeded = (
+                accepted_intent_write_result is not None
+                and accepted_intent_write_result.status
+                in {
+                    AcceptedJobIntentWriteStatus.CREATED,
+                    AcceptedJobIntentWriteStatus.UNCHANGED,
+                }
+            )
+            if (
+                pending is None
+                or pending.status is not expected_status
+                or pending.selected_action is not action
+                or accepted != write_succeeded
+            ):
+                raise RuntimeError("pending intake resolution claim was lost")
             completed = replace(
                 pending,
                 status=PendingIntakeStatus.COMPLETED,
                 discovery_response=discovery_response,
+                accepted_intent_write_result=(
+                    accepted_intent_write_result
+                ),
                 resolved_at=resolved_at,
             )
             self._items[pending_intake_id] = completed
@@ -1491,6 +1721,9 @@ def _resolve_failure_response(
         ResolveIntakeReason.CONVERSATION_MISMATCH: (
             "This pending job intake belongs to a different conversation."
         ),
+        ResolveIntakeReason.SUBJECT_MISMATCH: (
+            "This pending job intake belongs to a different subject."
+        ),
         ResolveIntakeReason.PENDING_INTAKE_EXPIRED: (
             "This pending job intake has expired. Please read the job URL "
             "again."
@@ -1518,6 +1751,7 @@ def _resolve_failure_response(
         pending_intake_id=request.pending_intake_id.strip(),
         selected_action=selected_action,
         discovery_response=None,
+        accepted_intent_write_result=None,
         job_id=None,
         change=None,
         summary=None,
@@ -1595,6 +1829,9 @@ def _discovery_result_response(
         pending_intake_id=pending.pending_intake_id,
         selected_action=action,
         discovery_response=discovery_response,
+        accepted_intent_write_result=(
+            pending.accepted_intent_write_result
+        ),
         job_id=discovery_response.job_id,
         change=discovery_response.change,
         summary=_job_summary(observation),
@@ -1602,10 +1839,159 @@ def _discovery_result_response(
     )
 
 
+def _intent_persistence_failure_response(
+    request: ResolvePendingIntakeRequest,
+    pending: PendingIntake,
+    write_result: AcceptedJobIntentWriteResult,
+    *,
+    reason: ResolveIntakeReason = (
+        ResolveIntakeReason.ACCEPTED_INTENT_PERSISTENCE_FAILED
+    ),
+) -> ResolvePendingIntakeResponse:
+    observation = pending.observation
+    discovery_response = pending.discovery_response
+    action = pending.selected_action
+    if (
+        not isinstance(observation, SourceJobObservation)
+        or discovery_response is None
+        or action is None
+        or write_result.status
+        is not AcceptedJobIntentWriteStatus.FAILED
+    ):
+        raise ValueError("intent persistence failure state is invalid")
+    return ResolvePendingIntakeResponse(
+        status=ResolveIntakeStatus.FAILED,
+        reason_code=reason,
+        retryable=write_result.retryable,
+        pending_intake_id=request.pending_intake_id.strip(),
+        selected_action=action,
+        discovery_response=discovery_response,
+        accepted_intent_write_result=write_result,
+        job_id=discovery_response.job_id,
+        change=discovery_response.change,
+        summary=_job_summary(observation),
+        prompt=(
+            "Job Discovery succeeded, but the accepted job intent was not "
+            "durably recorded. No application preparation or execution was "
+            "started."
+        ),
+    )
+
+
+def _failed_intent_write(
+    reason: AcceptedJobIntentFailureReason,
+    *,
+    retryable: bool,
+) -> AcceptedJobIntentWriteResult:
+    return AcceptedJobIntentWriteResult(
+        status=AcceptedJobIntentWriteStatus.FAILED,
+        intent=None,
+        reason_code=reason,
+        retryable=retryable,
+    )
+
+
+def _persist_retained_intent(
+    *,
+    request: ResolvePendingIntakeRequest,
+    pending: PendingIntake,
+    pending_store: InMemoryPendingIntakeStore,
+    accepted_intent_repository: AcceptedJobIntentRepository,
+) -> ResolvePendingIntakeResponse:
+    action = pending.selected_action
+    discovery_response = pending.discovery_response
+    if (
+        action is None
+        or discovery_response is None
+        or pending.accepted_intent_recorded_at is None
+    ):
+        raise ValueError("retained accepted intent state is invalid")
+    if (
+        not isinstance(discovery_response.job_id, str)
+        or not discovery_response.job_id.strip()
+        or not isinstance(discovery_response.run_id, str)
+        or not discovery_response.run_id.strip()
+        or discovery_response.original_intent
+        is not JobIntakeIntent(action.value)
+    ):
+        write_result = _failed_intent_write(
+            AcceptedJobIntentFailureReason.INTEGRITY_FAILURE,
+            retryable=False,
+        )
+        failed = pending_store.fail_intent_persistence(
+            pending_intake_id=pending.pending_intake_id,
+            action=action,
+            write_result=write_result,
+        )
+        return _intent_persistence_failure_response(
+            request,
+            failed,
+            write_result,
+            reason=ResolveIntakeReason.DISCOVERY_RESPONSE_INVALID,
+        )
+    record = AcceptedJobIntent.create(
+        subject_id=request.subject_id,
+        job_id=discovery_response.job_id,
+        intent=JobIntakeIntent(action.value),
+        intake_proposal_id=f"proposal-{pending.pending_intake_id}",
+        discovery_run_id=discovery_response.run_id,
+        recorded_at=pending.accepted_intent_recorded_at,
+    )
+    try:
+        write_result = accepted_intent_repository.save(record)
+        if not isinstance(
+            write_result,
+            AcceptedJobIntentWriteResult,
+        ):
+            raise TypeError(
+                "accepted_intent_repository must return a typed result"
+            )
+    except (OSError, RuntimeError):
+        write_result = _failed_intent_write(
+            AcceptedJobIntentFailureReason.PERSISTENCE_FAILED,
+            retryable=True,
+        )
+    if write_result.status is AcceptedJobIntentWriteStatus.FAILED:
+        failed = pending_store.fail_intent_persistence(
+            pending_intake_id=pending.pending_intake_id,
+            action=action,
+            write_result=write_result,
+        )
+        return _intent_persistence_failure_response(
+            request,
+            failed,
+            write_result,
+        )
+    if write_result.intent != record:
+        conflict = _failed_intent_write(
+            AcceptedJobIntentFailureReason.INTEGRITY_FAILURE,
+            retryable=False,
+        )
+        failed = pending_store.fail_intent_persistence(
+            pending_intake_id=pending.pending_intake_id,
+            action=action,
+            write_result=conflict,
+        )
+        return _intent_persistence_failure_response(
+            request,
+            failed,
+            conflict,
+        )
+    completed = pending_store.complete(
+        pending_intake_id=pending.pending_intake_id,
+        action=action,
+        discovery_response=discovery_response,
+        accepted_intent_write_result=write_result,
+        resolved_at=pending.accepted_intent_recorded_at,
+    )
+    return _discovery_result_response(completed)
+
+
 def resolve_pending_intake(
     request: ResolvePendingIntakeRequest,
     *,
     pending_store: InMemoryPendingIntakeStore,
+    accepted_intent_repository: AcceptedJobIntentRepository,
     discovery_port: _JobDiscoveryPort = run_discovery,
     clock: Callable[[], datetime] = _utc_now,
 ) -> ResolvePendingIntakeResponse:
@@ -1614,6 +2000,13 @@ def resolve_pending_intake(
         raise TypeError("request must be a ResolvePendingIntakeRequest")
     if not isinstance(pending_store, InMemoryPendingIntakeStore):
         raise TypeError("pending_store must be an InMemoryPendingIntakeStore")
+    if not isinstance(
+        accepted_intent_repository,
+        AcceptedJobIntentRepository,
+    ):
+        raise TypeError(
+            "accepted_intent_repository must implement the typed port"
+        )
     try:
         action = IntakeAction(request.action)
     except ValueError:
@@ -1627,6 +2020,7 @@ def resolve_pending_intake(
         raise ValueError("clock must return a timezone-aware datetime")
     claim = pending_store.claim(
         pending_intake_id=request.pending_intake_id.strip(),
+        subject_id=request.subject_id.strip(),
         conversation_id=request.conversation_id.strip(),
         action=action,
         now=now,
@@ -1640,6 +2034,11 @@ def resolve_pending_intake(
         return _resolve_failure_response(
             request,
             ResolveIntakeReason.CONVERSATION_MISMATCH,
+        )
+    if claim.status is _PendingClaimStatus.SUBJECT_MISMATCH:
+        return _resolve_failure_response(
+            request,
+            ResolveIntakeReason.SUBJECT_MISMATCH,
         )
     if claim.status is _PendingClaimStatus.EXPIRED:
         return _resolve_failure_response(
@@ -1658,6 +2057,18 @@ def resolve_pending_intake(
         if claim.pending is None:
             raise RuntimeError("replay claim has no pending intake")
         return _discovery_result_response(claim.pending)
+    if (
+        claim.status
+        is _PendingClaimStatus.RESUME_INTENT_PERSISTENCE
+    ):
+        if claim.pending is None:
+            raise RuntimeError("intent persistence replay has no pending")
+        return _persist_retained_intent(
+            request=request,
+            pending=claim.pending,
+            pending_store=pending_store,
+            accepted_intent_repository=accepted_intent_repository,
+        )
     if claim.pending is None:
         raise RuntimeError("claimed pending intake is missing")
 
@@ -1704,13 +2115,33 @@ def resolve_pending_intake(
             selected_action=action,
         )
 
-    completed = pending_store.complete(
+    if (
+        discovery_response.disposition
+        is not DiscoveryDisposition.ACCEPTED
+    ):
+        completed = pending_store.complete(
+            pending_intake_id=claim.pending.pending_intake_id,
+            action=action,
+            discovery_response=discovery_response,
+            resolved_at=clock(),
+        )
+        return _discovery_result_response(completed)
+
+    recorded_at = clock()
+    if not isinstance(recorded_at, datetime) or recorded_at.tzinfo is None:
+        raise ValueError("clock must return a timezone-aware datetime")
+    retained = pending_store.retain_accepted_discovery(
         pending_intake_id=claim.pending.pending_intake_id,
         action=action,
         discovery_response=discovery_response,
-        resolved_at=clock(),
+        recorded_at=recorded_at,
     )
-    return _discovery_result_response(completed)
+    return _persist_retained_intent(
+        request=request,
+        pending=retained,
+        pending_store=pending_store,
+        accepted_intent_repository=accepted_intent_repository,
+    )
 
 
 __all__ = [

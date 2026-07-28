@@ -29,6 +29,7 @@ from core.prioritization_policy import (
     PrioritizationPolicyStatus,
     SoftPreference,
     SoftPreferenceCategory,
+    default_preparation_admission_policy,
     policy_content_hash,
 )
 from core.priority_agent_adapter import OpenAIPriorityAgentAdapter
@@ -60,6 +61,7 @@ def _request(now: datetime) -> CreatePriorityProposalRequest:
         "Prefer recent environmental AI and remote-sensing roles. "
         "Do not apply to jobs in the United States."
     )
+    preparation_admission = default_preparation_admission_policy()
     policy = PrioritizationPolicy(
         policy_id="synthetic-prioritization-policy-v1",
         subject_id=SUBJECT_ID,
@@ -68,10 +70,12 @@ def _request(now: datetime) -> CreatePriorityProposalRequest:
             raw_preference_text=raw_policy,
             hard_constraints=hard_constraints,
             soft_preferences=soft_preferences,
+            preparation_admission=preparation_admission,
         ),
         raw_preference_text=raw_policy,
         hard_constraints=hard_constraints,
         soft_preferences=soft_preferences,
+        preparation_admission=preparation_admission,
         status=PrioritizationPolicyStatus.ACTIVE,
         created_at=now - timedelta(days=2),
         approved_at=now - timedelta(days=1),

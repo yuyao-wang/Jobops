@@ -5,7 +5,8 @@
 This is the target V1 architecture. Current status is recorded in
 `CONTRACTS_AND_TESTS.md`: the typed Discovery/read/search/intake path is
 implemented through candidate selection, Execution is established, Preparation
-is partial, and the editable Prioritization policy is the active Slice.
+is partial, and Prioritization is implemented through the P1d4 runnable
+read-model boundary plus the P1a2 preparation-admission contract.
 
 Jobops 采用 workflow-first modular monolith。四个业务组件先以进程内 typed contract 协作；只有出现独立 trust boundary、release lifecycle、availability target 或 scaling profile 时，才拆成独立服务。Workflow coordination is a persisted state-machine responsibility, not a fifth service.
 
@@ -200,18 +201,20 @@ choice. It may call only:
 PublicJobReader Port
 JobSearchPort
 JobDiscoveryPort
+AcceptedJobIntentRepository
 ```
 
 It cannot import or call a concrete Connector. It converts a validated
 `SourceJobObservation` into a typed `JobIntakeProposal`; only then may it call
-the injected callable Discovery port. I2 does not write Discovery storage
-itself: the default port implementation is `run_discovery(...)`.
+the injected callable Discovery port. After an accepted Discovery response,
+I2b writes the subject-specific accepted intent through an injected typed port.
+Intake never imports Private Home paths or JSON persistence details.
 
 Forbidden dependencies:
 
 ```text
 Conversational Intake -X→ Greenhouse / Lever Connector
-Conversational Intake -X→ Repository / Private Home / CSV
+Conversational Intake -X→ concrete Repository / Private Home / CSV
 Conversational Intake -X→ ATS Adapter
 
 PublicJobReader -X→ run_discovery()
@@ -237,6 +240,18 @@ JobPosting + DiscoveryRun persistence
 
 This remains the only formal write path. Public readers do not normalize an
 observation into durable workflow state.
+
+Accepted intent is a separate post-Discovery application fact:
+
+```text
+explicit subject + accepted JobDiscoveryResponse
+  → AcceptedJobIntentRepository
+  → immutable Private Home accepted-intent record
+```
+
+It never mutates `JobPosting`, and it is neither Priority nor a submission
+reservation. Persistence failure makes I2 incomplete rather than reporting
+that application intent was recorded.
 
 ### Search path
 
@@ -274,7 +289,10 @@ chosen URL through the unified Public Job Reader.
   `read_public_job(...)`, ending in process-local `WAITING_FOR_ACTION` state.
 - Implemented: I2 binds one explicit `ADD_JOB` or `REQUEST_APPLICATION` action
   to the retained observation, consumes the pending intake once and calls the
-  typed Discovery port. `REQUEST_APPLICATION` stops after Discovery.
+  typed Discovery port.
+- Implemented: I2b persists the accepted action only after Discovery acceptance,
+  using explicit subject/job/proposal/run bindings and deterministic read
+  precedence. `REQUEST_APPLICATION` still stops before Priority or preparation.
 - Missing: JobSearchPort.
 - `GreenhousePublicJobReader` remains exported for connector tests and legacy
   compatibility. `LeverPublicJobReader` is internal. New business callers use
@@ -317,6 +335,7 @@ Job Prioritization
 │   ├── 用户自然语言偏好
 │   ├── AI 结构化解释
 │   ├── 用户审核和修改
+│   ├── typed preparation admission
 │   └── versioned approved policy
 │
 ├── Job Analysis
@@ -366,6 +385,15 @@ flowchart TB
     C --> V
     F --> V
     V --> D["Versioned PriorityDecision"]
+    Q --> R["Runnable Application Queue Read Model"]
+    I["Accepted REQUEST_APPLICATION intent"] --> R
+    J --> Q["Current Priority Queue Read Model"]
+    PR --> Q
+    C --> Q
+    D --> Q
+    Q --> B["Selective Batch Reprioritization"]
+    B --> O["Single-job Priority Orchestrator"]
+    O --> PA
 ```
 
 The Priority Agent evaluates soft preferences, domain value, seniority stretch,
@@ -377,6 +405,17 @@ eligibility coverage for work authorization, citizenship/permanent residency,
 student status and security clearance. These are evidence-backed findings, not
 new system layers or automatic execution rules.
 
+Preparation admission is reviewed policy data. The default draft admits
+P0/P1/P2 directly and places P3 behind a future explicit-promotion fact, but
+users may edit those valid P0–P3 sets before approval. The approved snapshot is
+included in policy hashing and versioning. P1d2 exposes the exact policy
+snapshot it used, and P1d4 consumes that snapshot without another policy
+lookup. Admission is only one runnable-queue
+condition alongside a CURRENT Decision, authoritative `REQUEST_APPLICATION`
+intent and valid job lifecycle; it is not execution or submission authority.
+Old approved snapshots without admission fail closed rather than receiving
+runtime defaults.
+
 Dependency boundaries:
 
 - Priority Agent does not write a repository, start Application Preparation,
@@ -386,7 +425,19 @@ Dependency boundaries:
 - `PriorityDecision` does not modify its source `JobPosting`.
 - A policy update creates a new immutable version. It does not rewrite
   historical decisions.
-- Reprioritization and queue ordering are a later Slice.
+- Preparation-admission changes use that same draft/approval/version path;
+  downstream readers must not hard-code a competing priority rule.
+- P1d2 reads current JobPosting, policy, CandidateSummary, orchestration,
+  Proposal and Decision records to classify `CURRENT`, `STALE`, `MISSING` and
+  `INCOMPLETE`. It performs no Agent call, Gate execution, claim or write.
+- P1d3 calls P1d2 once, selects a bounded STALE/MISSING subset and invokes P1d1
+  serially. It does not directly depend on Agent, Proposal, Gate, binding or
+  repository components.
+- P1d4 calls P1d2 once, reads accepted intent and projects preparation
+  admission from that same policy snapshot. It performs no claim, save,
+  reprioritization, preparation or execution.
+- Automatic reprioritization, promotion facts and Application Preparation
+  execution remain later Slices.
 
 ### System prompt and policy
 
@@ -420,12 +471,30 @@ Stable Priority Agent rules include:
 ### Component view
 
 ```mermaid
-flowchart LR
-    I["ApplicationPlan"] --> P["ApplicationPreparationService"]
+flowchart TB
+    Q["P1d4 selected RUNNABLE job"] --> C["ApplicationPlan creator"]
+    C --> I["Immutable ApplicationPlan"]
+    I --> P["ApplicationPreparationService"]
     P --> E["CandidateEvidenceRepository"]
-    P --> G["MaterialGenerator port"]
-    P --> V["Claim validator + renderer + visual QA"]
-    P --> R["Material repository and Event Ledger"]
+    E --> RC["Trusted Resume Candidate Registry"]
+    P --> RP["Resume Preparation"]
+    RC --> RS["Automatic Base Resume Selection"]
+    RS --> SRP["Hash-bound Source Resume Projection"]
+    SRP --> CE["CandidateEvidence Snapshot"]
+    SRP --> TD
+    RP --> RS
+    RP --> SP["Static Resume Agent Policy"]
+    RP --> UI["Plan-scoped runtime user instructions"]
+    RP --> TD["TailoredResumeDraft"]
+    P --> CL["Cover Letter"]
+    P --> AN["Application Answers"]
+    P --> FQ["Fact QA"]
+    P --> VQ["Visual QA"]
+    P --> MA["Material Assembly"]
+    P --> HA["Future Human Attention Queue"]
+    HA --> DC["Defer current item and continue"]
+    MA --> MM["Material Manifest + tier loading"]
+    MM --> GA["Approval Gate A"]
 ```
 
 ### Data flow
@@ -441,6 +510,55 @@ flowchart LR
     B --> A["Gate A decision by policy actor"]
     A --> O["Approved package or revision request"]
 ```
+
+P2a1 is the sole formal entry from a selected P1d4 RUNNABLE item into
+Preparation. It stores exact job-scoped user instructions in the immutable
+plan; those instructions never mutate stable Agent policy. The plan is
+automation-first: safe stages continue asynchronously, while a genuinely
+human-only issue follows defer-current-item-and-continue semantics. The Human
+Attention Queue itself remains planned.
+
+P2a2 adds the authoritative, subject-scoped input for resume selection.
+Only explicitly registered PDF/DOCX artifacts staged under Private Home
+`documents/master/` are copied into the immutable preparation registry.
+Registration computes hashes from bytes and accepts only verified or
+user-confirmed selection-safe summaries; it never imports loose profile paths
+or calls a model.
+
+P2a3 reads an `ApplicationPlan`, validates one typed
+`JobPostingReadRepository.get()` result against the plan revision/hash, and
+reads only `ResumeCandidateProvider.list_selectable(subject_id)`. Zero
+candidates defer the item, one candidate is selected with zero Agent calls,
+and multiple candidates allow one bounded tool-free Agent call over trusted JD
+data, safe candidate projections and the exact plan-scoped instructions.
+Ordinary code verifies the returned resume ID, candidate version and artifact
+hash. The immutable Decision is queried by a pre-Agent binding, so identical
+completed input returns `UNCHANGED` without another Agent call.
+
+P2a4a turns only the selected, managed P2a2 artifact into a typed read-only
+`SourceResumeProjection`. It re-hashes bytes before deterministic parsing.
+PDF source blocks use page and extracted-line indices; DOCX blocks use body
+paragraph or table/row/cell/paragraph indices. Section, block and bullet IDs
+bind the artifact hash, locator and parser/projection versions, never paths,
+mtime or projection time. The projection is faithful source structure—not
+CandidateEvidence, a capability judgment or tailored content—and no Agent,
+OCR, browser or external document service participates.
+
+P2a4b builds the subject-specific material evidence boundary from that
+projection. It reads the latest complete immutable Selection for the Plan and
+the latest complete immutable Projection for the selected artifact, then
+fail-closes on every subject, job, resume, artifact, projection or hash
+mismatch. Every evidence item is exact source text with its original locator;
+it is a user-provided document statement, conservatively personal, and
+authorized only for resume tailoring. The immutable snapshot never reads the
+JD, CandidateSummary, profile fields or selection-safe summary and performs no
+fact inference, model call or preparation action.
+
+Resume Preparation uses the fixed drafting rule
+`Action Verb + Details + Outcome`. It may prefer a job-specific action verb
+only when verified CandidateEvidence supports the action, details and outcome;
+weak verbs should be replaced only with truthful precise verbs, and outcomes
+or metrics must never be invented.
 
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 

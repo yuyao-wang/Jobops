@@ -22,10 +22,18 @@ This document is the authority for component contracts and implementation eviden
 | `SourceJobObservation` source/ATS identity | Implemented with distinct `SourcePlatform` and `AtsType` enums |
 | `PrioritizationPolicyInterpreterPort` | P1a injected contract; fake implementation only |
 | `PrioritizationPolicyDraft` / `PrioritizationPolicy` | Implemented P1a with review-gated approval and Private Home version history |
+| `PreparationAdmissionPolicy` | Implemented P1a2 as reviewed, versioned policy content for Application Preparation eligibility |
 | `PriorityAgentPort` / `PriorityProposal` | Implemented P1b as one injected, tool-free call followed by ordinary-code validation |
 | `finalize_priority_proposal()` / `PriorityDecision` | Implemented P1c with deterministic hard-constraint reconciliation and immutable Private Home persistence |
 | `orchestrate_single_job_priority()` | Implemented P1d1 for one persisted job with pre-Agent input-binding idempotency |
-| `ResumeSelector.select()` | Target V1 business port |
+| `build_current_priority_queue()` | Implemented P1d2 typed read model over existing P1d1 bindings and completed artifacts |
+| `selectively_reprioritize_jobs()` | Implemented P1d3 bounded serial composition of P1d2 selection and P1d1 execution |
+| `build_runnable_application_queue()` | Implemented P1d4 read-only preparation-admission view over one P1d2 snapshot and accepted intents |
+| `create_application_plan()` / `ApplicationPlan` | Implemented P2a1 immutable automation-first handoff from one selected RUNNABLE job |
+| `register_resume_candidate()` / `ResumeCandidateProvider` | Implemented P2a2 explicit subject-scoped trusted artifact registry and typed selectable-candidate reads |
+| `select_base_resume()` / `ResumeSelectionDecision` | Implemented P2a3 bounded automatic base-resume selection with pre-Agent idempotency |
+| `create_source_resume_projection()` / `SourceResumeProjection` | Implemented P2a4a deterministic, hash-bound PDF/DOCX source projection |
+| `create_candidate_evidence_snapshot()` / `CandidateEvidenceSnapshot` | Implemented P2a4b subject-specific immutable source-resume evidence boundary |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
 Machine-readable contracts:
@@ -113,26 +121,44 @@ durable state and does not call `run_discovery()`.
 
 ```text
 resolve_pending_intake(
-    ResolvePendingIntakeRequest,
+    ResolvePendingIntakeRequest(subject_id, conversation_id, pending_intake_id, action),
     *,
     pending_store,
+    accepted_intent_repository,
     discovery_port,
 ) -> ResolvePendingIntakeResponse
 ```
 
-The request contains only `conversation_id`, `pending_intake_id` and one fixed
-`ADD_JOB` / `REQUEST_APPLICATION` action. The handler validates ownership,
+The request contains explicit `subject_id`, `conversation_id`,
+`pending_intake_id` and one fixed `ADD_JOB` / `REQUEST_APPLICATION` action.
+The handler validates subject binding, ownership,
 expiry, state and the retained observation, then maps that observation without
 new facts into the existing `ResolvedJobCandidate`, `JobIntakeProposal` and
 `JobDiscoveryRequest` contracts. Stable proposal/request IDs derive from the
 pending ID.
 
 The store atomically marks the item `RESOLVING` before one port call. A typed
-Discovery response is retained with a `COMPLETED` item; the same action replays
-that result and a different action fails without another call. An exception
-before a typed response restores `WAITING_FOR_ACTION` and returns a retryable
-`DISCOVERY_TEMPORARILY_UNAVAILABLE`. `REQUEST_APPLICATION` records intent only;
-it does not start Priority, materials, `ApplicationPlan`, browser or ATS work.
+accepted Discovery response moves through `PERSISTING_INTENT` before completion.
+The immutable intent write result is retained with the completed item; the same
+action replays it without another Discovery or write. A different action or
+subject fails without another call. An exception before a typed Discovery
+response restores `WAITING_FOR_ACTION`. A persistence failure becomes typed
+`INTENT_PERSISTENCE_FAILED`; explicit retry resumes only the intent write.
+
+#### Accepted job intent repository
+
+```text
+save(AcceptedJobIntent) -> CREATED | UNCHANGED | typed failure
+get_current(subject_id, job_id) -> FOUND | NOT_FOUND | INTEGRITY_FAILURE
+```
+
+Records live under Private Home `state/intake/accepted-job-intents/` and bind
+subject, formal job, add/apply value, intake proposal, Discovery run, recorded
+time and `accepted-job-intent-v1`. The immutable record ID hashes every binding
+except time. An existing ID with different content is an integrity conflict.
+Reads fail closed on corrupt records and use domain timestamp plus stable ID,
+with any explicit `REQUEST_APPLICATION` taking precedence over `ADD_JOB`.
+Neither value is a submission permit or Application Engine intent.
 
 #### `run_discovery()`
 
@@ -250,11 +276,23 @@ process-local TTL draft.
 Approval accepts user-reviewed content, requires every hard constraint to be
 explicitly user-confirmed and rejects unresolved ambiguity, mismatch, expiry or
 already-consumed conflicting state. An approved `PrioritizationPolicy` is an
-immutable Private Home snapshot. Its canonical content hash includes only raw
-policy text and approved hard/soft items; draft ID, time and interpreter
-metadata do not affect it. Equal active content is idempotent; changed content
-increments the subject-local policy version and supersedes the prior active
-version without deleting history.
+immutable Private Home snapshot.
+
+P1a2 adds a typed `PreparationAdmissionPolicy` to every new draft and approved
+snapshot. Its default directly admits P0/P1/P2 to later preparation
+consideration and requires a separate explicit promotion for P3. The reviewed
+direct and promotion sets are P0–P3-only, duplicate-free, deterministic and
+disjoint; `NEEDS_USER` and `EXCLUDED` fail validation. Admission does not carry
+application intent or execution/submission authority.
+
+The canonical content hash includes raw policy text, approved hard/soft items
+and preparation admission. Draft ID, time and interpreter metadata do not
+affect it. Equal active content is idempotent; changed content increments the
+subject-local policy version and supersedes the prior active version without
+deleting history. The repository schema requires admission explicitly: an old
+approved record without it fails closed with a typed compatibility error rather
+than receiving defaults or a changed hash at read time. A separate migration
+must precede reapproval; P1a2 does not implement that migration.
 
 #### Priority proposal and planned decision contracts
 
@@ -351,13 +389,247 @@ orchestration version. The claim is an atomic Private Home create under
 not trigger an implicit Agent retry. Only a newly acquired binding may call
 `create_priority_proposal()` once and `finalize_priority_proposal()` once.
 
-#### `ResumeSelector.select()`
+#### Current priority queue read model
 
 ```text
-select(ApplicationPlan, tuple[ResumeVersion, ...]) -> ResumeSelection
+build_current_priority_queue(
+    CurrentPriorityQueueCommand(subject_id, now),
+    typed JobPosting list repository,
+    ACTIVE policy provider,
+    CandidateSummaryProvider,
+    orchestration read repository,
+    PriorityDecision read repository,
+    adapter metadata,
+) -> CurrentPriorityQueueResult
 ```
 
-Only approved, unexpired, hash-valid, evidence-current variants are eligible. The result contains the selected resume ID/revision and deterministic reason codes; it never returns altered document bytes. No eligible resume produces `MATERIALS_REQUIRED`.
+`PrivateHomeJobPostingRepository.list_current()` uses the same canonical parser
+as single-job reads, returns typed usable records in stable job-ID order and
+fails closed on any damaged persisted record. The queue builder reuses
+`build_single_job_priority_binding()`; it does not maintain a parallel
+definition of current inputs.
+
+Each `CurrentPriorityQueueItem` is exactly one of `CURRENT`, `STALE`, `MISSING`
+or `INCOMPLETE`. Only `CURRENT` exposes the existing Proposal and Decision.
+Stale reasons are direct binding comparisons covering job revision/content,
+policy, CandidateSummary, Agent/prompt/model metadata, evaluation time, Gate
+version and orchestration version. An exact non-completed lifecycle is
+`INCOMPLETE`; corrupted orchestration or Decision data fails the whole read.
+
+The operation has no Agent, Proposal, Gate, claim or repository-write path.
+Current items sort by persisted Decision rank P0→P3, NEEDS_USER, EXCLUDED,
+then `validated_at` and `job_id`; the remaining states form separate stable
+groups. This is a priority read model, not an execution eligibility queue.
+
+#### Selective batch reprioritization
+
+```text
+selectively_reprioritize_jobs(
+    SelectiveBatchReprioritizationCommand(
+        subject_id,
+        now,
+        job_ids=None,
+        max_jobs=None,
+    ),
+    queue_reader=P1d2 callable,
+    single_job_orchestrator=P1d1 callable,
+) -> SelectiveBatchReprioritizationResult
+```
+
+The command must provide a non-empty `job_ids` allowlist or a positive
+`max_jobs`. Explicit IDs retain first-occurrence order after deduplication;
+when both bounds exist, `max_jobs` truncates the deduplicated allowlist. Without
+an allowlist, P1d3 selects at most `max_jobs` STALE/MISSING entries in P1d2
+order. CURRENT, INCOMPLETE and absent explicit IDs become typed skipped or
+not-found items without a P1d1 call.
+
+P1d3 calls P1d2 exactly once and then awaits P1d1 serially at most once per
+selected job. It forwards the identical aware `now`, preserves each
+`SingleJobPriorityResult`, records typed per-item failures and continues with
+later selected jobs. It does not import or call the Agent, Proposal service,
+Gate, binding builder or repositories. There is no batch persistence, retry,
+concurrency or compensating rollback.
+
+#### Runnable Application Queue read model
+
+```text
+build_runnable_application_queue(
+    RunnableApplicationQueueCommand(subject_id, now),
+    priority_queue_reader=P1d2 callable,
+    accepted_intent_repository=typed read port,
+) -> RunnableApplicationQueueResult
+```
+
+P1d4 calls P1d2 once and consumes the exact `PrioritizationPolicy` snapshot
+exposed by that successful result. The snapshot supplies the reviewed
+`PreparationAdmissionPolicy`; P1d4 never performs a second ACTIVE-policy
+lookup. Each item is typed as RUNNABLE or a deterministic blocked state for
+non-current Priority, absent application intent, NEEDS_USER, EXCLUDED,
+unadmitted priority, promotion requirement or unavailable Job lifecycle.
+
+Only an authoritative `REQUEST_APPLICATION` intent can satisfy the intent
+condition. `NOT_FOUND` means no accepted intent; intent corruption or read
+failure fails the complete queue. The result preserves P1d2 order and does not
+call P1d1/P1d3, Agent, Proposal, Gate, claim/save, Application Preparation or
+Execution.
+
+#### Automation-first ApplicationPlan
+
+```text
+create_application_plan(
+    CreateApplicationPlanCommand(
+        subject_id,
+        job_id,
+        now,
+        optional user_preparation_instructions,
+    ),
+    runnable_queue_reader=P1d4 callable,
+    repository=ApplicationPlanRepository,
+) -> CreateApplicationPlanResult
+```
+
+P2a1 calls P1d4 exactly once and creates only from the matching typed
+`RUNNABLE` item. The immutable `ApplicationPlan` binds job revision/content,
+Decision ID, policy ID/version/hash, accepted REQUEST_APPLICATION intent,
+priority, plan contract version, fixed preparation stages, automation/human
+attention policies and an exact instruction hash.
+
+The stable plan ID excludes `created_at`. Identical semantic input is
+`UNCHANGED` and returns the original timestamp; any job, Decision, policy,
+intent or instruction change creates a distinct immutable record. Private Home
+uses atomic create-if-absent storage and typed FOUND/NOT_FOUND/INTEGRITY_FAILURE
+reads. P2a1 neither executes a stage nor imports Agent, materials, browser, ATS
+or Application Engine code.
+
+#### `register_resume_candidate()` / `ResumeCandidateProvider`
+
+```text
+register_resume_candidate(
+    RegisterResumeCandidateCommand(
+        subject_id,
+        managed artifact path,
+        display name,
+        selection-safe summary + trust metadata,
+        explicit now,
+    ),
+    home=PrivateHome,
+    repository=ResumeCandidateRepository,
+) -> RegisterResumeCandidateResult
+
+ResumeCandidateProvider.list_selectable(subject_id)
+    -> ResumeCandidateListResult
+```
+
+P2a2 never scans a directory or promotes `default_resume`,
+`resume_variants` or fallback paths. The registration source must be an
+explicit PDF/DOCX below Private Home `documents/master/`; bytes are validated
+and hashed locally, then copied to
+`state/preparation/resume-candidates/artifacts/<subject-key>/`. Immutable typed
+records live below the sibling `records/<subject-key>/` directory.
+
+The stable resume ID binds subject, artifact hash/type, display name, exact
+summary, summary source/trust, selectable status and contract version; time is
+excluded. Identical replay is `UNCHANGED`. Reads require explicit subject
+ownership and revalidate both the JSON record and artifact bytes. Any corrupt
+record or missing/mismatched artifact fails the full list with
+`INTEGRITY_FAILURE`. Only authenticated-caller summaries marked `VERIFIED` or
+`USER_CONFIRMED` are accepted. P2a2 calls no Agent, JobPosting reader,
+selection, tailoring or execution service.
+
+#### `select_base_resume()`
+
+```text
+select_base_resume(
+    SelectBaseResumeCommand(subject_id, application_plan_id, explicit now),
+    application_plan_repository,
+    job_repository,
+    candidate_provider,
+    agent,
+    metadata,
+    decision_repository,
+) -> SelectBaseResumeResult
+```
+
+P2a3 loads the immutable plan, validates subject ownership, then requires the
+typed JobPosting ID/revision/hash to match its binding exactly. The complete
+candidate set comes from `ResumeCandidateProvider`; no path or artifact bytes
+are sent to the Agent.
+
+Zero candidates return `DEFERRED_NO_RESUME` with no write. One candidate is
+selected deterministically with zero Agent calls. Multiple candidates permit
+one tool-free `ResumeSelectionAgentPort.evaluate()` call over typed JD data,
+selection-safe candidate projections and the exact plan-scoped instructions.
+Ordinary code validates the returned resume ID, candidate contract version and
+artifact hash. Refusal, ambiguity or any mismatch is
+`DEFERRED_NEEDS_HUMAN`; there is no retry or successful Decision.
+
+The candidate-set canonical hash and a pre-Agent selection binding include the
+plan/job bindings, candidate set, selection contract and configured
+Agent/prompt/model versions. A completed binding is read before evaluation and
+returns `UNCHANGED` with the original `selected_at`. Immutable Decision content
+has its own validated hash; conflicting or corrupt records fail closed. P2a3
+does not tailor or copy a resume, create Human Attention state, prepare
+materials, invoke execution code or authorize submission.
+
+#### `create_source_resume_projection()`
+
+```text
+create_source_resume_projection(
+    CreateSourceResumeProjectionCommand(subject_id, resume_id, explicit now),
+    candidate_repository,
+    artifact_reader,
+    deterministic parser,
+    projection_repository,
+) -> CreateSourceResumeProjectionResult
+```
+
+P2a4a reads one subject-owned `ResumeCandidate`, re-reads its managed artifact
+bytes and checks their SHA-256 before any repository reuse or parsing.
+`DeterministicSourceResumeParser` uses `pdfplumber` for text-based PDF
+page/line extraction and standard-library ZIP/XML for DOCX body paragraphs and
+table cells. It performs no OCR, model call or semantic completion.
+
+The typed projection contains ordered sections and blocks, exact extracted
+text, stable section/block/bullet IDs and typed PDF or DOCX locators. IDs bind
+artifact hash, locator, contract and parser versions. The projection ID also
+binds subject/resume ownership; its canonical content hash excludes
+`projected_at`. Private Home records are immutable under
+`state/preparation/source-resume-projections/<subject-key>/`. Reads distinguish
+FOUND, NOT_FOUND and INTEGRITY_FAILURE; creates distinguish CREATED, UNCHANGED,
+UNSUPPORTED, UNREADABLE and FAILED.
+
+#### `create_candidate_evidence_snapshot()`
+
+```text
+create_candidate_evidence_snapshot(
+    CreateCandidateEvidenceSnapshotCommand(
+        subject_id,
+        application_plan_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    selection_repository,
+    candidate_repository,
+    projection_repository,
+    snapshot_repository,
+) -> CreateCandidateEvidenceSnapshotResult
+```
+
+P2a4b uses typed read queries to select the latest complete immutable
+`ResumeSelectionDecision` for the Plan and latest complete immutable
+`SourceResumeProjection` for the selected resume/artifact. Ordering is by the
+stored domain timestamp, then stable ID; malformed sibling records fail the
+whole query. The builder revalidates every Plan/Selection/Candidate/Projection
+identity and content-hash binding before creating evidence.
+
+Each ordered `CandidateEvidenceItem` copies one source block's exact text,
+section/block/bullet identity and typed locator. Source type is
+`SOURCE_RESUME_PROJECTION`; sensitivity is `PERSONAL`; the sole allowed scope
+is `RESUME_TAILORING`; verification is
+`USER_PROVIDED_DOCUMENT_STATEMENT`. The snapshot is immutable below
+`state/preparation/candidate-evidence-snapshots/<subject-key>/` and provides
+typed FOUND/NOT_FOUND/INTEGRITY_FAILURE reads plus
+CREATED/UNCHANGED/DEFERRED_NO_EVIDENCE/FAILED creation outcomes.
 
 #### `SemanticMapper.map_controls()`
 
@@ -541,16 +813,24 @@ These are sanitized fixture results, not live-site reliability claims.
 | Provider-neutral Greenhouse public job read | Implemented C1 + C2a/C3a contract coverage | 41 focused fake-HTTP/fixture contract, routing, serialization, failure and boundary cases; no live-network claim |
 | Provider-neutral Lever public job read | Implemented C2 | 37 focused fake-HTTP/fixture mapping, routing, failure and boundary cases; no live-network claim |
 | Generic JSON-LD public job read | Implemented C3 | 45 focused fake-HTTP/fixture parsing, SSRF, redirect, size, failure and boundary cases; no live-network claim |
-| Conversational URL intake and action resolution | Implemented I1 + I2 | 29 fake-reader/store/Discovery-port extraction, conversion, atomic consumption, replay, failure and dependency-boundary cases; no network claim |
+| Conversational URL intake and action resolution | Implemented I1 + I2 + I2b | 45 synthetic reader/store/Discovery/intent-repository cases for extraction, conversion, atomic consumption, durable subject intent, replay, precedence, integrity failures and dependency boundaries; no network claim |
 | Known Greenhouse board candidate search | Implemented S1a | 43 fake-HTTP/fixture contract, allowlist, matching, ordering, failure and dependency-boundary cases; no live-network claim |
 | Conversational named-job search | Implemented S1b application boundary | 13 fake-extractor/search-port tests for URL priority, clues, 0/1/many results, TTL, failures and side-effect boundaries |
 | Candidate selection to pending action | Implemented S2 | 13 fake-reader/store cases for validation, atomic claim, replay/conflict, failure release and dependency boundaries |
 | Conversational/remaining connector Job Discovery | Partial | URL read, named search, candidate selection and add/apply entry exist; Lever search, SearchProfile and product-surface wiring remain |
-| Editable Prioritization Policy | Implemented P1a | 20 fake-interpreter, draft-validation, approval, version/hash, Private Home and dependency-boundary cases |
+| Editable Prioritization Policy and preparation admission | Implemented P1a + P1a2 | 31 fake-interpreter, draft/admission validation, approval, version/hash, Private Home compatibility and dependency-boundary cases |
 | AI Priority Proposal | Implemented P1b | 35 synthetic-context/fake-agent binding, deterministic-fact, evidence, invariant, failure and dependency-boundary cases; no real-model claim |
 | Single-call Priority Agent adapter | Implemented P1b2 | fake-provider and mocked-Responses tests prove one tool-free strict-schema call, system/data separation, metadata ownership, sanitized logging and existing P1b validation; optional synthetic smoke script is excluded from routine tests |
 | Priority Validation Gate / formal P0–P3 decision | Implemented P1c | 35 synthetic Gate/repository cases within the 70-case Priority suite; deterministic constraints, reconciliation, binding, schema, immutability and idempotency evidence |
 | Single-job Priority orchestration | Implemented P1d1 | 15 synthetic orchestration/read/provider cases; atomic pre-Agent claim, one-call flow, `CREATED`/`UNCHANGED`, changed bindings, subject isolation and failure boundaries |
+| Current Priority queue read model | Implemented P1d2 | 14 synthetic cases for typed listing, current/stale/missing/incomplete projection, stale reasons, subject isolation, stable sorting, fail-closed data integrity and zero-write/zero-Agent boundaries |
+| Selective batch reprioritization | Implemented P1d3 | 16 synthetic and real-service composition cases for bounded selection, caller/P1d2 order, serial execution, exact-time forwarding, typed aggregation, failure isolation, NOOP and repeated-run zero-extra-Agent idempotency |
+| Runnable Application Queue read model | Implemented P1d4 | 17 synthetic cases for direct admission, accepted-intent isolation/integrity, every blocked state, same-snapshot policy use, order preservation and zero-write/zero-execution boundaries |
+| Automation-first ApplicationPlan | Implemented P2a1 | 16 synthetic cases for RUNNABLE-only creation, immutable bindings, exact instructions, stable identity/replay, changed inputs, restart reads, fail-closed persistence and zero-Agent/zero-execution boundaries |
+| Trusted Resume Candidate Registry | Implemented P2a2 | 15 synthetic cases for managed artifact validation, actual-byte hashing, immutable replay/conflict, subject isolation, trusted summaries, stable restart reads, fail-closed integrity and zero-selection/zero-execution boundaries |
+| Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
+| Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
+| Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
 | Material preparation workflow | Partial | material/bundle tests; end-to-end service not yet unified |
 | P0–P3 to execution strategy | Migration blocker | legacy runtime maps P0/P1→High, P2→Medium, P3→Low; it must not consume the target policy |
 

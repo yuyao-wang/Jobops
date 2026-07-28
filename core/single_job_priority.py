@@ -129,6 +129,51 @@ class SingleJobPriorityBinding:
     evaluated_at: str
     orchestration_version: str = SINGLE_JOB_PRIORITY_ORCHESTRATION_VERSION
 
+    def __post_init__(self) -> None:
+        for name in (
+            "subject_id",
+            "job_id",
+            "policy_id",
+            "candidate_summary_version",
+            "agent_version",
+            "prompt_version",
+            "model_id",
+            "validation_version",
+            "orchestration_version",
+        ):
+            value = getattr(self, name)
+            if _clean_id(name, value) != value:
+                raise ValueError(f"{name} must be canonical")
+        for name in ("job_revision", "policy_version"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer")
+        for name in (
+            "job_content_hash",
+            "policy_content_hash",
+            "candidate_summary_content_hash",
+        ):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in value
+                )
+            ):
+                raise ValueError(f"{name} must be a SHA-256 digest")
+        if (
+            not isinstance(self.evaluated_at, str)
+            or _rfc3339(_parse_timestamp(self.evaluated_at))
+            != self.evaluated_at
+        ):
+            raise ValueError("evaluated_at must be canonical RFC 3339 UTC")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "subject_id": self.subject_id,
@@ -158,6 +203,7 @@ class SingleJobPriorityBinding:
 @dataclass(frozen=True, slots=True)
 class StoredSingleJobPriority:
     input_binding: str
+    binding: SingleJobPriorityBinding
     status: OrchestrationRecordStatus
     proposal: PriorityProposal | None
     decision_id: str | None
@@ -304,6 +350,29 @@ def build_single_job_priority_binding(
         validation_version=PRIORITY_VALIDATION_VERSION,
         evaluated_at=_rfc3339(now),
     )
+
+
+def _binding_from_dict(value: Any) -> SingleJobPriorityBinding:
+    expected = {
+        "subject_id",
+        "job_id",
+        "job_revision",
+        "job_content_hash",
+        "policy_id",
+        "policy_version",
+        "policy_content_hash",
+        "candidate_summary_version",
+        "candidate_summary_content_hash",
+        "agent_version",
+        "prompt_version",
+        "model_id",
+        "validation_version",
+        "evaluated_at",
+        "orchestration_version",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError("persisted orchestration binding is invalid")
+    return SingleJobPriorityBinding(**dict(value))
 
 
 def _parse_timestamp(value: Any) -> datetime:
@@ -498,8 +567,17 @@ class PrivateHomeSingleJobPriorityRepository:
         self,
         binding: SingleJobPriorityBinding,
     ) -> StoredSingleJobPriority | None:
-        input_binding = binding.input_binding
-        path = self._path(input_binding)
+        return self._read_path(
+            self._path(binding.input_binding),
+            expected_binding=binding,
+        )
+
+    def _read_path(
+        self,
+        path: Path,
+        *,
+        expected_binding: SingleJobPriorityBinding | None = None,
+    ) -> StoredSingleJobPriority | None:
         if not path.is_file():
             return None
         try:
@@ -518,13 +596,24 @@ class PrivateHomeSingleJobPriorityRepository:
             "decision_id",
             "failure_reason",
         }
+        try:
+            stored_binding = _binding_from_dict(value["binding"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SingleJobPriorityRepositoryError(
+                "orchestration record binding is invalid"
+            ) from exc
+        input_binding = stored_binding.input_binding
         if (
             not isinstance(value, Mapping)
             or set(value) != expected
             or value["schema_version"]
             != _ORCHESTRATION_RECORD_SCHEMA_VERSION
             or value["input_binding"] != input_binding
-            or value["binding"] != binding.to_dict()
+            or path.name != f"{input_binding}.json"
+            or (
+                expected_binding is not None
+                and stored_binding != expected_binding
+            )
         ):
             raise SingleJobPriorityRepositoryError(
                 "orchestration record binding is invalid"
@@ -579,6 +668,7 @@ class PrivateHomeSingleJobPriorityRepository:
             )
         return StoredSingleJobPriority(
             input_binding=input_binding,
+            binding=stored_binding,
             status=status,
             proposal=proposal,
             decision_id=value["decision_id"],
@@ -688,6 +778,34 @@ class PrivateHomeSingleJobPriorityRepository:
             ):
                 return existing
             return None
+
+    def list_for_subject(
+        self,
+        subject_id: str,
+    ) -> tuple[StoredSingleJobPriority, ...]:
+        clean_subject = _clean_id("subject_id", subject_id)
+        directory = self._home.paths.prioritization / "orchestrations"
+        if not directory.is_dir():
+            return ()
+        try:
+            paths = tuple(sorted(directory.glob("priority-input-*.json")))
+        except OSError as exc:
+            raise SingleJobPriorityRepositoryError(
+                "orchestration history could not be listed"
+            ) from exc
+        records: list[StoredSingleJobPriority] = []
+        with self._lock:
+            for path in paths:
+                record = self._read_path(path)
+                if record is None:
+                    raise SingleJobPriorityRepositoryError(
+                        "orchestration record disappeared during listing"
+                    )
+                if record.binding.subject_id == clean_subject:
+                    records.append(record)
+        return tuple(
+            sorted(records, key=lambda item: item.input_binding)
+        )
 
     def complete(
         self,
@@ -872,7 +990,7 @@ def _completed_result(
     )
 
 
-def _completed_bindings_match(
+def completed_priority_bindings_match(
     *,
     binding: SingleJobPriorityBinding,
     proposal: PriorityProposal,
@@ -1048,7 +1166,7 @@ async def orchestrate_single_job_priority(
                 input_binding=binding.input_binding,
                 retryable=True,
             )
-        if decision is None or not _completed_bindings_match(
+        if decision is None or not completed_priority_bindings_match(
             binding=binding,
             proposal=claimed.proposal,
             decision=decision,
@@ -1218,5 +1336,6 @@ __all__ = [
     "SingleJobPriorityStatus",
     "StoredSingleJobPriority",
     "build_single_job_priority_binding",
+    "completed_priority_bindings_match",
     "orchestrate_single_job_priority",
 ]

@@ -105,7 +105,7 @@ Job Discovery Domain
 │   │           reader: PublicJobReader,
 │   │       ) -> ConversationalIntakeResponse
 │   │
-│   └── I2 add/apply Resolution                        [完成]
+│   ├── I2 add/apply Resolution                        [完成]
 │       ├── 生成 typed JobIntakeProposal
 │       ├── 原子消费 Pending；同 action 重放结果
 │       ├── 调用 injected JobDiscoveryPort
@@ -113,8 +113,16 @@ Job Discovery Domain
 │               request: ResolvePendingIntakeRequest,
 │               *,
 │               pending_store: InMemoryPendingIntakeStore,
+│               accepted_intent_repository,
 │               discovery_port,
 │           ) -> ResolvePendingIntakeResponse
+│   │
+│   └── I2b Accepted Job Intent                        [完成]
+│       ├── Discovery ACCEPTED 后才写入
+│       ├── explicit subject + formal job/run binding
+│       ├── immutable CREATED / UNCHANGED
+│       ├── current read：FOUND / NOT_FOUND / INTEGRITY_FAILURE
+│       └── Private Home：state/intake/accepted-job-intents/
 │
 ├── Job Search                                         [部分]
 │   ├── Provider-neutral JobSearchPort                 [完成]
@@ -197,7 +205,9 @@ PendingIntake: WAITING_FOR_ACTION
   ↓ 用户必须明确选择
 ADD_JOB / REQUEST_APPLICATION
   ↓
-现有 I2 → Job Discovery
+I2 → Job Discovery
+  ↓ accepted
+AcceptedJobIntent
 ```
 
 统一写入路径：
@@ -215,15 +225,16 @@ run_discovery(...)
   ↓
 Private Home
   ├── JobPosting
-  └── DiscoveryRun
+  ├── DiscoveryRun
+  └── AcceptedJobIntent（subject-specific）
 ```
 
 ## 3. Job Prioritization
 
 ```text
-Job Prioritization                                     [部分：P1a–P1c 完成]
+Job Prioritization                                     [部分：P1a–P1d4 完成]
 │
-├── Editable Policy                                    [完成 P1a]
+├── Editable Policy                                    [完成 P1a + P1a2]
 │   ├── PrioritizationPolicyService
 │   │   ├── async create_policy_draft(
 │   │   │       request: CreatePolicyDraftRequest,
@@ -234,8 +245,13 @@ Job Prioritization                                     [部分：P1a–P1c 完�
 │   │   └── get_active_policy(
 │   │           subject_id: str,
 │   │       ) -> PrioritizationPolicy | None
+│   ├── PreparationAdmissionPolicy
+│   │   ├── draft default：P0 / P1 / P2 direct eligible
+│   │   ├── draft default：P3 explicit promotion
+│   │   ├── reviewed typed P0–P3 disjoint sets
+│   │   └── NEEDS_USER / EXCLUDED forbidden
 │   ├── Draft：进程内短期状态
-│   └── Approved Policy：Private Home 版本化持久化
+│   └── Approved Policy：admission 进入 hash/version/Private Home
 │
 ├── AI Priority Proposal                               [完成 P1b]
 │   ├── build_candidate_summary(...) -> CandidateSummary
@@ -282,8 +298,46 @@ Job Prioritization                                     [部分：P1a–P1c 完�
 │   ├── new binding → Proposal once → Gate once
 │   └── completed binding → UNCHANGED / zero Agent call
 │
-├── Job Analysis                                       [计划 后续]
-└── Reprioritization / Queue                           [计划 P1d]
+├── Current Priority Queue                             [完成 P1d2]
+│   ├── build_current_priority_queue(
+│   │       command: CurrentPriorityQueueCommand,
+│   │       ...read ports,
+│   │   ) -> CurrentPriorityQueueResult
+│   ├── typed JobPosting list
+│   ├── ACTIVE Policy + trusted CandidateSummary
+│   ├── reuse P1d1 expected binding
+│   ├── CURRENT / STALE / MISSING / INCOMPLETE
+│   ├── CURRENT：existing Proposal + Decision
+│   ├── sorting：P0 → P1 → P2 → P3 → NEEDS_USER → EXCLUDED
+│   └── zero Agent / zero Gate / zero claim / zero write
+│
+├── Selective Batch Reprioritization                   [完成 P1d3]
+│   ├── selectively_reprioritize_jobs(
+│   │       command: SelectiveBatchReprioritizationCommand,
+│   │       queue_reader: P1d2 callable,
+│   │       single_job_orchestrator: P1d1 callable,
+│   │   ) -> SelectiveBatchReprioritizationResult
+│   ├── non-empty job_ids or positive max_jobs
+│   ├── execute：STALE / MISSING only
+│   ├── skip：CURRENT / INCOMPLETE
+│   ├── deterministic serial order / same explicit now
+│   ├── typed per-job failure isolation
+│   └── no direct Agent / Proposal / Gate / repository access
+│
+├── Runnable Application Queue                        [完成 P1d4]
+│   ├── build_runnable_application_queue(
+│   │       command: RunnableApplicationQueueCommand,
+│   │       priority_queue_reader: P1d2 callable,
+│   │       accepted_intent_repository: typed read port,
+│   │   ) -> RunnableApplicationQueueResult
+│   ├── exact P1d2 policy snapshot / no second policy lookup
+│   ├── RUNNABLE：CURRENT + REQUEST_APPLICATION + direct admission
+│   ├── typed blocks：not-current / intent / decision / priority / lifecycle
+│   ├── P3 promotion-required is blocked; no promotion record is created
+│   ├── preserve P1d2 order
+│   └── zero Agent / Gate / claim / save / preparation / execution
+│
+└── Job Analysis                                       [计划 后续]
 ```
 
 Priority 主数据流：
@@ -311,6 +365,25 @@ finalize_priority_proposal(...)
 PriorityDecision（正式、不可变、幂等持久化）
   ↓
 Private Home
+
+explicit subject_id + explicit now
+  ↓
+Current Priority Queue
+  ↓ list current JobPosting + load ACTIVE Policy + CandidateSummary
+  ↓ reuse P1d1 binding + read orchestration history
+CURRENT / STALE / MISSING / INCOMPLETE
+  ├─ bounded STALE / MISSING selection
+  │   ↓
+  │ Selective Batch Reprioritization
+  │   ↓ serial P1d1 calls
+  │ new immutable PriorityDecision bindings
+  │
+  └─ exact policy snapshot + accepted job intent
+      ↓
+    Runnable Application Queue
+      ↓ explicit single-job selection
+    immutable ApplicationPlan
+      ↓ later preparation stages; no execution authority
 ```
 
 边界：
@@ -318,7 +391,10 @@ Private Home
 ```text
 Priority Agent   -X→ Repository / ATS / Browser / Application Preparation
 Validation Gate  -X→ 再次调用 Agent
-PriorityDecision -X→ 自动进入申请队列（P1d 尚未实现）
+Priority Queue   -X→ Agent / Gate / claim / write / 自动重排 / 自动申请
+Selective Batch  -X→ direct Agent / Proposal / Gate / repository save
+PriorityDecision -X→ 绕过 accepted intent / admission / P1d4 创建计划
+ApplicationPlan -X→ 材料已完成 / browser execution / submit authority
 ```
 
 ## 4. Application Preparation
@@ -326,12 +402,55 @@ PriorityDecision -X→ 自动进入申请队列（P1d 尚未实现）
 ```text
 Application Preparation                                [部分]
 │
+├── ApplicationPlan                                    [完成 P2a1]
+│   ├── create_application_plan(
+│   │       command: CreateApplicationPlanCommand,
+│   │       runnable_queue_reader: P1d4 callable,
+│   │       repository: ApplicationPlanRepository,
+│   │   ) -> CreateApplicationPlanResult
+│   ├── RUNNABLE-only / P1d4 exactly once
+│   ├── immutable job + Decision + policy + intent binding
+│   ├── plan-scoped exact user instructions + canonical hash
+│   ├── AUTOMATION_FIRST
+│   └── DEFER_ITEM_AND_CONTINUE
+│
 ├── CandidateEvidence
-├── Resume selection / tailoring
-├── Cover Letter
-├── Application answers
-├── Fact QA
-├── Visual QA
+│   └── Trusted Resume Candidate Registry              [完成 P2a2]
+│       ├── explicit subject-scoped registration only
+│       ├── actual PDF/DOCX bytes → SHA-256
+│       ├── verified/user-confirmed safe summary
+│       ├── immutable CREATED / UNCHANGED records
+│       └── typed get + stable list_selectable
+├── Resume Preparation                                 [部分]
+│   ├── Automatic Base Resume Selection                [完成 P2a3]
+│   │   ├── Plan + exact typed JobPosting binding check
+│   │   ├── ResumeCandidateProvider only
+│   │   ├── 0 candidates → defer / 1 → zero Agent
+│   │   ├── many → bounded Agent at most once
+│   │   └── immutable Decision + pre-Agent UNCHANGED
+│   ├── Hash-bound Source Resume Projection             [完成 P2a4a]
+│   │   ├── ResumeCandidateRepository.get only
+│   │   ├── managed artifact bytes re-hashed before parse
+│   │   ├── PDF page/line and DOCX structural locators
+│   │   ├── stable section/block/bullet IDs
+│   │   └── immutable typed projection / zero Agent or OCR
+│   ├── CandidateEvidence Snapshot                      [完成 P2a4b]
+│   │   ├── Plan → latest complete Selection
+│   │   ├── selected Candidate → latest complete Projection
+│   │   ├── exact block text + typed source locator
+│   │   ├── PERSONAL / RESUME_TAILORING only
+│   │   ├── USER_PROVIDED_DOCUMENT_STATEMENT
+│   │   └── immutable snapshot / CREATED or UNCHANGED
+│   ├── static Resume Agent Policy
+│   ├── runtime user instructions
+│   ├── Action Verb + Details + evidenced Outcome
+│   └── Evidence-bound TailoredResumeDraft              [计划 P2a4c]
+├── Cover Letter                                       [计划]
+├── Application Answers                               [计划]
+├── Fact QA                                            [计划]
+├── Visual QA                                          [计划]
+├── Human Attention Queue                              [计划]
+│   └── item-scoped defer-and-continue
 ├── Material manifest                                  [完成]
 │   └── load_material_manifest(
 │           home: PrivateHome,
@@ -479,6 +598,8 @@ JobIntakeProposal
 run_discovery(...)
   ↓
 去重与更新
+  ↓ accepted
+AcceptedJobIntent persistence
   ↓
 Job Prioritization
   ↓
@@ -509,6 +630,8 @@ JobIntakeProposal
   ↓
 run_discovery(...)
   ↓
+AcceptedJobIntent persistence
+  ↓
 Job Prioritization
   ↓
 ApplicationPlan
@@ -522,9 +645,9 @@ Application Execution
 
 ```text
 Conversational Intake
-  ├── 可以：调用 PublicJobReader、JobSearch、JobDiscovery Port
+  ├── 可以：调用 PublicJobReader、JobSearch、JobDiscovery 和 AcceptedJobIntent Port
   ├── 可以：管理 CandidateSet、候选选择、add/apply 和 JobIntakeProposal
-  └── 不可以：调用具体 Connector、Repository、CSV、Private Home 或 ATS
+  └── 不可以：调用具体 Connector/Repository、CSV、Private Home 或 ATS
 
 JobSearchPort
   ├── 可以：返回 0 / 1 / 多个 SearchCandidate

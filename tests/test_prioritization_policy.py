@@ -19,11 +19,15 @@ from core.prioritization_policy import (
     PolicyOperationStatus,
     PolicyReason,
     PreferenceImportance,
+    PreparationAdmissionPolicy,
+    PreparationPriority,
+    PrioritizationPolicyCompatibilityError,
     PrioritizationPolicyService,
     PrioritizationPolicyStatus,
     PrivateHomePrioritizationPolicyRepository,
     SoftPreference,
     SoftPreferenceCategory,
+    default_preparation_admission_policy,
     policy_content_hash,
 )
 from core.private_home import PrivateHome
@@ -150,6 +154,7 @@ def _approval(
     raw_text: str = RAW_POLICY,
     hard_constraints: tuple[HardConstraint, ...] | None = None,
     soft_preferences: tuple[SoftPreference, ...] | None = None,
+    preparation_admission: PreparationAdmissionPolicy | None = None,
 ) -> ApprovePolicyRequest:
     return ApprovePolicyRequest(
         draft_id=draft_id,
@@ -162,6 +167,11 @@ def _approval(
         ),
         reviewed_soft_preferences=(
             (_soft(),) if soft_preferences is None else soft_preferences
+        ),
+        reviewed_preparation_admission=(
+            preparation_admission
+            if preparation_admission is not None
+            else default_preparation_admission_policy()
         ),
     )
 
@@ -187,6 +197,58 @@ async def test_policy_text_calls_interpreter_once_and_creates_typed_draft(
     assert result.draft.hard_constraints[0].user_confirmed is False
     assert store.get(result.draft.draft_id) == result.draft
     assert not home.root.exists()
+
+
+@pytest.mark.asyncio
+async def test_new_draft_has_default_preparation_admission_policy(
+    tmp_path: Path,
+) -> None:
+    service, _, _, _, _, _ = _service(tmp_path)
+
+    draft = await _create_ready_draft(service)
+
+    assert draft.preparation_admission == PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+            PreparationPriority.P2,
+        ),
+        explicit_promotion_priorities=(PreparationPriority.P3,),
+    )
+
+
+@pytest.mark.parametrize("unsupported", ["NEEDS_USER", "EXCLUDED"])
+def test_preparation_admission_rejects_non_priority_outcomes(
+    unsupported: str,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="unsupported priority outcome",
+    ):
+        PreparationAdmissionPolicy(
+            preparation_eligible_priorities=(unsupported,),
+            explicit_promotion_priorities=(),
+        )
+
+
+def test_preparation_admission_rejects_duplicates_and_overlap() -> None:
+    with pytest.raises(ValueError, match="must not contain duplicate"):
+        PreparationAdmissionPolicy(
+            preparation_eligible_priorities=(
+                PreparationPriority.P0,
+                PreparationPriority.P0,
+            ),
+            explicit_promotion_priorities=(),
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="direct and explicit-promotion priorities must not overlap",
+    ):
+        PreparationAdmissionPolicy(
+            preparation_eligible_priorities=(PreparationPriority.P1,),
+            explicit_promotion_priorities=(PreparationPriority.P1,),
+        )
 
 
 @pytest.mark.asyncio
@@ -504,19 +566,100 @@ async def test_approval_persists_user_reviewed_edits_not_interpreter_output(
     assert result.policy.soft_preferences == reviewed_soft
 
 
+@pytest.mark.asyncio
+async def test_approval_persists_reviewed_preparation_admission_across_restart(
+    tmp_path: Path,
+) -> None:
+    service, _, _, _, home, _ = _service(tmp_path)
+    draft = await _create_ready_draft(service)
+    reviewed_admission = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P1,
+            PreparationPriority.P0,
+        ),
+        explicit_promotion_priorities=(
+            PreparationPriority.P3,
+            PreparationPriority.P2,
+        ),
+    )
+
+    result = service.approve_policy(
+        _approval(
+            draft.draft_id,
+            preparation_admission=reviewed_admission,
+        )
+    )
+
+    assert result.status is PolicyOperationStatus.SUCCEEDED
+    assert result.policy is not None
+    assert result.policy.preparation_admission == PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+        ),
+        explicit_promotion_priorities=(
+            PreparationPriority.P2,
+            PreparationPriority.P3,
+        ),
+    )
+    restarted_repository = PrivateHomePrioritizationPolicyRepository(home)
+    assert (
+        restarted_repository.get_active_policy("candidate-synthetic")
+        == result.policy
+    )
+
+
 def test_policy_content_hash_excludes_draft_time_and_interpreter_metadata() -> None:
     first = policy_content_hash(
         raw_preference_text=RAW_POLICY,
         hard_constraints=(_hard(confirmed=True),),
         soft_preferences=(_soft(),),
+        preparation_admission=default_preparation_admission_policy(),
     )
     second = policy_content_hash(
         raw_preference_text=f"  {RAW_POLICY}  ",
         hard_constraints=(_hard(confirmed=True),),
         soft_preferences=(_soft(),),
+        preparation_admission=default_preparation_admission_policy(),
     )
 
     assert first == second
+
+
+def test_preparation_admission_changes_policy_content_hash() -> None:
+    direct_p0_to_p2 = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+            PreparationPriority.P2,
+        ),
+        explicit_promotion_priorities=(PreparationPriority.P3,),
+    )
+    direct_p0_to_p1 = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+        ),
+        explicit_promotion_priorities=(
+            PreparationPriority.P2,
+            PreparationPriority.P3,
+        ),
+    )
+
+    first = policy_content_hash(
+        raw_preference_text=RAW_POLICY,
+        hard_constraints=(_hard(confirmed=True),),
+        soft_preferences=(_soft(),),
+        preparation_admission=direct_p0_to_p2,
+    )
+    second = policy_content_hash(
+        raw_preference_text=RAW_POLICY,
+        hard_constraints=(_hard(confirmed=True),),
+        soft_preferences=(_soft(),),
+        preparation_admission=direct_p0_to_p1,
+    )
+
+    assert first != second
 
 
 @pytest.mark.asyncio
@@ -550,6 +693,58 @@ async def test_same_active_content_is_idempotent_across_new_drafts(
     )
     second_draft = await _create_ready_draft(second_service)
     second = second_service.approve_policy(_approval(second_draft.draft_id))
+
+    assert second.policy == first.policy
+    assert len(repository.list_policies("candidate-synthetic")) == 1
+
+
+@pytest.mark.asyncio
+async def test_same_custom_admission_is_idempotent_across_new_drafts(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "synthetic-private-home")
+    repository = PrivateHomePrioritizationPolicyRepository(home)
+    clock = MutableClock()
+    admission = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(PreparationPriority.P0,),
+        explicit_promotion_priorities=(
+            PreparationPriority.P1,
+            PreparationPriority.P2,
+            PreparationPriority.P3,
+        ),
+    )
+
+    first_service = PrioritizationPolicyService(
+        interpreter=FakeInterpreter(_interpretation()),
+        draft_store=InMemoryPrioritizationPolicyDraftStore(),
+        repository=repository,
+        clock=clock,
+        draft_id_factory=lambda: "draft-admission-first",
+    )
+    first_draft = await _create_ready_draft(first_service)
+    first = first_service.approve_policy(
+        _approval(
+            first_draft.draft_id,
+            preparation_admission=admission,
+        )
+    )
+    assert first.policy is not None
+
+    clock.value = NOW + timedelta(minutes=1)
+    second_service = PrioritizationPolicyService(
+        interpreter=FakeInterpreter(_interpretation()),
+        draft_store=InMemoryPrioritizationPolicyDraftStore(),
+        repository=repository,
+        clock=clock,
+        draft_id_factory=lambda: "draft-admission-second",
+    )
+    second_draft = await _create_ready_draft(second_service)
+    second = second_service.approve_policy(
+        _approval(
+            second_draft.draft_id,
+            preparation_admission=admission,
+        )
+    )
 
     assert second.policy == first.policy
     assert len(repository.list_policies("candidate-synthetic")) == 1
@@ -624,6 +819,96 @@ async def test_changed_content_appends_version_and_supersedes_without_deletion(
         first.policy.policy_id,
     ) == history[0]
     assert history[0].raw_preference_text == RAW_POLICY
+
+
+@pytest.mark.asyncio
+async def test_changed_admission_appends_version_and_supersedes_old_policy(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "synthetic-private-home")
+    repository = PrivateHomePrioritizationPolicyRepository(home)
+    clock = MutableClock()
+    first_service = PrioritizationPolicyService(
+        interpreter=FakeInterpreter(_interpretation()),
+        draft_store=InMemoryPrioritizationPolicyDraftStore(),
+        repository=repository,
+        clock=clock,
+        draft_id_factory=lambda: "draft-admission-v1",
+    )
+    first_draft = await _create_ready_draft(first_service)
+    first = first_service.approve_policy(_approval(first_draft.draft_id))
+    assert first.policy is not None
+
+    changed_admission = PreparationAdmissionPolicy(
+        preparation_eligible_priorities=(
+            PreparationPriority.P0,
+            PreparationPriority.P1,
+        ),
+        explicit_promotion_priorities=(
+            PreparationPriority.P2,
+            PreparationPriority.P3,
+        ),
+    )
+    clock.value = NOW + timedelta(minutes=1)
+    second_service = PrioritizationPolicyService(
+        interpreter=FakeInterpreter(_interpretation()),
+        draft_store=InMemoryPrioritizationPolicyDraftStore(),
+        repository=repository,
+        clock=clock,
+        draft_id_factory=lambda: "draft-admission-v2",
+    )
+    second_draft = await _create_ready_draft(second_service)
+    second = second_service.approve_policy(
+        _approval(
+            second_draft.draft_id,
+            preparation_admission=changed_admission,
+        )
+    )
+    assert second.policy is not None
+
+    history = repository.list_policies("candidate-synthetic")
+    assert second.policy.policy_version == 2
+    assert (
+        second.policy.policy_content_hash
+        != first.policy.policy_content_hash
+    )
+    assert history[0].policy_id == first.policy.policy_id
+    assert history[0].status is PrioritizationPolicyStatus.SUPERSEDED
+    assert history[0].preparation_admission == (
+        first.policy.preparation_admission
+    )
+    assert history[1] == second.policy
+    assert history[1].status is PrioritizationPolicyStatus.ACTIVE
+    assert history[1].previous_policy_id == history[0].policy_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_shape", ["old-schema", "missing-admission"])
+async def test_legacy_policy_without_current_admission_contract_fails_closed(
+    tmp_path: Path,
+    legacy_shape: str,
+) -> None:
+    service, _, _, _, home, _ = _service(tmp_path)
+    draft = await _create_ready_draft(service)
+    approved = service.approve_policy(_approval(draft.draft_id))
+    assert approved.policy is not None
+    policy_path = next(home.paths.prioritization_policies.glob("*.json"))
+    document = json.loads(policy_path.read_text(encoding="utf-8"))
+    if legacy_shape == "old-schema":
+        document["schema_version"] = 1
+    else:
+        del document["policies"][0]["preparation_admission"]
+    policy_path.write_text(
+        json.dumps(document, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    restarted_repository = PrivateHomePrioritizationPolicyRepository(home)
+    with pytest.raises(
+        PrioritizationPolicyCompatibilityError,
+        match="migration",
+    ):
+        restarted_repository.get_active_policy("candidate-synthetic")
 
 
 @pytest.mark.asyncio

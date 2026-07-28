@@ -61,6 +61,7 @@ from core.prioritization_policy import (
     PrioritizationPolicyStatus,
     SoftPreference,
     SoftPreferenceCategory,
+    default_preparation_admission_policy,
     policy_content_hash,
 )
 from core.profile_store import (
@@ -226,6 +227,7 @@ def _policy(
         ),
     )
     raw = f"{statement} Do not apply in the United States."
+    admission = default_preparation_admission_policy()
     return PrioritizationPolicy(
         policy_id=f"prioritization-policy-synthetic-v{version:06d}",
         subject_id=subject_id,
@@ -234,10 +236,12 @@ def _policy(
             raw_preference_text=raw,
             hard_constraints=hard,
             soft_preferences=soft,
+            preparation_admission=admission,
         ),
         raw_preference_text=raw,
         hard_constraints=hard,
         soft_preferences=soft,
+        preparation_admission=admission,
         status=PrioritizationPolicyStatus.ACTIVE,
         created_at=NOW - timedelta(days=2),
         approved_at=NOW - timedelta(days=1),

@@ -190,12 +190,22 @@ class PrivatePaths:
     policy: Path
     job_queue: Path
     event_ledger: Path
+    intake: Path
+    accepted_job_intents: Path
     discovery: Path
     job_postings: Path
     discovery_runs: Path
     prioritization: Path
     prioritization_policies: Path
     priority_decisions: Path
+    preparation: Path
+    application_plans: Path
+    resume_candidates: Path
+    resume_candidate_records: Path
+    resume_candidate_artifacts: Path
+    resume_selection_decisions: Path
+    source_resume_projections: Path
+    candidate_evidence_snapshots: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,12 +252,32 @@ class PrivateHome:
             policy=profile / "policy.json",
             job_queue=queue / "job_pool.csv",
             event_ledger=state / "events.sqlite3",
+            intake=state / "intake",
+            accepted_job_intents=state / "intake" / "accepted-job-intents",
             discovery=state / "discovery",
             job_postings=state / "discovery" / "job-postings",
             discovery_runs=state / "discovery" / "runs",
             prioritization=state / "prioritization",
             prioritization_policies=state / "prioritization" / "policies",
             priority_decisions=state / "prioritization" / "decisions",
+            preparation=state / "preparation",
+            application_plans=state / "preparation" / "application-plans",
+            resume_candidates=state / "preparation" / "resume-candidates",
+            resume_candidate_records=(
+                state / "preparation" / "resume-candidates" / "records"
+            ),
+            resume_candidate_artifacts=(
+                state / "preparation" / "resume-candidates" / "artifacts"
+            ),
+            resume_selection_decisions=(
+                state / "preparation" / "resume-selections"
+            ),
+            source_resume_projections=(
+                state / "preparation" / "source-resume-projections"
+            ),
+            candidate_evidence_snapshots=(
+                state / "preparation" / "candidate-evidence-snapshots"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -270,12 +300,22 @@ class PrivateHome:
             paths.master_documents,
             paths.generated_documents,
             paths.state,
+            paths.intake,
+            paths.accepted_job_intents,
             paths.discovery,
             paths.job_postings,
             paths.discovery_runs,
             paths.prioritization,
             paths.prioritization_policies,
             paths.priority_decisions,
+            paths.preparation,
+            paths.application_plans,
+            paths.resume_candidates,
+            paths.resume_candidate_records,
+            paths.resume_candidate_artifacts,
+            paths.resume_selection_decisions,
+            paths.source_resume_projections,
+            paths.candidate_evidence_snapshots,
             paths.browser,
             paths.chromium_profile,
             paths.cache,

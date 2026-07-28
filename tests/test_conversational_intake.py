@@ -10,6 +10,13 @@ from threading import Event, Thread
 
 import pytest
 
+from core.accepted_job_intent import (
+    AcceptedJobIntent,
+    AcceptedJobIntentReadResult,
+    AcceptedJobIntentReadStatus,
+    AcceptedJobIntentWriteResult,
+    AcceptedJobIntentWriteStatus,
+)
 from core.conversational_intake import (
     ConversationalIntakeRequest,
     InMemoryPendingIntakeStore,
@@ -91,6 +98,54 @@ class FakeJobDiscoveryPort:
             run_id="discovery-run-synthetic-123",
             job_id="job-synthetic-123" if accepted else None,
             change=self.change if accepted else None,
+        )
+
+
+class FakeAcceptedJobIntentRepository:
+    def __init__(self) -> None:
+        self.calls: list[AcceptedJobIntent] = []
+        self._records: dict[str, AcceptedJobIntent] = {}
+
+    def save(
+        self,
+        intent: AcceptedJobIntent,
+    ) -> AcceptedJobIntentWriteResult:
+        self.calls.append(intent)
+        existing = self._records.get(intent.accepted_job_intent_id)
+        if existing is None:
+            self._records[intent.accepted_job_intent_id] = intent
+            return AcceptedJobIntentWriteResult(
+                status=AcceptedJobIntentWriteStatus.CREATED,
+                intent=intent,
+                reason_code=None,
+                retryable=False,
+            )
+        return AcceptedJobIntentWriteResult(
+            status=AcceptedJobIntentWriteStatus.UNCHANGED,
+            intent=existing,
+            reason_code=None,
+            retryable=False,
+        )
+
+    def get_current(
+        self,
+        *,
+        subject_id: str,
+        job_id: str,
+    ) -> AcceptedJobIntentReadResult:
+        matches = [
+            item
+            for item in self._records.values()
+            if item.subject_id == subject_id and item.job_id == job_id
+        ]
+        if not matches:
+            return AcceptedJobIntentReadResult(
+                status=AcceptedJobIntentReadStatus.NOT_FOUND,
+                intent=None,
+            )
+        return AcceptedJobIntentReadResult(
+            status=AcceptedJobIntentReadStatus.FOUND,
+            intent=matches[-1],
         )
 
 
@@ -469,14 +524,17 @@ def test_resolve_action_builds_one_typed_discovery_request(
 ) -> None:
     store, observation = _seed_pending()
     discovery = FakeJobDiscoveryPort()
+    intents = FakeAcceptedJobIntentRepository()
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id="conversation-resolve",
             pending_intake_id="pending-synthetic-123",
             action=action,
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -486,6 +544,9 @@ def test_resolve_action_builds_one_typed_discovery_request(
     assert response.job_id == "job-synthetic-123"
     assert response.change is DiscoveryChange.CREATED
     assert len(discovery.calls) == 1
+    assert len(intents.calls) == 1
+    assert intents.calls[0].subject_id == "subject-synthetic"
+    assert intents.calls[0].intent is expected_intent
 
     request = discovery.calls[0]
     assert request.request_id == "intake-pending-synthetic-123"
@@ -535,14 +596,17 @@ def test_resolve_preserves_each_accepted_discovery_change(
 ) -> None:
     store, _ = _seed_pending()
     discovery = FakeJobDiscoveryPort(change=change)
+    intents = FakeAcceptedJobIntentRepository()
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id="conversation-resolve",
             pending_intake_id="pending-synthetic-123",
             action="ADD_JOB",
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -559,14 +623,17 @@ def test_rejected_discovery_result_is_not_presented_as_success() -> None:
     discovery = FakeJobDiscoveryPort(
         disposition=DiscoveryDisposition.REJECTED
     )
+    intents = FakeAcceptedJobIntentRepository()
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id="conversation-resolve",
             pending_intake_id="pending-synthetic-123",
             action="ADD_JOB",
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -581,6 +648,7 @@ def test_rejected_discovery_result_is_not_presented_as_success() -> None:
         is DiscoveryDisposition.REJECTED
     )
     assert "rejected" in response.prompt
+    assert intents.calls == []
 
 
 @pytest.mark.parametrize(
@@ -598,6 +666,7 @@ def test_invalid_pending_resolution_never_calls_discovery(
 ) -> None:
     store, _ = _seed_pending()
     discovery = FakeJobDiscoveryPort()
+    intents = FakeAcceptedJobIntentRepository()
     conversation_id = "conversation-resolve"
     pending_intake_id = "pending-synthetic-123"
     action = "ADD_JOB"
@@ -613,11 +682,13 @@ def test_invalid_pending_resolution_never_calls_discovery(
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id=conversation_id,
             pending_intake_id=pending_intake_id,
             action=action,
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: now,
     )
@@ -638,14 +709,17 @@ def test_invalid_pending_observation_never_calls_discovery() -> None:
         observation=None,
     )
     discovery = FakeJobDiscoveryPort()
+    intents = FakeAcceptedJobIntentRepository()
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id="conversation-resolve",
             pending_intake_id="pending-synthetic-123",
             action="ADD_JOB",
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -662,7 +736,9 @@ def test_invalid_pending_observation_never_calls_discovery() -> None:
 def test_same_action_replays_first_result_without_second_discovery_call() -> None:
     store, _ = _seed_pending()
     discovery = FakeJobDiscoveryPort(change=DiscoveryChange.UPDATED)
+    intents = FakeAcceptedJobIntentRepository()
     request = ResolvePendingIntakeRequest(
+        subject_id="subject-synthetic",
         conversation_id="conversation-resolve",
         pending_intake_id="pending-synthetic-123",
         action="REQUEST_APPLICATION",
@@ -671,17 +747,20 @@ def test_same_action_replays_first_result_without_second_discovery_call() -> Non
     first = resolve_pending_intake(
         request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
     repeated = resolve_pending_intake(
         request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
 
     assert len(discovery.calls) == 1
+    assert len(intents.calls) == 1
     assert repeated == first
     assert repeated.selected_action is IntakeAction.REQUEST_APPLICATION
     assert "application intent was recorded" in repeated.prompt
@@ -691,7 +770,9 @@ def test_same_action_replays_first_result_without_second_discovery_call() -> Non
 def test_different_action_after_completion_returns_conflict() -> None:
     store, _ = _seed_pending()
     discovery = FakeJobDiscoveryPort()
+    intents = FakeAcceptedJobIntentRepository()
     first_request = ResolvePendingIntakeRequest(
+        subject_id="subject-synthetic",
         conversation_id="conversation-resolve",
         pending_intake_id="pending-synthetic-123",
         action="ADD_JOB",
@@ -699,6 +780,7 @@ def test_different_action_after_completion_returns_conflict() -> None:
     resolve_pending_intake(
         first_request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -706,6 +788,7 @@ def test_different_action_after_completion_returns_conflict() -> None:
     response = resolve_pending_intake(
         replace(first_request, action="REQUEST_APPLICATION"),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )
@@ -721,6 +804,7 @@ def test_different_action_after_completion_returns_conflict() -> None:
 
 def test_concurrent_duplicate_cannot_make_a_second_discovery_call() -> None:
     store, _ = _seed_pending()
+    intents = FakeAcceptedJobIntentRepository()
     entered = Event()
     release = Event()
     calls: list[JobDiscoveryRequest] = []
@@ -735,6 +819,7 @@ def test_concurrent_duplicate_cannot_make_a_second_discovery_call() -> None:
         return FakeJobDiscoveryPort()(request)
 
     request = ResolvePendingIntakeRequest(
+        subject_id="subject-synthetic",
         conversation_id="conversation-resolve",
         pending_intake_id="pending-synthetic-123",
         action="ADD_JOB",
@@ -744,6 +829,7 @@ def test_concurrent_duplicate_cannot_make_a_second_discovery_call() -> None:
             resolve_pending_intake(
                 request,
                 pending_store=store,
+                accepted_intent_repository=intents,
                 discovery_port=blocking_discovery,
                 clock=lambda: NOW,
             )
@@ -755,6 +841,7 @@ def test_concurrent_duplicate_cannot_make_a_second_discovery_call() -> None:
     duplicate = resolve_pending_intake(
         request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=blocking_discovery,
         clock=lambda: NOW,
     )
@@ -775,7 +862,9 @@ def test_discovery_exception_releases_claim_for_safe_manual_retry() -> None:
     failing_discovery = FakeJobDiscoveryPort(
         error=RuntimeError("synthetic infrastructure failure")
     )
+    intents = FakeAcceptedJobIntentRepository()
     request = ResolvePendingIntakeRequest(
+        subject_id="subject-synthetic",
         conversation_id="conversation-resolve",
         pending_intake_id="pending-synthetic-123",
         action="ADD_JOB",
@@ -784,6 +873,7 @@ def test_discovery_exception_releases_claim_for_safe_manual_retry() -> None:
     failed = resolve_pending_intake(
         request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=failing_discovery,
         clock=lambda: NOW,
     )
@@ -803,6 +893,7 @@ def test_discovery_exception_releases_claim_for_safe_manual_retry() -> None:
     retried = resolve_pending_intake(
         request,
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=succeeding_discovery,
         clock=lambda: NOW,
     )
@@ -819,14 +910,17 @@ def test_i2_uses_only_injected_discovery_port_and_writes_no_private_state(
     monkeypatch.setenv("JOBOPS_HOME", str(synthetic_home))
     store, _ = _seed_pending()
     discovery = FakeJobDiscoveryPort()
+    intents = FakeAcceptedJobIntentRepository()
 
     response = resolve_pending_intake(
         ResolvePendingIntakeRequest(
+            subject_id="subject-synthetic",
             conversation_id="conversation-resolve",
             pending_intake_id="pending-synthetic-123",
             action="REQUEST_APPLICATION",
         ),
         pending_store=store,
+        accepted_intent_repository=intents,
         discovery_port=discovery,
         clock=lambda: NOW,
     )

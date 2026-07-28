@@ -48,6 +48,7 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
 - Job Prioritization
   - 用户可以用自然语言创建、审核和修改当前求职策略。
   - 每次批准产生不可变、版本化的 `PrioritizationPolicy`；修改策略产生新版本。
+  - 用户可在 policy draft 中审核并编辑哪些 P0–P3 等级可直接进入申请准备、哪些需要显式 promote；该 admission snapshot 随 policy 一同版本化，且不等于申请或提交授权。
   - JD 结构化分析。
   - 普通代码计算岗位年龄等 deterministic facts，并验证 approved hard constraints。
   - AI 根据当前 approved policy、CandidateSummary 和岗位事实综合建议 P0–P3。
@@ -55,6 +56,9 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
   - Student-only 岗位默认作为降低优先级或需要确认的信号；只有用户批准的 hard constraint 才允许正式排除。
   - 可解释的 PriorityDecision 和 ApplicationPlan。
 - Application Preparation
+  - 从用户明确选择的 RUNNABLE job 创建不可变、可审计的 `ApplicationPlan`；plan-scoped 用户要求不写入全局 Agent policy。
+  - automation-first：AI 和确定性代码默认异步完成安全的选择、改写、问答、Fact QA、Visual QA 与组装步骤。
+  - 只有缺少可信事实、本人/法律确认、安全挑战或明确高风险审批才进入 item-scoped Human Attention；当前职位暂停时继续处理其他职位。
   - CandidateEvidence 和已审批 ResumeVersion。
   - P0/P1 定制材料，P2 复用材料，P3 暂缓。
   - Resume、Cover Letter、ATS custom-question answer proposals、事实验证、render/visual QA。

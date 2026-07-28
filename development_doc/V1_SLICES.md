@@ -44,6 +44,8 @@ I1 Conversational URL Intake                           [完成]
   ↓
 I2 Conversational add/apply Resolution                 [完成]
   ↓
+I2b Accepted Application Intent Persistence            [完成]
+  ↓
 S1a Known Greenhouse Board Candidate Search            [完成]
   ↓
 S1b Conversational Named Job Search                    [完成]
@@ -51,6 +53,8 @@ S1b Conversational Named Job Search                    [完成]
 S2 Candidate Selection                                 [完成]
 
 P1a Editable Prioritization Policy                      [完成]
+  ↓
+P1a2 Preparation Admission Policy Contract             [完成]
   ↓
 P1b AI Priority Proposal                               [完成]
   ↓
@@ -60,7 +64,21 @@ P1c Validation Gate and PriorityDecision               [完成]
   ↓
 P1d1 Single-job Priority Proposal Orchestrator         [完成]
   ↓
-P1d Reprioritization and Queue                         PLANNED
+P1d2 Current Priority Queue Read Model                 [完成]
+  ↓
+P1d3 Selective Batch Reprioritization Orchestrator     [完成]
+  ↓
+P1d4 Runnable Application Queue Read Model             [完成]
+  ↓
+P2a1 Automation-first ApplicationPlan                  [完成]
+  ↓
+P2a2 Trusted Resume Candidate Registry                 [完成]
+  ↓
+P2a3 Automatic Base Resume Selection                   [完成]
+  ↓
+P2a4a Hash-bound Source Resume Projection              [完成]
+  ↓
+P2a4b Subject-specific CandidateEvidence Snapshot      [完成]
 
 C3
   ↓
@@ -245,6 +263,27 @@ conflict. An exception before a typed response releases the claim for explicit
 retry. The exact observation, including provenance, remains attached to the
 completed pending intake.
 
+## I2b — Accepted Application Intent Persistence `[完成]`
+
+After an accepted I2 Discovery result supplies a formal `job_id` and
+`discovery_run_id`, Intake writes one immutable, subject-specific
+`AcceptedJobIntent` through an injected typed repository. The explicit
+`subject_id` comes from `ResolvePendingIntakeRequest`; it is never inferred
+from conversation, job, filesystem or machine identity.
+
+Records bind subject, job, `ADD_JOB` / `REQUEST_APPLICATION`, intake proposal,
+Discovery run and contract version. Stable identity excludes time so an exact
+I2 replay returns the existing record without another Discovery call or
+timestamp. A later `REQUEST_APPLICATION` becomes current; a later `ADD_JOB`
+does not cancel it. Historical jobs without records remain explicit
+`NOT_FOUND`.
+
+Discovery rejection writes nothing. If Discovery succeeds but intent storage
+fails, I2 returns typed partial failure and retains enough process-local state
+for an explicit persistence retry without repeating Discovery. This Slice
+does not create Priority, a runnable queue, `ApplicationPlan`, submission
+intent or execution authorization.
+
 ## S1a / S1b — Named Job Search `[完成]`
 
 The user supplies company and job-title clues. Intake makes one bounded
@@ -282,6 +321,29 @@ idempotency, version history and active-policy retrieval. Drafts are
 process-local; approved policy is durable. It does not read a `JobPosting`,
 produce a `PriorityProposal`/`PriorityDecision`, calculate Priority, mutate a
 queue or call application code.
+
+## P1a2 — Preparation Admission Policy Contract `[完成]`
+
+```text
+Policy Draft
+→ user-reviewed preparation admission
+→ immutable versioned PrioritizationPolicy snapshot
+```
+
+Every new draft contains an ordinary-code default: P0/P1/P2 are directly
+eligible for Application Preparation and P3 requires a separate explicit
+promotion fact. The user may edit the two disjoint typed P0–P3 sets before
+approval. `NEEDS_USER` and `EXCLUDED` are never configurable as eligible.
+Admission is part of canonical policy content, hash, persistence and versioning,
+so a changed rule creates a new ACTIVE policy and naturally makes prior
+orchestration bindings stale.
+
+This contract expresses preparation eligibility only. It does not replace the
+required `REQUEST_APPLICATION` intent, create a promotion record, build the
+runnable queue, prepare materials, authorize execution or submit an
+application. Persisted policies predating this contract fail closed and require
+a separate explicit migration before reapproval; defaults are not injected
+into old approved snapshots. P1a2 does not implement that migration.
 
 ## P1b — AI Priority Proposal `[完成]`
 
@@ -371,6 +433,86 @@ prioritization-safe `prioritization_facts` from the current CandidateVault
 profile fields. P1d1 does not batch jobs, create a current-decision index,
 order a queue or start application work.
 
+## P1d2 — Current Priority Queue Read Model `[完成]`
+
+```text
+explicit subject_id + explicit now
+→ typed current JobPosting list
+→ ACTIVE PrioritizationPolicy + trusted CandidateSummary
+→ P1d1 expected binding for every job
+→ read existing orchestration history
+→ CURRENT / STALE / MISSING / INCOMPLETE
+```
+
+`build_current_priority_queue(CurrentPriorityQueueCommand, ...)` is a typed,
+read-only application entry. It reuses P1d1's complete input-binding contract
+and reads only existing orchestration, Proposal and Decision records. It never
+claims a binding, calls the Priority Agent, creates a Proposal, executes the
+Gate or writes a Decision.
+
+`CURRENT` requires an exact completed binding and returns its existing typed
+Proposal and Decision. `STALE` reports only binding differences that can be
+proved from job, policy, CandidateSummary, Agent/prompt/model, evaluation-time,
+Gate or orchestration version fields; historical artifacts never occupy the
+current Proposal/Decision fields. `MISSING` means no completed history exists,
+while an exact non-completed lifecycle is `INCOMPLETE`.
+
+The view groups `CURRENT`, `STALE`, `MISSING`, then `INCOMPLETE`. Current items
+use the persisted Decision only: P0, P1, P2, P3, NEEDS_USER, EXCLUDED; ties use
+`validated_at` and `job_id`. This is not the runnable application queue.
+
+## P1d3 — Selective Batch Reprioritization Orchestrator `[完成]`
+
+```text
+bounded subject_id + now + optional job allowlist / max_jobs
+→ P1d2 queue snapshot exactly once
+→ select only STALE / MISSING
+→ call P1d1 once per selected job, serially
+→ typed CREATED / UNCHANGED / skipped / failed aggregation
+```
+
+`selectively_reprioritize_jobs(SelectiveBatchReprioritizationCommand, ...)`
+depends only on injected P1d2 and P1d1 application callables. Explicit job IDs
+preserve caller order after deterministic first-occurrence deduplication;
+`max_jobs` truncates that allowlist. Without a non-empty allowlist, `max_jobs`
+is required and selection follows P1d2 order.
+
+`CURRENT` and `INCOMPLETE` are returned as typed skips. An explicit job ID not
+present in the snapshot is `NOT_FOUND`. Only `STALE` and `MISSING` invoke P1d1.
+Calls are serial, use the exact supplied `now`, have no automatic retry and
+continue after a typed per-job failure. P1d3 has no batch store or second
+idempotency model: repeated work is prevented by a fresh P1d2 read and P1d1's
+existing atomic binding claim.
+
+The result distinguishes `NOOP`, `COMPLETED`, `PARTIAL_FAILURE` and `FAILED`
+and preserves every typed P1d1 result. P1d3 does not calculate bindings, call
+the Agent/Proposal/Gate directly, save artifacts or create an application
+queue.
+
+## P1d4 — Runnable Application Queue Read Model `[完成]`
+
+```text
+P1d2 typed snapshot + its exact ACTIVE policy
++ subject-specific accepted intent
+→ deterministic preparation-admission projection
+→ RUNNABLE / typed blocked items
+```
+
+`build_runnable_application_queue(RunnableApplicationQueueCommand, ...)` calls
+P1d2 exactly once and consumes the exact `policy_snapshot` returned by that
+read. It never performs a second ACTIVE-policy lookup. A job is `RUNNABLE` only
+when it is CURRENT, has a current qualified Decision, has an authoritative
+`REQUEST_APPLICATION` intent, is directly admitted by the snapshot's
+`PreparationAdmissionPolicy`, and remains in an available V1 lifecycle state.
+
+STALE, MISSING and INCOMPLETE are `BLOCKED_NOT_CURRENT`; NEEDS_USER and EXCLUDED
+remain explicit blocks. An admission priority requiring promotion is
+`BLOCKED_PROMOTION_REQUIRED`, while an unadmitted priority is
+`BLOCKED_PRIORITY`. ADD_JOB and a verified absence of intent are both
+`BLOCKED_NO_APPLICATION_INTENT`; intent integrity failure fails the whole read
+model. Output preserves P1d2 order and performs no claim, write,
+reprioritization, preparation or execution.
+
 ## P1d — Reprioritization and Queue `PLANNED`
 
 ```text
@@ -379,8 +521,153 @@ policy, job revision, candidate version or time changes
 → queue ordering
 ```
 
-P1d does not rewrite historical decisions; it creates decisions with new
-bindings and projects the current queue.
+P1d2 projects current/stale/missing/incomplete state, P1d3 can explicitly
+recompute a bounded subset of stale/missing jobs, and P1d4 exposes the
+read-only admission view for Application Preparation. Active-decision pointers,
+automatic scheduling, promotion records and preparation execution remain
+planned. Reprioritization does not rewrite historical decisions; P1d1 creates
+decisions with new immutable bindings.
+
+## P2a1 — Automation-first ApplicationPlan `[完成]`
+
+```text
+subject_id + selected RUNNABLE job + optional job-scoped instructions
+→ P1d4 snapshot exactly once
+→ immutable ApplicationPlan
+→ atomic Private Home persistence
+```
+
+`create_application_plan(CreateApplicationPlanCommand, ...)` creates a plan
+only from the selected P1d4 `RUNNABLE` item. It does not read Priority, policy
+or accepted-intent repositories directly. The plan binds job revision/content,
+formal Decision, exact policy version/hash, accepted REQUEST_APPLICATION
+intent, priority, contract version and the exact user-instruction hash.
+
+The plan fixes `AUTOMATION_FIRST` and `DEFER_ITEM_AND_CONTINUE`: later
+preparation should complete safe work asynchronously and defer only the current
+job when human attention is genuinely required. Its declared stages are Resume
+Preparation, Cover Letter, Application Answers, Fact QA, Visual QA, Material
+Assembly and Gate A. P2a1 does not execute any stage or create a Human Attention
+Queue.
+
+Plan identity excludes creation time. An identical binding returns the existing
+immutable record with `UNCHANGED` and preserves its original `created_at`;
+changed job, Decision, policy, intent or exact user instructions creates a new
+plan. A plan authorizes preparation only, never browser execution or submission.
+
+## P2a2 — Trusted Resume Candidate Registry `[完成]`
+
+```text
+explicit subject + managed resume artifact + trusted safe summary
+→ validate actual PDF/DOCX bytes
+→ compute artifact and summary hashes
+→ subject-scoped immutable ResumeCandidate
+→ typed get / list_selectable
+```
+
+`register_resume_candidate(RegisterResumeCandidateCommand, ...)` accepts only
+an explicitly named artifact below Private Home `documents/master/`; it never
+scans that directory or imports loose `default_resume`, `resume_variants` or
+fallback paths. The artifact is copied to a subject-scoped preparation path,
+and every read verifies its actual bytes against the persisted hash.
+
+Candidate identity binds subject, artifact hash/type, display name, exact
+selection-safe summary and its authenticated trust metadata, status and
+contract version. Time is excluded, so identical replay returns `UNCHANGED`;
+summary, artifact or contract content changes cannot overwrite the old record.
+`list_selectable(subject_id)` is stable and fails closed if any record or
+artifact for that subject is corrupt.
+
+P2a2 performs no resume selection, JD read, Agent/model call, tailoring,
+material preparation, browser or ATS operation.
+
+## P2a3 — Automatic Base Resume Selection `[完成]`
+
+```text
+ApplicationPlan
+→ exact typed JobPosting revision/hash check
+→ subject-scoped ResumeCandidateProvider
+→ 0 defer / 1 deterministic / many one bounded Agent call
+→ immutable ResumeSelectionDecision
+```
+
+`select_base_resume(SelectBaseResumeCommand, ...)` never calls P1d1–P1d4 or
+rejudges runnable state. It loads the persisted plan, verifies explicit subject
+ownership and fail-closes unless the current typed JobPosting ID, revision and
+content hash exactly match the plan.
+
+Candidate inputs come only from P2a2. Zero candidates return
+`DEFERRED_NO_RESUME`; one candidate requires no Agent. Multiple candidates
+permit one tool-free Agent call containing trusted JD data, selection-safe
+candidate projections and exact plan-scoped instructions. The returned resume
+ID, candidate contract version and artifact hash are revalidated; refusal,
+ambiguity or mismatch returns `DEFERRED_NEEDS_HUMAN` without retry or Decision.
+
+The pre-Agent selection binding covers Plan/Job bindings, candidate-set hash,
+selection contract and configured Agent/prompt/model versions. An existing
+completed binding returns `UNCHANGED`, preserves `selected_at` and makes zero
+additional Agent calls. Decisions are immutable, subject-scoped and
+content-hash validated. Selection neither changes resume bytes nor implies
+tailoring, material approval, Human Attention state, execution or submission.
+
+## P2a4a — Hash-bound Source Resume Projection `[完成]`
+
+```text
+subject_id + resume_id
+→ typed ResumeCandidate read and managed-byte hash verification
+→ deterministic PDF-line or DOCX-structure parsing
+→ immutable SourceResumeProjection
+```
+
+`create_source_resume_projection(CreateSourceResumeProjectionCommand, ...)`
+reads only the explicitly registered P2a2 candidate and re-hashes the managed
+artifact before parsing. PDF uses the existing `pdfplumber` dependency and
+stores one normalized source line per page/line locator. DOCX uses standard
+ZIP/XML parsing and stores body paragraph or table/row/cell/paragraph
+locators. Heading and list recognition are deterministic and parser-versioned;
+unrecognized content remains an ordinary paragraph or table-cell block.
+
+Section, block and bullet IDs bind artifact hash, exact structural locator,
+projection contract and parser version. Projection identity additionally binds
+subject and resume ownership. Time, path and mtime are excluded. Identical
+replay returns the immutable record with `UNCHANGED`; artifact or parser
+version changes create a distinct record without overwriting history.
+
+Image-only or encrypted PDFs are `UNSUPPORTED`; damaged or structurally
+unreadable documents are `UNREADABLE`. The Slice performs no OCR, inference,
+CandidateEvidence generation, tailoring, rendering, Agent/model call, browser
+or ATS work.
+
+## P2a4b — Subject-specific CandidateEvidence Snapshot `[完成]`
+
+```text
+subject_id + ApplicationPlan
+→ latest immutable ResumeSelectionDecision for the Plan
+→ selected ResumeCandidate
+→ latest immutable SourceResumeProjection for the artifact
+→ CandidateEvidenceSnapshot
+```
+
+`create_candidate_evidence_snapshot(...)` validates the complete
+Plan/Selection/Candidate/Projection binding and converts each non-empty source
+block into one ordered evidence item without summarizing or inferring facts.
+Items preserve exact text, section/block/bullet IDs and typed source locators.
+They are conservatively classified as `PERSONAL`, scoped only to
+`RESUME_TAILORING`, and marked
+`USER_PROVIDED_DOCUMENT_STATEMENT` rather than independently verified.
+
+Evidence IDs bind subject, projection ID/hash, source block or bullet anchor
+and evidence contract version. Snapshot identity additionally binds the Plan,
+Selection, source resume/artifact and ordered item hashes. Runtime timestamps,
+paths and mtime do not create identities. Identical input returns the existing
+immutable snapshot with `UNCHANGED`; an empty compatible projection returns
+`DEFERRED_NO_EVIDENCE`.
+
+The read path chooses the latest complete immutable Selection for a Plan and
+the latest complete immutable Projection for the selected artifact by domain
+timestamp with stable ID tie-break. Any corrupt record fails the complete
+read. P2a4b reads no CandidateSummary, CandidateVault profile, JD or legacy
+profile and performs no Agent/model, tailoring, QA, rendering or execution.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 

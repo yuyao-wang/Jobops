@@ -64,6 +64,7 @@ from core.prioritization_policy import (
     PrioritizationPolicyStatus,
     SoftPreference,
     SoftPreferenceCategory,
+    default_preparation_admission_policy,
     policy_content_hash,
 )
 
@@ -118,6 +119,7 @@ def _policy(
     )
     hard = (_hard_constraint(),)
     soft = (_soft_preference(),)
+    admission = default_preparation_admission_policy()
     return PrioritizationPolicy(
         policy_id="prioritization-policy-candidate-v000001",
         subject_id=subject_id,
@@ -126,10 +128,12 @@ def _policy(
             raw_preference_text=raw,
             hard_constraints=hard,
             soft_preferences=soft,
+            preparation_admission=admission,
         ),
         raw_preference_text=raw,
         hard_constraints=hard,
         soft_preferences=soft,
+        preparation_admission=admission,
         status=status,
         created_at=NOW - timedelta(days=2),
         approved_at=NOW - timedelta(days=1),
@@ -144,6 +148,7 @@ def _draft_policy() -> PrioritizationPolicyDraft:
         raw_preference_text="Prefer environmental AI roles.",
         hard_constraints=(),
         soft_preferences=(_soft_preference(),),
+        preparation_admission=default_preparation_admission_policy(),
         ambiguities=(),
         status=PolicyDraftStatus.READY_FOR_APPROVAL,
         created_at=NOW - timedelta(minutes=5),
@@ -396,6 +401,7 @@ def _policy_with_constraints(
 ) -> PrioritizationPolicy:
     raw = "Synthetic reviewed policy for deterministic gate tests."
     soft = (_soft_preference(),)
+    admission = default_preparation_admission_policy()
     return PrioritizationPolicy(
         policy_id=f"prioritization-policy-gate-v{version}",
         subject_id=subject_id,
@@ -404,10 +410,12 @@ def _policy_with_constraints(
             raw_preference_text=raw,
             hard_constraints=hard_constraints,
             soft_preferences=soft,
+            preparation_admission=admission,
         ),
         raw_preference_text=raw,
         hard_constraints=hard_constraints,
         soft_preferences=soft,
+        preparation_admission=admission,
         status=status,
         created_at=NOW - timedelta(days=2),
         approved_at=NOW - timedelta(days=1),
@@ -1139,6 +1147,7 @@ async def test_jd_and_raw_policy_injection_text_remain_data_only() -> None:
             raw_preference_text=raw,
             hard_constraints=hard,
             soft_preferences=soft,
+            preparation_admission=default_preparation_admission_policy(),
         ),
     )
     job = _job(
