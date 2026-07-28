@@ -29,7 +29,7 @@ Jobops 的目标不是最大化自动点击次数，而是在不虚构候选人�
 四条业务数据流组成这一条用户流程：
 
 - Job Discovery：manual/scheduled trigger → `SearchProfile` → source collection → normalized, deduplicated `JobPosting` list。
-- Prioritization：job revision → JD analysis → hard filters → explainable `PriorityDecision` → ordered queue。
+- Prioritization：用户编辑并批准求职策略 → job revision / candidate summary / deterministic facts → AI `PriorityProposal` → validation → explainable `PriorityDecision`。
 - Preparation：`ApplicationPlan` → selected `CandidateEvidence` / base resume → constrained materials → validation → approval by the policy-required actor。
 - Execution：approved bundle → ATS fill/read-back → Review/Gate B → single submit/evidence；required unresolved controls only pass through value-free mapping before local value resolution。
 
@@ -46,9 +46,13 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
   - Greenhouse 与 Lever public board connectors；其他 legacy collectors 在通过同一契约前不属于 V1 supported surface。
   - 标准化、跨运行去重、更新和 partial failure 记录。
 - Job Prioritization
+  - 用户可以用自然语言创建、审核和修改当前求职策略。
+  - 每次批准产生不可变、版本化的 `PrioritizationPolicy`；修改策略产生新版本。
   - JD 结构化分析。
-  - hard filters。
-  - match score、freshness score 和 P0–P3。
+  - 普通代码计算岗位年龄等 deterministic facts，并验证 approved hard constraints。
+  - AI 根据当前 approved policy、CandidateSummary 和岗位事实综合建议 P0–P3。
+  - `PriorityProposal` 必须覆盖 work authorization、citizenship/residency、student status 和 security clearance，并经过 schema、candidate fact、evidence、hard-constraint 和 prompt-injection validation 后才能成为决定。
+  - Student-only 岗位默认作为降低优先级或需要确认的信号；只有用户批准的 hard constraint 才允许正式排除。
   - 可解释的 PriorityDecision 和 ApplicationPlan。
 - Application Preparation
   - CandidateEvidence 和已审批 ResumeVersion。
@@ -74,7 +78,8 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
 
 - 不承诺支持所有 job source、ATS 或自建申请网站。
 - 不让运行时模型自由调用 browser、filesystem、MCP、email 或提交工具。
-- 不允许模型直接改变 Priority、数据库状态、审批结果或 browser action。
+- 不允许模型输出的 `PriorityProposal` 直接改变 Priority、数据库状态、审批结果或 browser action。
+- 不把未经处理的前端 policy 文本当作 system instructions；approved policy 始终是受控业务数据。
 - 不把 raw/full-page text、候选人值、凭据、cookie、完整简历或完整 HTML 发送给 SemanticMapper。
 - 不虚构或推断身份、工作许可、经历、教育、日期、指标、薪资或 self-identification。
 - 不绕过 CAPTCHA、MFA、anti-bot、account lock 或 mailbox security warning。
@@ -87,7 +92,11 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
 - 用户可以从一次岗位更新开始，完成 Priority、材料、Review、提交或 handoff，并看到准确的下一步。
 - 手动、定时、CLI、UI 和 Codex 入口调用同一套业务规则，不产生平行状态。
 - 每个 JobPosting 分开保存 `source_platform` 和 `ats_type`，重复岗位不会产生重复申请。
-- 每个 PriorityDecision 包含 score breakdown、hard-filter result、reason 和 scoring version。
+- 用户可以查看当前 active `PrioritizationPolicy`，修改后得到新版本，并可在后续 Slice 中重新评估已有岗位。
+- 每个 PriorityDecision 绑定 job revision/content hash、policy ID/version、candidate summary version 和 agent/prompt/model version。
+- 每个 PriorityDecision 解释为什么值得优先、匹配了哪些偏好、存在哪些顾虑，以及是否违反 approved hard constraint。
+- 每个 PriorityDecision 都保留完整 eligibility evidence coverage；缺失学生身份不能被静默忽略，soft eligibility concern 也不能被擅自升级为 `EXCLUDED`。
+- Priority 判断只产生业务决定；它不直接启动材料生成或申请执行。
 - 所有生成 claim 都能追溯到允许使用的 CandidateEvidence；没有 unsupported fact 进入材料或 ATS answer。
 - ATS 只能上传当前 job/revision 已审批且 hash 一致的 MaterialPackage。
 - supported deterministic ATS 的正常路径 model calls 必须等于 `0`；sanitized fixture Review arrival 不低于 95%。

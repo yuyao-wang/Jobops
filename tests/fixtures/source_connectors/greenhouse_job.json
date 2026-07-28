@@ -1,0 +1,13 @@
+{
+  "id": 123456,
+  "title": "Synthetic Platform Engineer",
+  "company_name": "Example Labs",
+  "first_published": "2026-07-20T14:00:00Z",
+  "updated_at": "2026-07-24T09:30:00Z",
+  "location": {
+    "name": "Vancouver, BC"
+  },
+  "content": "<h2>About the role</h2><p>Build synthetic distributed systems &amp; reliable developer tools.</p>",
+  "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/123456",
+  "language": "en"
+}

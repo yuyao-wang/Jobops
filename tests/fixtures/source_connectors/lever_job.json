@@ -1,0 +1,14 @@
+{
+  "id": "abc-123",
+  "text": "Synthetic Reliability Engineer",
+  "categories": {
+    "location": "Vancouver, BC",
+    "team": "Platform",
+    "commitment": "Full-time"
+  },
+  "descriptionPlain": "Build synthetic distributed systems and reliable developer tools.",
+  "hostedUrl": "https://jobs.lever.co/examplelabs/abc-123",
+  "applyUrl": "https://jobs.lever.co/examplelabs/abc-123/apply",
+  "createdAt": 1784556000000,
+  "workplaceType": "hybrid"
+}

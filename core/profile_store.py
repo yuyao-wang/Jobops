@@ -11,8 +11,13 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, runtime_checkable
 
+from .job_prioritization import (
+    CandidateFact,
+    CandidateSummary,
+    build_candidate_summary,
+)
 from .policy import AutonomyMode, PolicyConfig
 from .private_home import PrivateHome, PrivatePaths
 
@@ -22,6 +27,21 @@ VAULT_SCHEMA_VERSION = 1
 
 class ProfileStoreError(RuntimeError):
     """Raised when private candidate data is absent or malformed."""
+
+
+class CandidateSummaryProviderError(ProfileStoreError):
+    """Raised when no authoritative typed prioritization summary is available."""
+
+
+@runtime_checkable
+class CandidateSummaryProvider(Protocol):
+    def get_current(
+        self,
+        subject_id: str,
+        *,
+        now: datetime,
+    ) -> CandidateSummary:
+        """Return the current trusted CandidateSummary for one subject."""
 
 
 _KNOWN_SENSITIVITIES = frozenset(
@@ -311,9 +331,128 @@ class CandidateVault:
         }
 
 
+def _candidate_fact_timestamp(value: Any, *, field: str) -> datetime | None:
+    if value is None:
+        return None
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        raise CandidateSummaryProviderError(
+            f"prioritization fact {field} must be an aware timestamp"
+        )
+    return parsed
+
+
+def _candidate_fact_from_record(value: Any) -> CandidateFact:
+    expected = {
+        "fact_id",
+        "category",
+        "statement",
+        "source",
+        "verified",
+        "prioritization_safe",
+        "scope",
+        "confirmed_at",
+        "expires_at",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise CandidateSummaryProviderError(
+            "prioritization fact does not match CandidateFact"
+        )
+    scope = value["scope"]
+    if scope not in {None, "global"}:
+        raise CandidateSummaryProviderError(
+            "current CandidateSummary accepts only global facts"
+        )
+    try:
+        return CandidateFact(
+            fact_id=value["fact_id"],
+            category=value["category"],
+            statement=value["statement"],
+            source=value["source"],
+            verified=value["verified"],
+            prioritization_safe=value["prioritization_safe"],
+            scope=scope,
+            confirmed_at=_candidate_fact_timestamp(
+                value["confirmed_at"],
+                field="confirmed_at",
+            ),
+            expires_at=_candidate_fact_timestamp(
+                value["expires_at"],
+                field="expires_at",
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise CandidateSummaryProviderError(
+            "prioritization fact is invalid"
+        ) from exc
+
+
+class PrivateHomeCandidateSummaryProvider:
+    """Project explicitly trusted CandidateFacts from the current CandidateVault."""
+
+    def __init__(self, home: PrivateHome | None = None) -> None:
+        self._home = home or PrivateHome.discover()
+
+    def get_current(
+        self,
+        subject_id: str,
+        *,
+        now: datetime,
+    ) -> CandidateSummary:
+        if (
+            not isinstance(subject_id, str)
+            or not subject_id.strip()
+            or len(subject_id.strip()) > 160
+        ):
+            raise CandidateSummaryProviderError(
+                "subject_id is outside the CandidateSummary contract"
+            )
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise CandidateSummaryProviderError(
+                "CandidateSummary projection time must be timezone-aware"
+            )
+        try:
+            vault = CandidateVault.load(self._home)
+        except ProfileStoreError as exc:
+            raise CandidateSummaryProviderError(
+                "CandidateVault is unavailable"
+            ) from exc
+        if vault.facts.get("subject_id") != subject_id.strip():
+            raise CandidateSummaryProviderError(
+                "CandidateVault subject does not match the requested subject"
+            )
+        records = vault.facts.get("prioritization_facts")
+        if not isinstance(records, list):
+            raise CandidateSummaryProviderError(
+                "CandidateVault has no typed prioritization facts"
+            )
+        facts = tuple(_candidate_fact_from_record(item) for item in records)
+        provisional = build_candidate_summary(
+            subject_id=subject_id.strip(),
+            candidate_summary_version="candidate-summary-current",
+            facts=facts,
+            created_at=now,
+        )
+        return CandidateSummary(
+            subject_id=provisional.subject_id,
+            candidate_summary_version=(
+                "candidate-summary-"
+                f"{provisional.candidate_summary_content_hash[:24]}"
+            ),
+            candidate_summary_content_hash=(
+                provisional.candidate_summary_content_hash
+            ),
+            facts=provisional.facts,
+            created_at=provisional.created_at,
+        )
+
+
 __all__ = [
     "AnswerTrustReport",
+    "CandidateSummaryProvider",
+    "CandidateSummaryProviderError",
     "CandidateVault",
+    "PrivateHomeCandidateSummaryProvider",
     "ProfileStoreError",
     "VAULT_SCHEMA_VERSION",
 ]

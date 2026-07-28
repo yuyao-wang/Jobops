@@ -1,17 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://jobops.local/contracts/priority-decision.schema.json",
-  "title": "PriorityDecision",
-  "description": "An immutable formal priority decision produced by priority-gate-v2 from one validated proposal and current bindings.",
+  "$id": "https://jobops.local/contracts/priority-proposal.schema.json",
+  "title": "PriorityProposal",
+  "description": "A validated, non-executable AI recommendation bound to one job revision, approved policy, candidate summary, and adapter configuration.",
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version",
-    "decision_id",
+    "proposal_id",
     "request_id",
     "subject_id",
-    "source_proposal_id",
-    "source_proposal_content_hash",
     "job_id",
     "job_revision",
     "job_content_hash",
@@ -23,11 +20,9 @@
     "agent_version",
     "prompt_version",
     "model_id",
-    "validation_version",
-    "validated_at",
-    "decision_origin",
-    "qualification",
-    "priority_level",
+    "created_at",
+    "proposed_qualification",
+    "proposed_priority_level",
     "confidence",
     "summary",
     "positive_signals",
@@ -35,28 +30,17 @@
     "hard_constraint_findings",
     "eligibility_findings",
     "missing_information",
-    "questions_for_user",
-    "reason_codes"
+    "questions_for_user"
   ],
   "properties": {
-    "schema_version": {
-      "const": "1.1"
-    },
-    "decision_id": {
-      "type": "string",
-      "pattern": "^priority-decision-[a-f0-9]{64}$"
+    "proposal_id": {
+      "$ref": "#/$defs/id"
     },
     "request_id": {
       "$ref": "#/$defs/id"
     },
     "subject_id": {
       "$ref": "#/$defs/id"
-    },
-    "source_proposal_id": {
-      "$ref": "#/$defs/id"
-    },
-    "source_proposal_content_hash": {
-      "$ref": "#/$defs/hash"
     },
     "job_id": {
       "$ref": "#/$defs/id"
@@ -97,22 +81,11 @@
     "model_id": {
       "$ref": "#/$defs/id"
     },
-    "validation_version": {
-      "const": "priority-gate-v2"
-    },
-    "validated_at": {
+    "created_at": {
       "type": "string",
       "format": "date-time"
     },
-    "decision_origin": {
-      "type": "string",
-      "enum": [
-        "ACCEPTED_PROPOSAL",
-        "HARD_CONSTRAINT_OVERRIDE",
-        "HARD_CONSTRAINT_UNRESOLVED"
-      ]
-    },
-    "qualification": {
+    "proposed_qualification": {
       "type": "string",
       "enum": [
         "QUALIFIED",
@@ -120,7 +93,7 @@
         "NEEDS_USER"
       ]
     },
-    "priority_level": {
+    "proposed_priority_level": {
       "type": [
         "string",
         "null"
@@ -156,7 +129,7 @@
       "type": "array",
       "maxItems": 100,
       "items": {
-        "$ref": "#/$defs/finalHardConstraintFinding"
+        "$ref": "#/$defs/hardConstraintFinding"
       }
     },
     "eligibility_findings": {
@@ -172,19 +145,6 @@
     },
     "questions_for_user": {
       "$ref": "#/$defs/textList"
-    },
-    "reason_codes": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 1,
-      "items": {
-        "type": "string",
-        "enum": [
-          "ACCEPTED_PROPOSAL",
-          "HARD_CONSTRAINT_OVERRIDE",
-          "HARD_CONSTRAINT_UNRESOLVED"
-        ]
-      }
     }
   },
   "$defs": {
@@ -297,16 +257,12 @@
         "$ref": "#/$defs/rationale"
       }
     },
-    "finalHardConstraintFinding": {
+    "hardConstraintFinding": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "constraint_id",
-        "constraint_type",
-        "agent_result",
-        "deterministic_result",
-        "final_result",
-        "validation_source",
+        "result",
         "explanation",
         "evidence_refs"
       ],
@@ -314,32 +270,12 @@
         "constraint_id": {
           "$ref": "#/$defs/id"
         },
-        "constraint_type": {
+        "result": {
           "type": "string",
           "enum": [
-            "ALLOWED_COUNTRY",
-            "EXCLUDED_COUNTRY",
-            "EXCLUDED_COMPANY",
-            "EXCLUDED_ROLE_PHRASE",
-            "EXCLUDED_STUDENT_ONLY_ROLE",
-            "WORK_MODE_REQUIREMENT"
-          ]
-        },
-        "agent_result": {
-          "$ref": "#/$defs/findingResult"
-        },
-        "deterministic_result": {
-          "$ref": "#/$defs/findingResult"
-        },
-        "final_result": {
-          "$ref": "#/$defs/findingResult"
-        },
-        "validation_source": {
-          "type": "string",
-          "enum": [
-            "DETERMINISTIC",
-            "AGENT_EVIDENCE",
-            "UNRESOLVED"
+            "MATCHED",
+            "NOT_MATCHED",
+            "UNKNOWN"
           ]
         },
         "explanation": {
@@ -356,14 +292,6 @@
           }
         }
       }
-    },
-    "findingResult": {
-      "type": "string",
-      "enum": [
-        "MATCHED",
-        "NOT_MATCHED",
-        "UNKNOWN"
-      ]
     },
     "eligibilityFinding": {
       "type": "object",
@@ -422,17 +350,17 @@
     {
       "if": {
         "properties": {
-          "qualification": {
+          "proposed_qualification": {
             "const": "QUALIFIED"
           }
         },
         "required": [
-          "qualification"
+          "proposed_qualification"
         ]
       },
       "then": {
         "properties": {
-          "priority_level": {
+          "proposed_priority_level": {
             "enum": [
               "P0",
               "P1",
@@ -447,15 +375,12 @@
             "not": {
               "contains": {
                 "properties": {
-                  "final_result": {
-                    "enum": [
-                      "MATCHED",
-                      "UNKNOWN"
-                    ]
+                  "result": {
+                    "const": "MATCHED"
                   }
                 },
                 "required": [
-                  "final_result"
+                  "result"
                 ]
               }
             }
@@ -466,34 +391,31 @@
     {
       "if": {
         "properties": {
-          "qualification": {
+          "proposed_qualification": {
             "const": "EXCLUDED"
           }
         },
         "required": [
-          "qualification"
+          "proposed_qualification"
         ]
       },
       "then": {
         "properties": {
-          "priority_level": {
+          "proposed_priority_level": {
             "const": null
           },
           "hard_constraint_findings": {
             "contains": {
               "properties": {
-                "final_result": {
+                "result": {
                   "const": "MATCHED"
                 }
               },
               "required": [
-                "final_result"
+                "result"
               ]
             },
             "minContains": 1
-          },
-          "decision_origin": {
-            "const": "HARD_CONSTRAINT_OVERRIDE"
           }
         }
       }
@@ -501,37 +423,21 @@
     {
       "if": {
         "properties": {
-          "qualification": {
+          "proposed_qualification": {
             "const": "NEEDS_USER"
           }
         },
         "required": [
-          "qualification"
+          "proposed_qualification"
         ]
       },
       "then": {
         "properties": {
-          "priority_level": {
+          "proposed_priority_level": {
             "const": null
           }
         },
         "anyOf": [
-          {
-            "properties": {
-              "hard_constraint_findings": {
-                "contains": {
-                  "properties": {
-                    "final_result": {
-                      "const": "UNKNOWN"
-                    }
-                  },
-                  "required": [
-                    "final_result"
-                  ]
-                }
-              }
-            }
-          },
           {
             "properties": {
               "missing_information": {

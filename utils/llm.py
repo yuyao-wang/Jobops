@@ -309,6 +309,81 @@ class OpenAIAPIBackend(LLMBackend):
 
     def ask(self, prompt: str, timeout: int = None) -> str:
         timeout = timeout or self.default_timeout
+        payload = self._base_payload(prompt)
+        data = self._post_response(payload, timeout=timeout)
+        return self._extract_response_text(data)
+
+    def ask_structured(
+        self,
+        *,
+        system_prompt: str,
+        input_data: dict,
+        schema_name: str,
+        schema: dict,
+        timeout: int = None,
+    ) -> dict:
+        """Make one tool-free Responses API call with strict JSON Schema output."""
+
+        if not isinstance(system_prompt, str) or not system_prompt.strip():
+            raise ValueError("system_prompt must be non-empty")
+        if not isinstance(input_data, dict):
+            raise TypeError("input_data must be a dictionary")
+        if not isinstance(schema, dict):
+            raise TypeError("schema must be a dictionary")
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", schema_name or "") is None:
+            raise ValueError("schema_name is invalid")
+        try:
+            serialized_input = json.dumps(
+                input_data,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("input_data is not JSON serializable") from exc
+
+        timeout = timeout or self.default_timeout
+        payload = self._base_payload(
+            [
+                {"role": "system", "content": system_prompt.strip()},
+                {"role": "user", "content": serialized_input},
+            ]
+        )
+        payload["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": True,
+            }
+        }
+        data = self._post_response(payload, timeout=timeout)
+        raw = self._extract_response_text(data)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            raise ValueError(
+                "OpenAI API did not return a valid structured JSON object"
+            ) from None
+        if not isinstance(parsed, dict):
+            raise ValueError(
+                "OpenAI API structured output must be a JSON object"
+            )
+        return parsed
+
+    def _base_payload(self, input_value) -> dict:
+        payload = {
+            "model": self.model,
+            "input": input_value,
+            "store": bool(self.store),
+        }
+        if self.max_output_tokens is not None:
+            payload["max_output_tokens"] = self.max_output_tokens
+        if self.reasoning_effort:
+            payload["reasoning"] = {"effort": self.reasoning_effort}
+        return payload
+
+    def _post_response(self, payload: dict, *, timeout: int) -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -318,16 +393,6 @@ class OpenAIAPIBackend(LLMBackend):
         if self.project:
             headers["OpenAI-Project"] = self.project
 
-        payload = {
-            "model": self.model,
-            "input": prompt,
-            "store": bool(self.store),
-        }
-        if self.max_output_tokens is not None:
-            payload["max_output_tokens"] = self.max_output_tokens
-        if self.reasoning_effort:
-            payload["reasoning"] = {"effort": self.reasoning_effort}
-
         try:
             response = httpx.post(
                 f"{self.base_url}/responses",
@@ -335,6 +400,8 @@ class OpenAIAPIBackend(LLMBackend):
                 json=payload,
                 timeout=timeout,
             )
+        except httpx.TimeoutException:
+            raise TimeoutError("OpenAI API request timed out") from None
         except httpx.HTTPError as exc:
             # httpx exceptions may render request URLs.  Do not echo arbitrary
             # configured URLs or credentials into logs.
@@ -349,8 +416,9 @@ class OpenAIAPIBackend(LLMBackend):
             data = response.json()
         except ValueError as exc:
             raise RuntimeError("OpenAI API returned invalid JSON") from exc
-
-        return self._extract_response_text(data)
+        if not isinstance(data, dict):
+            raise RuntimeError("OpenAI API returned an invalid response object")
+        return data
 
     def _raise_api_error(self, response) -> None:
         try:

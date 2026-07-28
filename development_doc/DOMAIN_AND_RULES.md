@@ -10,8 +10,11 @@ This document is the authority for domain objects, lifecycle states, and busines
 | `SourceObservation` | connector 返回的一条原始岗位观察；尚不是规范化岗位 | source, external ID/URL, observed time |
 | `DiscoveryRun` | 一次 manual/scheduled collection 及各 source 结果 | run ID, profile version, trigger |
 | `JobPosting` | 标准化后的岗位及其可申请目标 | `job_id`, source identity, content hash, revision |
+| `PrioritizationPolicyDraft` | AI 对用户自然语言策略的结构化解释；尚未生效 | draft ID, subject ID, interpreter version, expiry |
+| `PrioritizationPolicy` | 用户审核并批准的不可变求职策略 snapshot | policy ID, subject ID, version, content hash |
 | `JobAnalysis` | 从某个 JD revision 提取的结构化 requirements 和 unknowns | job revision, analyzer version |
-| `PriorityDecision` | 某个岗位 revision 的资格判断、分数、P0–P3 和解释 | job revision, candidate snapshot, scoring version |
+| `PriorityProposal` | Priority Agent 对单个岗位的 typed 建议；不是正式业务决定 | job/policy/candidate bindings, agent/prompt/model versions |
+| `PriorityDecision` | Validation Gate 接受的 P0–P3、EXCLUDED 或 NEEDS_USER 及解释 | job revision/hash, policy version, candidate summary version, agent versions |
 | `CandidateEvidence` | 可用于判断或材料的已验证候选人事实 | evidence ID, source, sensitivity, scope, verification time |
 | `ResumeVersion` | 已审批、可追溯的基础或定制简历 | resume ID, revision, artifact hash, evidence bindings |
 | `ApplicationPlan` | 本次申请的材料策略、回答范围和审批要求 | job revision, priority decision, policy version |
@@ -55,6 +58,20 @@ Branches: DUPLICATE | EXCLUDED | SKIPPED | EXPIRED
 - `DUPLICATE` links to the canonical posting; it does not create a second application.
 - `EXCLUDED` requires a failed hard filter.
 - `EXPIRED` means the target is closed or no longer valid.
+
+### `PrioritizationPolicyDraft` / `PrioritizationPolicy`
+
+```text
+DRAFT | NEEDS_CLARIFICATION | READY_FOR_APPROVAL
+→ APPROVED | EXPIRED
+
+PrioritizationPolicy:
+ACTIVE → SUPERSEDED
+```
+
+A draft is an AI proposal and has no effect on Priority. Approval creates an
+immutable version. Approving changed content supersedes the previous active
+version without rewriting its content or historical decisions.
 
 ### `MaterialPackage`
 
@@ -111,42 +128,62 @@ Resolving a handoff may resume from its recorded safe checkpoint only after reva
 
 ## 业务规则
 
-### Priority 计算
+### Priority policy and decision
 
-Hard filters run first. A failed hard filter produces `EXCLUDED`; an unknown required sensitive fact produces `NEEDS_USER`. Only qualified jobs receive P0–P3.
+Priority is an AI-assisted judgment against the user's current approved
+`PrioritizationPolicy`, not a fixed global score or weighted formula. Ordinary
+code may compute deterministic facts such as job age, but freshness has no
+global numeric weight or automatic P0–P3 threshold.
 
-```text
-priority_score = round(0.75 × match_score + 0.25 × freshness_score)
-```
-
-Both inputs use `0..100`.
-
-| Job age | `freshness_score` |
-|---|---:|
-| 0–2 days | 100 |
-| 3–5 days | 80 |
-| 6–10 days | 55 |
-| 11–20 days | 30 |
-| More than 20 days | 10 |
-| Unknown | 30 and cannot be P0 |
-
-| Priority | Rule |
+| Decision | Stable business meaning |
 |---|---|
-| P0 | `match_score >= 85` and age `<= 7 days` |
-| P1 | not P0, `match_score >= 75` and `priority_score >= 75` |
-| P2 | not P0/P1, `match_score >= 60` and `priority_score >= 60` |
-| P3 | remaining qualified jobs; watchlist unless explicitly queued |
+| P0 | 立即处理。高度符合当前策略，并且通常具有时间敏感性，值得优先定制材料。 |
+| P1 | 优先申请。整体价值较高，应当较快处理。 |
+| P2 | 可以申请。具有一定价值，但可以排在后面或复用现有材料。 |
+| P3 | 暂缓。当前策略下价值较低、匹配较弱、时间价值较低或存在明显顾虑。 |
+| EXCLUDED | 违反用户明确批准的 hard constraint，不进入申请队列。 |
+| NEEDS_USER | 关键 policy、候选人事实或岗位事实存在无法安全判断的歧义。 |
 
-Every decision records score breakdown, hard-filter results, reasons, job content hash, candidate snapshot version, and scoring version. A changed dependency invalidates the decision.
+The Priority Agent cannot change these meanings. Every decision explains
+positive signals, concerns and hard-constraint findings and binds the job
+revision/content hash, approved policy ID/version, candidate summary version
+and agent/prompt/model versions.
 
-### Hard filters
+### Hard constraints and soft preferences
 
-- Confirmed conflict with location/work mode, employment type, compensation floor, work authorization, sponsorship, required licence, or required clearance → `EXCLUDED`.
-- Unknown identity, legal, authorization, sponsorship, compensation, EEO, criminal/conflict, or other sensitive fact explicitly required by the current decision or form → `NEEDS_USER`; never infer.
+- A user may review a policy item as an approved hard constraint or a soft
+  preference.
+- `EXCLUDED` requires an explicit violation of an approved hard constraint.
+- Unknown is not a hard-constraint failure and may produce `NEEDS_USER` when
+  the ambiguity is decision-critical.
+- A soft preference may influence the Agent proposal but Validation Gate cannot
+  upgrade it to a hard constraint.
+- AI-interpreted hard constraints remain draft data until user-confirmed and
+  approved.
+- Confirmed conflicts involving allowed/excluded country, excluded company,
+  excluded role phrase or required work mode may be machine validated.
+- Every `PriorityProposal` must explicitly cover work authorization,
+  citizenship/permanent-residency, student status and security-clearance
+  eligibility. Each category is reported as `SATISFIED`, `NOT_SATISFIED`,
+  `UNKNOWN` or `NOT_APPLICABLE` with real job/candidate evidence when
+  applicable.
+- Citizenship or permanent-residency preference is not automatically an
+  absolute eligibility failure. The posting's actual wording controls whether
+  it is a requirement, a preference or unresolved.
+- An unmet or unknown student-status requirement must affect the proposal:
+  normally lower P0–P3 priority or produce `NEEDS_USER`. It may produce
+  `EXCLUDED` only when the active policy contains the user-confirmed
+  `EXCLUDED_STUDENT_ONLY_ROLE` hard constraint and the finding cites evidence.
+- The user may instead keep student-only roles as an `ELIGIBILITY` soft
+  preference. Validation must never promote that soft preference to a hard
+  exclusion.
+- Other hard-constraint concepts remain ambiguous until a stable typed
+  representation is approved; they are not invented by the interpreter.
 - Closed posting, invalid application target, or expired deadline → `EXPIRED`.
 - Duplicate of an active or verified application → merge observations; never queue twice.
 - Unsupported ATS → manual-only execution or `FAILED_UNSUPPORTED`; it is not a candidate mismatch.
-- Model output may propose extracted requirements or evidence alignment, but it cannot directly set `EXCLUDED` or P0–P3.
+- Model output remains a `PriorityProposal`; it cannot directly persist or
+  execute P0–P3/EXCLUDED.
 - A manual override records actor, reason, time, and prior decision version. It cannot override a confirmed hard filter or supply a missing sensitive fact.
 
 ### P0–P3 material strategy
@@ -224,9 +261,10 @@ Eligible jobs are ordered by:
 
 1. P0, then P1, then P2; P3 only when explicitly queued;
 2. posting time descending, with unknown time after known time;
-3. `priority_score` descending;
-4. discovery time ascending;
-5. stable `job_id`.
+3. discovery time ascending;
+4. stable `job_id`.
+
+Final reprioritization triggers and within-tier queue policy belong to P1d.
 
 An explicit user priority override changes the versioned `PriorityDecision`; it cannot bypass hard filters. The queue excludes duplicates, expired/excluded jobs, active runs, verified submissions, unresolved `SUBMIT_UNKNOWN`, and entries whose required material or approval is missing.
 

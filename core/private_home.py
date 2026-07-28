@@ -190,6 +190,12 @@ class PrivatePaths:
     policy: Path
     job_queue: Path
     event_ledger: Path
+    discovery: Path
+    job_postings: Path
+    discovery_runs: Path
+    prioritization: Path
+    prioritization_policies: Path
+    priority_decisions: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +242,12 @@ class PrivateHome:
             policy=profile / "policy.json",
             job_queue=queue / "job_pool.csv",
             event_ledger=state / "events.sqlite3",
+            discovery=state / "discovery",
+            job_postings=state / "discovery" / "job-postings",
+            discovery_runs=state / "discovery" / "runs",
+            prioritization=state / "prioritization",
+            prioritization_policies=state / "prioritization" / "policies",
+            priority_decisions=state / "prioritization" / "decisions",
         )
 
     def ensure(self) -> PrivatePaths:
@@ -258,6 +270,12 @@ class PrivateHome:
             paths.master_documents,
             paths.generated_documents,
             paths.state,
+            paths.discovery,
+            paths.job_postings,
+            paths.discovery_runs,
+            paths.prioritization,
+            paths.prioritization_policies,
+            paths.priority_decisions,
             paths.browser,
             paths.chromium_profile,
             paths.cache,
@@ -335,6 +353,39 @@ class PrivateHome:
             temporary.unlink(missing_ok=True)
             raise
         return candidate
+
+    def write_bytes_if_absent(
+        self,
+        path: str | Path,
+        content: bytes,
+    ) -> bool:
+        """Create one private file atomically, returning false if it exists."""
+
+        candidate = self.contained_path(path)
+        _ensure_private_directory(candidate.parent)
+        if candidate.is_symlink():
+            raise PrivateHomeError(f"private file cannot be a symlink: {candidate}")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(candidate, flags, PRIVATE_FILE_MODE)
+        except FileExistsError:
+            return False
+        try:
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
+            with os.fdopen(descriptor, "wb", closefd=True) as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            candidate.unlink(missing_ok=True)
+            raise
+        return True
 
     def write_text(
         self, path: str | Path, content: str, *, encoding: str = "utf-8"

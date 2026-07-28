@@ -1,0 +1,104 @@
+{
+  "jobs": [
+    {
+      "id": 1001,
+      "title": "Machine Learning Engineer",
+      "location": {
+        "name": "Vancouver, BC"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1001",
+      "content": "This description must not affect candidate matching."
+    },
+    {
+      "id": 1002,
+      "title": "Senior Machine-Learning Engineer",
+      "location": {
+        "name": "Vancouver — British Columbia"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1002",
+      "content": "Unrelated words: quantum botanist."
+    },
+    {
+      "id": 1003,
+      "title": "Machine Learning Engineer, Platform",
+      "location": {
+        "name": "Toronto, ON"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1003",
+      "content": "Vancouver Machine Learning Engineer"
+    },
+    {
+      "id": 1004,
+      "title": "Backend Engineer",
+      "location": {
+        "name": "Vancouver, BC"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1004",
+      "content": "Machine Learning Engineer"
+    },
+    {
+      "id": 1010,
+      "title": "Machine Learning Engineer - Systems 10",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1010"
+    },
+    {
+      "id": 1009,
+      "title": "Machine Learning Engineer - Systems 09",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1009"
+    },
+    {
+      "id": 1008,
+      "title": "Machine Learning Engineer - Systems 08",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1008"
+    },
+    {
+      "id": 1007,
+      "title": "Machine Learning Engineer - Systems 07",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1007"
+    },
+    {
+      "id": 1006,
+      "title": "Machine Learning Engineer - Systems 06",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1006"
+    },
+    {
+      "id": 1005,
+      "title": "Machine Learning Engineer - Systems 05",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1005"
+    },
+    {
+      "id": 1011,
+      "title": "Machine Learning Engineer - Systems 11",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1011"
+    },
+    {
+      "id": 1012,
+      "title": "Machine Learning Engineer - Systems 12",
+      "location": {
+        "name": "Remote"
+      },
+      "absolute_url": "https://job-boards.greenhouse.io/examplelabs/jobs/1012"
+    }
+  ]
+}
