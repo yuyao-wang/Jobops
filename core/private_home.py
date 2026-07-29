@@ -221,6 +221,9 @@ class PrivatePaths:
     resume_layout_revision_records: Path
     prepared_resume_materials: Path
     plan_material_manifests: Path
+    cover_letter_evidence_snapshots: Path
+    cover_letter_drafts: Path
+    cover_letter_fact_qa_results: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,6 +341,15 @@ class PrivateHome:
             plan_material_manifests=(
                 state / "preparation" / "plan-material-manifests"
             ),
+            cover_letter_evidence_snapshots=(
+                state / "preparation" / "cover-letter-evidence-snapshots"
+            ),
+            cover_letter_drafts=(
+                state / "preparation" / "cover-letter-drafts"
+            ),
+            cover_letter_fact_qa_results=(
+                state / "preparation" / "cover-letter-fact-qa-results"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -391,6 +403,9 @@ class PrivateHome:
             paths.resume_layout_revision_records,
             paths.prepared_resume_materials,
             paths.plan_material_manifests,
+            paths.cover_letter_evidence_snapshots,
+            paths.cover_letter_drafts,
+            paths.cover_letter_fact_qa_results,
             paths.browser,
             paths.chromium_profile,
             paths.cache,

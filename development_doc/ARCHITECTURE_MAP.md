@@ -532,7 +532,35 @@ Application Preparation                                [部分]
 │   ├── never claims completeness or Gate A
 │   ├── no placeholder or fake entries
 │   └── immutable manifest + UNCHANGED replay
-├── Cover Letter                                       [计划 P2b2]
+├── Cover Letter                                       [部分]
+│   ├── Cover Letter Evidence Snapshot                  [完成 P2b2a]
+│   │   ├── independent of Resume Tailoring evidence scope
+│   │   ├── own COVER_LETTER scope, never reused or inherited
+│   │   ├── evidence only from SourceResumeProjection
+│   │   ├── exact text, source ID and typed locator preserved
+│   │   ├── no JD read, no Agent, no cover letter generated
+│   │   ├── empty projection → DEFERRED_NO_EVIDENCE
+│   │   └── immutable snapshot + UNCHANGED replay
+│   ├── Evidence-bound Cover Letter Draft               [完成 P2b2b]
+│   │   ├── full Plan/JobPosting/EvidenceSnapshot binding check
+│   │   ├── static versioned Cover Letter Agent policy
+│   │   ├── verbatim Plan user instructions, never policy edits
+│   │   ├── bounded Agent at most once per new binding
+│   │   ├── evidence-only candidate claims, JD never used as proof
+│   │   ├── verbatim JD alignment, placeholder rejection
+│   │   ├── DEFERRED_INSUFFICIENT_EVIDENCE / DEFERRED_NEEDS_HUMAN
+│   │   └── immutable draft + pre-Agent UNCHANGED replay
+│   ├── Evidence-bound Cover Letter Fact QA              [完成 P2b2c]
+│   │   ├── independent of P2b2b's private validator
+│   │   ├── full Plan/JobPosting/EvidenceSnapshot/Draft binding check
+│   │   ├── deterministic checks first, zero Agent calls when blocking
+│   │   ├── bounded QA Agent at most once, only if nothing was blocked
+│   │   ├── Agent judges responsibility/deployment/impact/motivation exaggeration only
+│   │   ├── every Agent finding re-verified against known paragraph/evidence/JD
+│   │   ├── UNCERTAIN or illegal output → DEFERRED_NEEDS_HUMAN, no persist
+│   │   ├── never rewrites or modifies the Draft
+│   │   └── immutable result + UNCHANGED replay
+│   └── Cover Letter Document Publication               [计划 P2b2d]
 ├── Application Answers                               [计划 P2b3]
 ├── Resume Visual QA                                   [完成 P2a8a]
 │   ├── full compilation/version/draft binding re-check

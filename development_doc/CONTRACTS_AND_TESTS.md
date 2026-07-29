@@ -44,6 +44,9 @@ This document is the authority for component contracts and implementation eviden
 | `revise_resume_layout()` / `ResumeLayoutRevisionRun` | Implemented P2a8b bounded typography-only revision composing the P2a7 and P2a8a entry points |
 | `publish_prepared_resume()` / `PreparedResumeMaterial` | Implemented P2a9 immutable publication of one approved compiled PDF per ApplicationPlan |
 | `assemble_plan_material_manifest()` / `PlanMaterialManifest` | Implemented P2b1 plan-scoped manifest carrying the published resume, separate from the legacy `MaterialManifest` |
+| `create_cover_letter_evidence_snapshot()` / `CoverLetterEvidenceSnapshot` | Implemented P2b2a subject-specific cover-letter evidence with its own `COVER_LETTER` scope, independent of resume-tailoring evidence |
+| `draft_cover_letter()` / `CoverLetterDraft` | Implemented P2b2b evidence-bound cover letter draft with deterministic Agent-output validation |
+| `review_cover_letter_fact_qa()` / `CoverLetterFactQAResult` | Implemented P2b2c independent fact QA over one CoverLetterDraft, deterministic-first with a bounded QA Agent for semantic exaggeration only |
 | `LatexBuildProvenance` | Implemented P2a8b shared protocol letting construction and revision records both describe one managed build |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
@@ -1066,6 +1069,159 @@ Manifests persist below
 `state/preparation/plan-material-manifests/<subject-key>/`; reads and writes
 re-verify every referenced artifact.
 
+#### `create_cover_letter_evidence_snapshot()`
+
+```text
+create_cover_letter_evidence_snapshot(
+    CreateCoverLetterEvidenceSnapshotCommand(
+        subject_id,
+        application_plan_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    selection_repository,
+    candidate_repository,
+    projection_repository,
+    snapshot_repository,
+) -> CreateCoverLetterEvidenceSnapshotResult
+```
+
+`core/cover_letter_evidence.py` mirrors P2a4b's structure over the same
+`SourceResumeProjection` input, but defines its own
+`CoverLetterEvidenceScope.COVER_LETTER`, sensitivity and verification-status
+enums rather than importing anything from `core/candidate_evidence.py`. A
+test parses the module's AST and asserts no `candidate_evidence` import
+exists. Every evidence and snapshot ID binds this scope, so a cover-letter
+evidence ID is never equal to a resume-tailoring evidence ID even when built
+from the identical source block and projection.
+
+Validation and idempotency mirror P2a4b: the complete
+Plan/Selection/Candidate/Projection binding is revalidated fail-closed, the
+latest complete Selection and Projection are chosen by domain timestamp with
+stable ID tie-break, an empty projection returns
+`DEFERRED_NO_EVIDENCE`, and snapshot identity excludes time so identical
+input replays `UNCHANGED`. Snapshots persist below
+`state/preparation/cover-letter-evidence-snapshots/<subject-key>/`.
+
+#### `draft_cover_letter()`
+
+```text
+draft_cover_letter(
+    DraftCoverLetterCommand(
+        subject_id,
+        application_plan_id,
+        cover_letter_evidence_snapshot_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    job_repository,
+    evidence_snapshot_repository,
+    agent: CoverLetterAgentPort,
+    metadata: CoverLetterAgentMetadata,
+    draft_repository,
+) -> DraftCoverLetterResult
+```
+
+`CoverLetterAgentPort.generate()` receives a `CoverLetterAgentContext`
+carrying only `CoverLetterJobContext` (JD fields plus revision/content
+hash), `COVER_LETTER`-scoped `CoverLetterEvidenceView` items, the Plan's
+verbatim `user_preparation_instructions`, and the static
+`COVER_LETTER_DRAFT_AGENT_POLICY` text at
+`COVER_LETTER_DRAFT_POLICY_VERSION`. It must return a typed
+`CoverLetterAgentOutput` (greeting, ordered `CoverLetterParagraphProposal`
+items, closing, rationale); an untyped or missing return defers as
+`DEFERRED_NEEDS_HUMAN`.
+
+`_validate_agent_output()` is the deterministic gate: every cited evidence
+ID must exist in the snapshot with `COVER_LETTER` scope; every JD alignment
+reference must be a verbatim substring of `job.description`; every checkable
+token (a number, or a capitalized word after the first) in a
+`QUALIFICATION`/`MOTIVATION` paragraph must appear in the paragraph's own
+cited evidence, and a token that appears only in the JD is rejected as an
+unproven candidate claim; a regex rejects bracket/brace placeholders, `TBD`
+and generic stand-ins anywhere in the letter. The tokenizer
+(`_WORD_PATTERN = r"[A-Za-z0-9][A-Za-z0-9+#/]*"`) deliberately excludes
+trailing punctuation from a token, avoiding the false-positive P2a4c/P2a5's
+tokenizer produces on a sentence-final word before a period.
+
+Drafts persist below
+`state/preparation/cover-letter-drafts/<subject-key>/`.
+
+#### `review_cover_letter_fact_qa()`
+
+```text
+review_cover_letter_fact_qa(
+    RunCoverLetterFactQACommand(
+        subject_id,
+        application_plan_id,
+        cover_letter_evidence_snapshot_id,
+        cover_letter_draft_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    job_repository,
+    evidence_snapshot_repository,
+    draft_repository,
+    agent: CoverLetterFactQAAgentPort,
+    metadata: CoverLetterFactQAAgentMetadata,
+    result_repository,
+) -> RunCoverLetterFactQAResult
+```
+
+Independent of `draft_cover_letter()`: this module never imports its
+private `_validate_agent_output()` or any other private helper from
+`core.cover_letter_draft`. Every check is re-derived from the typed
+`CoverLetterDraft`, `CoverLetterEvidenceSnapshot` and `JobPosting` objects
+it reads itself. The complete Plan/JobPosting/EvidenceSnapshot/Draft
+binding (subject, job revision/content hash, snapshot ID/hash, and the
+Draft's own recorded snapshot/job binding) is revalidated first;
+`BLOCKED_BINDING_MISMATCH` short-circuits before any Result identity is
+computed and before the Agent is reachable.
+
+`_deterministic_findings()` runs unconditionally and covers: unknown or
+wrong-scope evidence IDs; JD alignment references that are not verbatim
+`job.description` substrings; `QUALIFICATION`/`MOTIVATION` paragraphs
+without cited evidence; checkable tokens (numbers, or capitalized words
+after the first, excluding the pronoun "I") in a candidate-fact paragraph
+that trace to neither cited evidence nor the JD; a JD-only token used to
+prove a candidate trait; a general paragraph asserting a fact absent from
+the JD (description, title or company) and its own cited evidence; an
+unverified name in the greeting; any placeholder; and duplicated paragraph
+order/identity. Any `BLOCKING`-severity finding here returns
+`BLOCKED_UNSUPPORTED_CLAIM` immediately, with the Agent never called.
+
+Only when no deterministic finding is `BLOCKING` does
+`CoverLetterFactQAAgentPort.review()` run, at most once per new binding.
+Its `CoverLetterFactQAAgentContext` carries only the current
+greeting/`CoverLetterFactQAParagraphView` tuple/closing,
+`COVER_LETTER`-scoped `CoverLetterFactQAEvidenceView` items,
+`CoverLetterJobContext`, and the static `COVER_LETTER_FACT_QA_AGENT_POLICY`
+text at `COVER_LETTER_FACT_QA_POLICY_VERSION`. It must return a typed
+`CoverLetterFactQAAgentOutput` (a `PASSED`/`BLOCKED`/`UNCERTAIN` verdict
+plus typed findings restricted to `AGENT_ELIGIBLE_FINDING_TYPES` —
+`RESPONSIBILITY_LEVEL_EXAGGERATION`, `DEPLOYMENT_STAGE_EXAGGERATION`,
+`UNSUPPORTED_IMPACT_OR_CAUSALITY`, `FABRICATED_COMPANY_CONNECTION`,
+`SEMANTIC_SCOPE_OVERREACH`); a `BLOCKED` verdict requires at least one
+`BLOCKING` finding and vice versa, enforced by the output dataclass itself.
+
+`_agent_findings()` independently re-verifies every returned finding's
+`paragraph_id` against the current Draft's paragraph IDs, every
+`evidence_id` against the current snapshot's `COVER_LETTER`-scoped items,
+and every `jd_references` entry as a verbatim `job.description` substring.
+An unknown reference, an `UNCERTAIN` verdict, or an untyped/missing return
+all resolve to `DEFERRED_NEEDS_HUMAN` — no Result is persisted, so a later
+manual re-run may call the Agent again, and the Draft is never modified.
+
+A validated Agent verdict (`PASSED` or `BLOCKED`) is combined with the
+deterministic findings and persisted as one immutable
+`CoverLetterFactQAResult`. Its identity binds the Draft ID and content
+hash, job revision/content hash, evidence snapshot ID/hash, and QA
+Agent/prompt/model/policy/contract versions, excluding time — a completed
+binding replays `UNCHANGED`, and a changed Draft/JobPosting/
+EvidenceSnapshot/QA-version always creates a new immutable Result. Results
+persist below
+`state/preparation/cover-letter-fact-qa-results/<subject-key>/`.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -1266,6 +1422,9 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Evidence-bound Cover Letter Draft | Implemented P2b2b | 21 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, restricted Agent context, unevidenced-claim rejection, JD-requirement-as-fact rejection, placeholder rejection (greeting/closing/paragraph), insufficient-evidence deferral, illegal-output deferral (four variants), Agent unavailability, replay, restart reads, conflicts and zero-FactQA/rendering/manifest/execution boundaries |
+| Evidence-bound Cover Letter Fact QA | Implemented P2b2c | 23 synthetic fake-QA-Agent cases for binding mismatch (plan/job/snapshot/draft, zero Agent calls), deterministic blocking (unknown evidence, unsupported claim, JD-requirement-as-fact — all zero Agent calls), Agent-blocked semantic exaggeration (responsibility-level, fabricated company connection), restricted Agent context, illegal Agent-finding references (three variants) and uncertain/untyped Agent output all deferring without persisting, draft non-mutation, replay, new-Result-on-version-change, restart reads, conflicts and zero-rendering/manifest/execution boundaries |
+| Cover Letter Evidence Snapshot | Implemented P2b2a | 16 synthetic cases for exact source lineage, `COVER_LETTER`-only scope, evidence-ID disjointness from resume-tailoring evidence, stable replay/restart, binding failures, missing locator, empty evidence, changed Plan/Selection/Projection, contract-version identity, subject isolation, immutable conflicts and zero-JD/Agent/tailoring/execution boundaries |
 | Plan-scoped Material Manifest Assembly | Implemented P2b1 | 19 synthetic cases for typed assembly, exactly one RESUME entry, entry provenance binding, refusal to claim completeness or Gate A, no placeholder entries, plan and subject mismatch, unknown prepared material, PDF drift, removal and page-count drift, artifact immutability, no legacy-directory fallback, replay, changed material, deterministic current-manifest resolution, conflicts, restart reads, subject isolation and separation from the legacy manifest |
 | Prepared Resume Material Publication | Implemented P2a9 | 25 synthetic cases for the direct and revision publication paths, distinct provenance per path, unapproved visual QA, unsuccessful and exhausted revision runs, blocked fact QA, draft and compilation binding mismatch, PDF drift, removal and page-count drift, never copying or regenerating the artifact, subject isolation, replay, changed chains, current-material resolution by publication time rather than mtime, conflicts, restart reads and zero-compiler/renderer/Agent boundaries |
 | Bounded Resume Layout Revision | Implemented P2a8b | 24 cases with fake Revision Agents, fake renderers, scripted compilers and the real P2a7/P2a8a entry points for not-required passes, single-attempt success, child lineage, byte-identical content region, restricted Agent context, eight rejected unsafe revisions, untyped output, bounded serial attempts, compilation stop, renderer failure, Agent unavailability, replay with zero extra work, changed policy, conflicts, restart and content-preservation boundaries |

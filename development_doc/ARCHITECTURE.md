@@ -723,6 +723,53 @@ all, missing materials produce no placeholder or fake entry, and an
 unresolvable prepared resume defers this job rather than falling back to a
 legacy directory or the source resume.
 
+P2b2a opens Cover Letter preparation with an evidence boundary independent of
+Resume Tailoring's. It authorizes existing resume-source facts for
+cover-letter use without generating anything or calling a model. Evidence
+comes only from the immutable `SourceResumeProjection` after the complete
+Plan/Selection/Candidate/Projection binding is revalidated; each item keeps
+its exact text, source ID and typed locator, conservative sensitivity and
+document-statement verification status. Its own `COVER_LETTER` scope
+participates in every evidence and snapshot identity, so a cover-letter fact
+can never be confused with, or silently authorized through, a resume-tailoring
+one — `core/candidate_evidence.py` is untouched. An empty projection defers
+without a blank snapshot; nothing here reads a JD, judges relevance, or
+produces a cover letter.
+
+P2b2b turns that snapshot and the trusted JD into one structured draft.
+Every Plan/JobPosting/EvidenceSnapshot binding is revalidated before the
+bounded Agent is reachable, and the Agent sees only the JD,
+`COVER_LETTER`-scoped evidence, the Plan's verbatim user instructions and a
+static policy that bans inventing a hiring manager's name, fabricated
+company experience and verbatim bullet-stacking. Ordinary code then checks
+every evidence reference and scope, every JD alignment substring, that no
+new number or proper noun in a candidate-fact paragraph lacks evidence
+support, that a JD-only detail is never treated as proof of a candidate
+trait, and that no placeholder text survives. Illegal or unverifiable output
+defers for a human; a snapshot with no usable evidence defers without a
+model call. A draft implies no Fact QA, no rendering and no submission
+authority.
+
+P2b2c is an independent fact-quality gate over that draft: it never
+rewrites the draft and never calls P2b2b's private validators, re-deriving
+every check directly from the typed Draft, the EvidenceSnapshot and the
+current JD. Every Plan/JobPosting/EvidenceSnapshot/Draft binding is
+revalidated before anything else runs. Deterministic code checks first —
+evidence existence and scope, verbatim JD references, evidence for
+qualification/motivation paragraphs, unsupported candidate claims, JD
+requirements presented as fact, an unverified name in the greeting, and
+placeholders — and any one hit returns `BLOCKED_UNSUPPORTED_CLAIM` with
+zero Agent calls. Only when nothing is blocking does the bounded QA Agent
+run once, judging only responsibility-level exaggeration, deployment-stage
+exaggeration, unsupported impact/causality, fabricated personal company
+connections and overall semantic overreach; it may not touch a repository,
+tool or file, and every finding it returns is independently checked against
+the current paragraphs, evidence and JD before being trusted. An uncertain
+or illegal Agent output defers for a human without persisting a result, so
+the draft is never touched and other jobs continue; `PASSED` implies only
+that the fact check passed, nothing about documents, the Manifest, or Gate
+A.
+
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 
 ## Application Execution

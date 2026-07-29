@@ -602,6 +602,132 @@ version without rewriting its content or historical decisions.
   not mean a cover letter or answers are ready, that Gate A passed, or that
   ATS execution or submission is authorized.
 
+### Cover letter evidence snapshot
+
+- P2b2a is independent of the resume-tailoring evidence boundary in
+  `core/candidate_evidence.py`, which is untouched. `COVER_LETTER` is its own
+  scope, never reused, inherited or implicitly authorized from
+  `RESUME_TAILORING`.
+- Every evidence and snapshot identity binds this scope, so a cover-letter
+  evidence ID can never collide with a resume-tailoring one, even for the
+  exact same source block.
+- Evidence comes only from the immutable `SourceResumeProjection` after the
+  complete Plan/Selection/Candidate/Projection binding is revalidated.
+  Prioritization's `CandidateSummary`, the selection-safe summary, ordinary
+  CandidateVault profile fields, the JD, model inference and the legacy
+  `profile.yaml` are never evidence inputs.
+- Every non-empty source block becomes one item in projection order, with
+  exact text, unmodified source section/block/bullet ID and typed locator.
+  No summarizing, polishing, decomposition into implied skills, or added
+  impact beyond what the source text states.
+- Sensitivity is conservatively `PERSONAL`. Verification status stays
+  `USER_PROVIDED_DOCUMENT_STATEMENT` — a document statement, never
+  independently verified. `verified_at` is always `None`.
+- Snapshot identity binds the Plan, Selection, artifact hash, Projection
+  ID/hash, ordered item hashes and contract version, excluding time. Replay
+  returns `UNCHANGED` with the original `created_at`; a changed Plan,
+  Selection, Projection or contract version creates a new immutable
+  snapshot.
+- An empty projection returns `DEFERRED_NO_EVIDENCE`: no blank snapshot, no
+  synchronous user requirement, other jobs continue.
+- P2b2a does not judge JD relevance, generate a cover letter, or call an
+  Agent. A later Cover Letter Agent may cite only evidence IDs from this
+  snapshot; other sources are untrusted by default.
+
+### Evidence-bound cover letter draft
+
+- P2b2b revalidates the complete Plan/JobPosting/EvidenceSnapshot binding —
+  subject, job revision and content hash, and the snapshot's own plan/job
+  binding — before the bounded Agent is reachable.
+- The Agent receives only the trusted JD, `COVER_LETTER`-scoped evidence
+  from the current snapshot, the Plan's verbatim user instructions and a
+  static versioned policy. Instruction priority is fixed: facts and the
+  fabrication ban > current Plan user instructions > JD alignment > default
+  style. User instructions never edit the global policy.
+- The policy forbids fabricating any skill, experience, responsibility,
+  number, outcome, degree or personal background fact; guessing a hiring
+  manager's name; and inventing personal experience with the company's
+  culture, mission or product. It requires selecting the few most
+  JD-relevant evidence items into one coherent narrative rather than
+  stacking resume bullets verbatim.
+- The job description may describe what a role requires. It is never
+  evidence that the candidate possesses that trait — a JD-only detail
+  presented as a candidate fact without supporting evidence is rejected.
+- The Agent must return typed structured output: a greeting, ordered
+  paragraphs with a purpose (`INTRODUCTION`, `QUALIFICATION`, `MOTIVATION`,
+  `CLOSING`), exact text, cited evidence IDs and JD alignment references,
+  and a closing.
+- Deterministic validation checks every evidence reference exists with
+  `COVER_LETTER` scope, every JD alignment reference is a verbatim
+  substring of the job description, every new number or proper-noun-like
+  token in a qualification or motivation paragraph traces to cited
+  evidence, and no placeholder (`[Company]`, `[Hiring Manager]`, `TBD`, and
+  similar) survives in the greeting, closing or any paragraph.
+- A `QUALIFICATION` or `MOTIVATION` paragraph must cite at least one
+  evidence ID; paragraph order must be contiguous and unique.
+- Insufficient `COVER_LETTER` evidence returns
+  `DEFERRED_INSUFFICIENT_EVIDENCE` with zero Agent calls. Illegal,
+  contradictory or unverifiable Agent output returns `DEFERRED_NEEDS_HUMAN`
+  without auto-retry. Both pause only the current job.
+- Draft identity binds the Plan, job revision and content hash, evidence
+  snapshot ID and hash, user-instruction hash and
+  Agent/prompt/model/policy/contract versions, excluding time. A completed
+  binding replays `UNCHANGED` with zero Agent calls.
+- A created draft is an unreviewed AI document: it authorizes no Cover
+  Letter Fact QA result, no rendering, no `PlanMaterialManifest` entry and
+  no submission.
+
+### Evidence-bound cover letter Fact QA
+
+- P2b2c is independent of P2b2b: it never rewrites the Draft, never
+  auto-repairs a blocked claim, and never imports or calls P2b2b's private
+  Agent-output validator. Every check is re-derived directly from the typed
+  `CoverLetterDraft`, the `CoverLetterEvidenceSnapshot` and the current
+  `JobPosting`.
+- The complete Plan/JobPosting/EvidenceSnapshot/Draft binding — subject, job
+  revision and content hash, snapshot ID/hash, and the Draft's own
+  snapshot/job binding — is revalidated before anything else runs.
+  Mismatches return `BLOCKED_BINDING_MISMATCH` with zero Agent calls.
+- Deterministic code runs first and covers: evidence-ID existence and
+  `COVER_LETTER` scope; verbatim JD alignment references; evidence required
+  for `QUALIFICATION`/`MOTIVATION` paragraphs; every new number or
+  proper-noun-like token in those paragraphs tracing to cited evidence; a
+  JD-only detail never standing in as a candidate fact; other paragraphs
+  never asserting a specific fact absent from the JD (description, title,
+  company) or their own cited evidence; the greeting never naming someone
+  absent from the trusted JD; no placeholder anywhere; paragraph order and
+  identity non-duplicated.
+- Any deterministic hit returns `BLOCKED_UNSUPPORTED_CLAIM` immediately,
+  with zero Agent calls, and is persisted as a `BLOCKED`-verdict Result.
+- Only when deterministic checks find nothing does the bounded
+  `CoverLetterFactQAAgentPort.review()` run, at most once per new binding.
+  It receives only the current greeting/paragraphs/closing, `COVER_LETTER`
+  evidence texts, the trusted JD and a static QA policy — never a
+  repository, tool or file handle — and it may not modify the Draft,
+  produce replacement text, or supply new evidence.
+- The Agent may judge only: responsibility-level exaggeration
+  (participation rewritten as ownership or leadership); deployment-stage
+  exaggeration (prototype/research presented as production); unsupported
+  business impact, scale or causality; a motivation paragraph fabricating a
+  personal connection to the company's mission, product or culture; and
+  overall semantic overreach beyond the cited evidence and JD. It returns
+  only typed findings and a `PASSED`/`BLOCKED`/`UNCERTAIN` verdict.
+- Every Agent finding's paragraph, evidence and JD references are
+  independently re-verified against the current Draft, snapshot and JD
+  before being trusted; an unknown reference, a non-verbatim JD excerpt, or
+  an `UNCERTAIN` verdict returns `DEFERRED_NEEDS_HUMAN` without auto-retry
+  and without persisting a Result — the Draft is untouched, only the
+  current job pauses, and other jobs continue.
+- Result identity binds the Draft ID and content hash, job revision/content
+  hash, evidence snapshot ID/hash and QA Agent/prompt/model/policy/contract
+  versions, excluding time. A completed binding replays `UNCHANGED` with
+  zero further Agent calls; a changed Draft, JobPosting, EvidenceSnapshot
+  or QA version always creates a new immutable Result without overwriting
+  history.
+- A `PASSED` verdict means only that the fact check passed. It does not
+  mean a cover letter document was generated, a `PlanMaterialManifest`
+  entry exists, or Gate A/submission authorization was granted.
+
 ### `MaterialPackage`
 
 ```text
