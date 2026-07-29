@@ -333,6 +333,103 @@ version without rewriting its content or historical decisions.
 - Selecting a base version says nothing about whether LaTeX has been
   generated, compiles, passes Visual QA or may be submitted.
 
+### Draft to LaTeX construction
+
+- P2a6c admits only a `PASSED` fact-QA result matching this draft's content
+  hash, and obeys the P2a6b decision exactly. It never re-selects a version.
+- Content is addressed by a controlled marker contract:
+  `\JobopsSection{section_id}{title}` and `\JobopsBullet{bullet_id}{text}`
+  inside exactly one `%% JOBOPS-CONTENT-BEGIN` / `%% JOBOPS-CONTENT-END`
+  region. Markers may not appear outside that region.
+- A historical version supplies layout only. Every visible candidate
+  statement comes from the current Draft: no historical bullet, company,
+  project, skill or result may survive.
+- Each Draft section and each retained bullet appears exactly once. Text is
+  byte-identical to the Draft after single-pass LaTeX escaping; wording is
+  never altered. Bullets marked `OMITTED` are dropped entirely.
+- The managed fallback uses one built-in template,
+  `managed-resume-one-page-v1`. There is no template catalogue, no
+  recommendation and no multi-template choice.
+- Zero Agent calls for the managed template render and for a base that
+  already carries the controlled region, which is derived by replacing that
+  region while the rest of the layout stays byte-identical.
+- Only a base without the controlled region calls the bounded Agent, at most
+  once. It receives the base LaTeX text, the Draft, the plan's user
+  instructions, the marker contract and a static policy — never a
+  repository, tool, compiler, file system or evidence snapshot.
+- Every path is validated deterministically before registration: UTF-8,
+  document structure, the registry capability scan, one controlled region,
+  no duplicate or unknown marker, no missing Draft content, exact escaped
+  text, and no surviving historical content from the base version.
+- Any violation defers as `DEFERRED_NEEDS_HUMAN` without auto-retry. An
+  unreadable, drifted or missing base source defers as
+  `DEFERRED_SOURCE_UNREADABLE`; no other historical version is substituted.
+- The existing-version path registers `AI_REVISED` with the selected version
+  as parent and inherits its root family. The fallback path registers
+  `SYSTEM_TEMPLATE_DERIVED` with no parent, a new stable family and the
+  template ID and hash. Both record the Draft and passed fact-QA bindings.
+- Construction identity binds plan, draft, passed fact-QA, base selection,
+  parent or template, user instructions and Agent/prompt/model/contract
+  versions, excluding time. It is recorded in a construction record owned by
+  this Slice, so registry identity and lineage semantics are unchanged.
+- A completed binding replays as `UNCHANGED` with zero Agent calls and no
+  duplicate source artifact. Any change creates a new immutable version.
+- Producing `.tex` proves nothing about compiling, page count, Visual QA or
+  submission authority.
+
+### Sandboxed LaTeX compilation
+
+- P2a7 revalidates the construction record against the version — subject,
+  version ID, source hash, family, lineage, template and Draft/FactQA
+  provenance — and fails closed without starting a compiler.
+- The managed source is re-read, re-hashed from actual bytes and re-scanned
+  for forbidden capabilities immediately before compiling.
+- Only an allowlisted engine may run, through an injected port. No
+  `shell=True`, no caller-supplied command, no unverified PATH executable, no
+  remote compilation service, no browser and no external API.
+- V1 supports exactly one versioned engine and compile policy. There is no
+  compiler recommendation and no open-ended fallback.
+- `describe()` is cheap and drives the binding; `compile()` is the only
+  side-effecting call, so a completed binding replays without a compiler run.
+- Flags always include no shell escape, non-interactive, halt on error,
+  file/line diagnostics and a bounded output directory.
+- Each run uses a fresh temporary directory as cwd, holds only the managed
+  `.tex`, inherits no user working directory, and may not write outside that
+  sandbox or the managed artifact directory.
+- The environment is minimal and deterministic: stable locale, UTC,
+  `SOURCE_DATE_EPOCH`, sandbox-local `HOME` and `TEXMF*`, `shell_escape=f`
+  and `openout_any=p`. No credential, token, home path or project variable
+  is inherited.
+- Wall-clock timeout, log size caps, output file count and size caps and
+  POSIX resource limits all apply. The engine runs at most once; there is no
+  retry loop to clear warnings.
+- A source referencing files the registry does not manage returns
+  `DEFERRED_SOURCE_INCOMPLETE`. No directory is scanned, nothing is
+  downloaded, the user is not required to be online, and the source is never
+  rewritten.
+- A missing engine returns `DEFERRED_COMPILER_UNAVAILABLE`. Ordinary LaTeX
+  errors, timeouts and a success exit without a usable PDF return
+  `DEFERRED_COMPILATION_ERROR`. No LaTeX is auto-fixed and no Agent is called.
+- Diagnostics are bounded and de-pathed: absolute paths, the home directory
+  and the sandbox location are redacted before anything is recorded.
+- A PDF is accepted only after deterministic validation: exists, non-empty,
+  valid signature, within the size cap, not a symlink, inside the sandbox and
+  at least one page. Page count is parsed with the existing pdfplumber
+  dependency, because a real engine compresses page objects.
+- Page count is recorded and never enforced. Whether a resume stays on one
+  page belongs to Visual QA and Layout Revision.
+- Accepted bytes are copied into subject-isolated managed storage and hashed
+  from the stored bytes. `.aux`, `.log`, `.fls` and other scratch files never
+  become material; only a bounded diagnostic summary is kept.
+- The compilation binding covers construction record ID and binding, version
+  ID and source hash, engine, compiler version, normalized flags and the
+  compile and sandbox policy versions, excluding time. A completed binding
+  replays `UNCHANGED` with zero compiler runs, no duplicate artifact and the
+  original `compiled_at`.
+- A successful compile proves only that a structurally valid PDF exists. It
+  is not a new fact check, a layout judgment, a one-page guarantee, evidence
+  of no overflow, Gate A approval, or submission authority.
+
 ### `MaterialPackage`
 
 ```text

@@ -483,12 +483,37 @@ Application Preparation                                [部分]
 │   │   ├── unusable Agent answer → managed template
 │   │   ├── unsatisfiable user requirement → defer
 │   │   └── immutable decision + pre-Agent UNCHANGED replay
-│   ├── TailoredDraft → LaTeX Construction             [计划 P2a6c]
+│   ├── TailoredDraft → LaTeX Construction             [完成 P2a6c]
+│   │   ├── obeys P2a6b, never re-selects a version
+│   │   ├── controlled JobopsSection / JobopsBullet markers
+│   │   ├── one delimited content region per document
+│   │   ├── layout from history, content only from Draft
+│   │   ├── template render and region replacement: zero Agent
+│   │   ├── unmarked base → bounded Agent at most once
+│   │   ├── deterministic fidelity + stale-content validation
+│   │   ├── unsafe output → DEFERRED_NEEDS_HUMAN
+│   │   ├── unreadable base → DEFERRED_SOURCE_UNREADABLE
+│   │   └── AI_REVISED child or SYSTEM_TEMPLATE_DERIVED root
+│   ├── Managed Default Template                       [最小完成 P2a6c]
+│   │   └── managed-resume-one-page-v1, no catalogue
 │   └── Conversational Version Override                [计划 后续]
-├── Sandboxed LaTeX Compilation                        [计划 P2a7]
+├── Sandboxed LaTeX Compilation                        [完成 P2a7]
+│   ├── full construction/version binding re-check
+│   ├── source re-read, re-hashed, capability rescanned
+│   ├── one allowlisted engine, no shell, fixed argv
+│   ├── fresh temp cwd, minimal deterministic env
+│   ├── timeout, rlimits, capped logs and outputs
+│   ├── describe() cheap, compile() at most once
+│   ├── unmanaged dependency → DEFERRED_SOURCE_INCOMPLETE
+│   ├── missing engine → DEFERRED_COMPILER_UNAVAILABLE
+│   ├── LaTeX error/timeout → DEFERRED_COMPILATION_ERROR
+│   ├── deterministic PDF validation, page count recorded
+│   ├── managed PDF artifact hashed from stored bytes
+│   └── immutable record + pre-compile UNCHANGED replay
 ├── Cover Letter                                       [计划]
 ├── Application Answers                               [计划]
 ├── Resume Visual QA                                   [计划 P2a8]
+├── Bounded Layout Revision                            [计划 P2a8]
 ├── Human Attention Queue                              [计划]
 │   └── item-scoped defer-and-continue
 ├── Material manifest                                  [完成]

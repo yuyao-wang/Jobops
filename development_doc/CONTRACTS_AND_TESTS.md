@@ -38,6 +38,8 @@ This document is the authority for component contracts and implementation eviden
 | `run_resume_fact_qa()` / `ResumeFactQAResult` | Implemented P2a5 independent fact gate with deterministic checks before any bounded QA Agent call |
 | `register_resume_latex_version()` / `ResumeLatexVersionProvider` | Implemented P2a6a trusted subject-scoped LaTeX version registry with managed sources and explicit lineage |
 | `select_base_latex_version()` / `BaseLatexSelectionDecision` | Implemented P2a6b metadata-only base-version selection gated on a PASSED fact-QA result |
+| `construct_resume_latex_version()` / `ResumeLatexConstructionRecord` | Implemented P2a6c controlled-marker LaTeX construction with deterministic fidelity and stale-content validation |
+| `compile_resume_latex()` / `LatexCompilerPort` | Implemented P2a7 shell-free sandboxed compilation with deterministic PDF validation and managed artifacts |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
 Machine-readable contracts:
@@ -781,6 +783,100 @@ LaTeX content.
 with `agent_invoked=False`. Decisions persist immutably below
 `state/preparation/base-latex-selections/<subject-key>/`.
 
+#### `construct_resume_latex_version()`
+
+```text
+construct_resume_latex_version(
+    ConstructResumeLatexCommand(
+        subject_id,
+        application_plan_id,
+        base_latex_selection_decision_id,
+        fact_qa_result_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    draft_repository,
+    fact_qa_repository,
+    base_selection_repository,
+    latex_version_repository,
+    template_provider: ManagedResumeTemplateProvider,
+    agent: ResumeLatexConstructionAgentPort,
+    metadata: ResumeLatexConstructionAgentMetadata,
+    construction_repository,
+    home,
+) -> ConstructResumeLatexResult
+```
+
+The controlled marker contract is `jobops-latex-markers-v1`:
+`\JobopsSection{section_id}{title}` and `\JobopsBullet{bullet_id}{text}`
+inside one `%% JOBOPS-CONTENT-BEGIN` / `%% JOBOPS-CONTENT-END` region, with
+`\providecommand` definitions so a base layout may override the rendering.
+Bullet IDs are the Draft bullets' `source_block_id`.
+
+`construction_method` is `DETERMINISTIC_TEMPLATE_RENDER`,
+`DETERMINISTIC_REGION_REPLACEMENT` or `AGENT_RECONSTRUCTED`; only the last
+sets `agent_invoked`. `construction_path` is `MANAGED_TEMPLATE` or
+`DERIVED_FROM_EXISTING_VERSION`. Statuses are
+`CREATED`/`UNCHANGED`/`DEFERRED_SOURCE_UNREADABLE`/`DEFERRED_NEEDS_HUMAN`/
+`FAILED`.
+
+Registration goes through `register_resume_latex_version()`, so managed
+source storage, hashing and the capability scan stay owned by P2a6a.
+Construction provenance and the pre-Agent `UNCHANGED` lookup live in a
+separate immutable record below
+`state/preparation/resume-latex-constructions/<subject-key>/`, keyed by the
+construction binding, which leaves registry identity and lineage untouched.
+
+The stale-content check compares visible-text runs of at least
+`STALE_CONTENT_MIN_CHARS` (40) characters between the base source and the
+constructed source, rejecting any that is not current Draft content. Shorter
+runs — a name, a contact line, a section label — may legitimately carry over
+from the base layout.
+
+#### `compile_resume_latex()`
+
+```text
+compile_resume_latex(
+    CompileResumeLatexCommand(
+        subject_id,
+        resume_latex_construction_record_id,
+        resume_latex_version_id,
+        explicit now,
+    ),
+    construction_repository,
+    latex_version_repository,
+    compiler: LatexCompilerPort,
+    compilation_repository,
+    home,
+) -> CompileResumeLatexResult
+```
+
+`LatexCompilerPort` has two methods. `describe()` returns a
+`LatexCompilerDescription` (engine, compiler version, normalized flags,
+compile and sandbox policy versions) and must not compile; it feeds the
+binding so a replay never starts an engine. `compile()` takes a
+`LatexCompileRequest` and returns a `LatexCompileOutcome` whose status is
+`SUCCEEDED`, `COMPILATION_ERROR`, `TIMEOUT`, `OUTPUT_INVALID` or
+`UNAVAILABLE`, plus bounded diagnostics and a `compiler_started` flag.
+
+`SandboxedPdfLatexCompiler` is the V1 adapter: `pdflatex` only,
+`shell=False`, fixed argv, a disposable temp directory as cwd,
+`sandbox_environment()` for a minimal deterministic environment, a wall-clock
+timeout, POSIX rlimits applied in the child, and stdout/stderr captured to
+capped files inside the sandbox. `normalized_compile_flags()` replaces the
+per-run output directory with `<sandbox>` so the binding stays stable across
+runs.
+
+Page count comes from `pdf_page_count()`, which parses the document with the
+existing pdfplumber dependency rather than scanning raw bytes — a real engine
+compresses page objects, so byte scanning undercounts. An unparseable
+document counts zero pages and fails validation. `unmanaged_file_dependencies()`
+reports the LaTeX macros that would pull in files the registry does not hold,
+which is always a `DEFERRED_SOURCE_INCOMPLETE` in V1 because P2a6a manages
+exactly one `.tex` per version. Records live below
+`state/preparation/resume-compilations/<subject-key>/` and validated PDFs
+below `state/preparation/compiled-resumes/<subject-key>/<pdf-sha256>.pdf`.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -981,6 +1077,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Sandboxed LaTeX Compilation | Implemented P2a7 | 29 cases with fake compilers and controlled fake executables for binding fail-closure before any run, source re-hash and capability rescan, compiler unavailability, unmanaged dependencies, bounded de-pathed error diagnostics, timeout, invalid or missing PDF, multi-page recording, managed-artifact isolation, replay with zero extra runs, changed compiler version, artifact drift and record corruption, restart and subject isolation, real-subprocess env/cwd/shell isolation, plus an optional real-`pdflatex` end-to-end case that skips when no engine is installed |
+| TailoredDraft to LaTeX Construction | Implemented P2a6c | 25 synthetic fake-Agent cases for deterministic template render, marked-base region replacement, unmarked-base single Agent call, restricted Agent context, exactly-once section/bullet fidelity, omitted-bullet removal, eight unsafe-output deferrals, non-PASSED fact QA, base-selection drift, unreadable base without substitution, replay, changed template binding, restart lineage reads, corrupt records and zero-compilation/execution boundaries |
 | Automatic Base LaTeX Version Selection | Implemented P2a6b | 23 synthetic fake-Agent cases for managed-template fallback, single-candidate and source-resume determinism, one bounded Agent call, metadata-only Agent context, unusable Agent answers, explicit version requirements and unsatisfiable deferral, non-PASSED and drift-bound fact QA, candidate provenance verification, subject isolation, replay, candidate-set change, conflicts, restart reads and zero-compilation/Visual-QA/execution boundaries |
 | Trusted LaTeX Resume Version Registry | Implemented P2a6a | 47 synthetic cases for explicit-source registration, managed-byte hashing, survival after deleting the original input, coexisting versions and families, parent/child lineage, unknown or cross-subject parents, family conflicts, all five source kinds, replay and identity conflicts, nine rejected capabilities, unmanaged and non-UTF-8 sources, subject isolation, filesystem-independent ordering, artifact drift and record corruption, restart reads and zero-selection/compilation/Agent boundaries |
 | Evidence-bound Resume Fact QA | Implemented P2a5 | 31 synthetic fake-Agent cases for binding blocks, deterministic unsupported claims with zero Agent calls, altered unrewritten text, missing source coverage, advisory JD references, four semantic exaggerations, restricted Agent context, replay of passed and blocked results, invalid findings and uncertain verdicts, new results on version change, immutable conflicts, restart reads and zero-rendering/Visual-QA/browser/execution boundaries |

@@ -607,7 +607,7 @@ inherits that parent's root family, so lineage is explicit and history is
 never overwritten. Identity binds source, kind, lineage, optional template,
 draft and fact-QA bindings, labels and contract version, and excludes time,
 so replay is stable and listing order never depends on the filesystem.
-Mapping a draft into a template, compiling and Visual QA remain later Slices.
+Visual QA remains a later Slice.
 
 P2a6b chooses which registered version a fact-QA-passed draft should build
 on. It admits only a `PASSED` fact-QA result bound to that exact draft by ID
@@ -624,6 +624,42 @@ degrades to the managed default template rather than interrupting the user;
 an explicit user requirement that cannot be satisfied defers the item
 instead. Having no LaTeX history at all is an ordinary
 `MANAGED_TEMPLATE_FALLBACK`, not a deferral.
+
+P2a6c writes the Draft into that chosen layout. It obeys the selection
+exactly and never re-selects. Content is addressed through controlled
+`\JobopsSection` and `\JobopsBullet` markers inside one delimited region, so
+historical versions contribute layout while every visible candidate
+statement comes from the current Draft: each section and retained bullet
+appears exactly once, escaped but never reworded, and omitted bullets are
+dropped. The managed fallback renders through a single built-in template and
+a base already carrying the region is derived by replacing that region
+alone—both without a model call. Only a base without the region reaches the
+bounded Agent, once, and it sees the base LaTeX, the Draft, the user
+instructions, the marker contract and a static policy. Deterministic
+validation then re-checks structure, capabilities, marker fidelity and the
+absence of the base version's historical content; a violation defers for a
+human, and an unreadable or drifted base defers without substituting another
+version. The result is a new immutable version—an `AI_REVISED` child
+inheriting its parent's family, or a `SYSTEM_TEMPLATE_DERIVED` root—carrying
+the Draft and passed fact-QA bindings. Producing `.tex` is not evidence that
+it compiles, fits one page, passes Visual QA or may be submitted.
+
+P2a7 compiles that version. Every binding is re-checked and the managed
+source is re-read, re-hashed and capability-rescanned before the compiler is
+reachable. The port separates a cheap `describe()`, which supplies the
+binding's engine identity, from the single side-effecting `compile()`, so a
+replay costs no compiler run. Execution is shell-free with a fixed argument
+vector, a disposable temporary directory as cwd, a minimal deterministic
+environment that inherits no credentials or project variables, a wall-clock
+timeout, POSIX resource limits, and capped output. A source needing files the
+registry does not manage, a missing engine, and ordinary LaTeX errors or
+timeouts each defer the item with bounded, de-pathed diagnostics and no
+change to the source. A PDF is accepted only after signature, size, symlink,
+containment and page-count validation, then copied into subject-isolated
+managed storage and hashed from the stored bytes; scratch files never leave
+the sandbox. Page count is recorded, never enforced—one-page fitting is
+P2a8's. A successful compile means a structurally valid PDF exists, nothing
+more.
 
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 

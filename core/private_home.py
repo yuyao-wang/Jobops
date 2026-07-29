@@ -212,6 +212,9 @@ class PrivatePaths:
     resume_latex_version_records: Path
     resume_latex_version_sources: Path
     base_latex_selections: Path
+    resume_latex_constructions: Path
+    resume_compilations: Path
+    compiled_resumes: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +305,15 @@ class PrivateHome:
             base_latex_selections=(
                 state / "preparation" / "base-latex-selections"
             ),
+            resume_latex_constructions=(
+                state / "preparation" / "resume-latex-constructions"
+            ),
+            resume_compilations=(
+                state / "preparation" / "resume-compilations"
+            ),
+            compiled_resumes=(
+                state / "preparation" / "compiled-resumes"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -346,6 +358,9 @@ class PrivateHome:
             paths.resume_latex_version_records,
             paths.resume_latex_version_sources,
             paths.base_latex_selections,
+            paths.resume_latex_constructions,
+            paths.resume_compilations,
+            paths.compiled_resumes,
             paths.browser,
             paths.chromium_profile,
             paths.cache,

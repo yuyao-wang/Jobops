@@ -87,6 +87,10 @@ P2a5 Evidence-bound Resume Fact QA                     [完成]
 P2a6a Trusted LaTeX Resume Version Registry            [完成]
   ↓
 P2a6b Automatic Base LaTeX Version Selection           [完成]
+  ↓
+P2a6c TailoredDraft → LaTeX Version Construction       [完成]
+  ↓
+P2a7 Sandboxed LaTeX Compilation                       [完成]
 
 C3
   ↓
@@ -859,6 +863,117 @@ Agent/prompt/model/contract versions, excluding time, so a completed binding
 replays as `UNCHANGED` with zero Agent calls and a changed candidate set
 creates a new immutable decision. Selection implies nothing about whether
 LaTeX exists, compiles, passes Visual QA or may be submitted.
+
+## P2a6c — TailoredDraft → LaTeX Version Construction `[完成]`
+
+```text
+PASSED TailoredResumeDraft + BaseLatexSelectionDecision
+→ controlled LaTeX construction
+→ immutable ResumeLatexVersion
+
+EXISTING_VERSION          → AI_REVISED child version
+MANAGED_TEMPLATE_FALLBACK → SYSTEM_TEMPLATE_DERIVED root version
+```
+
+`construct_resume_latex_version(ConstructResumeLatexCommand, ...)` writes the
+Draft into the layout P2a6b already chose. It revalidates the whole
+Plan/Draft/FactQA/BaseSelection binding, admits only a `PASSED` fact-QA
+result matching this draft's content hash, and never re-selects a version:
+the decision's `selection_kind` is obeyed exactly.
+
+Content is addressed through a controlled marker contract —
+`\JobopsSection{section_id}{title}` and `\JobopsBullet{bullet_id}{text}`
+inside a single `%% JOBOPS-CONTENT-BEGIN` / `%% JOBOPS-CONTENT-END` region.
+Historical versions supply layout only. Every visible candidate statement
+comes from the current Draft: each Draft section and each retained bullet
+appears exactly once, with text byte-identical to the Draft after
+single-pass LaTeX escaping, and omitted bullets are dropped entirely.
+
+Three construction methods, two of which never call a model. The managed
+fallback renders through one built-in template,
+`managed-resume-one-page-v1`; there is no template catalogue, recommendation
+or selection. A historical version that already carries the controlled
+region is derived by replacing that region while every other byte of the
+layout survives. Only a historical version without the region reaches the
+bounded Agent, at most once, and it receives the base LaTeX text, the Draft,
+the plan's user instructions, the marker contract and a static policy — no
+repository, tool, compiler or evidence.
+
+Every path is validated deterministically before anything is registered:
+UTF-8, document structure, the P2a6a capability scan, exactly one controlled
+region, no markers outside it, no duplicate or unknown marker, no missing
+Draft content, exact escaped text, and a stale-content check that rejects the
+base version's long visible-text runs when they are not current Draft
+content. Any violation defers as `DEFERRED_NEEDS_HUMAN` without auto-retry.
+An unreadable, drifted or missing base source defers as
+`DEFERRED_SOURCE_UNREADABLE`, and no other historical version is substituted.
+
+The existing-version path registers `AI_REVISED` with the selected version as
+parent, inheriting its root family; the fallback path registers
+`SYSTEM_TEMPLATE_DERIVED` with no parent, a new stable family and the
+template ID and hash. Both record the Draft and passed fact-QA bindings.
+Construction identity binds plan, draft, passed fact-QA, base selection,
+parent or template, user instructions and Agent/prompt/model/contract
+versions, excluding time, and lives in a P2a6c-owned construction record so
+P2a6a's registry identity and lineage semantics are untouched. A completed
+binding replays as `UNCHANGED` with zero Agent calls and no duplicate source
+artifact. Producing `.tex` implies nothing about compiling, fitting one
+page, passing Visual QA or being authorized to submit.
+
+## P2a7 — Sandboxed LaTeX Compilation `[完成]`
+
+```text
+ResumeLatexConstructionRecord + ResumeLatexVersion
+→ sandboxed compiler
+→ validated PDF
+→ ResumeCompilationRecord
+```
+
+`compile_resume_latex(CompileResumeLatexCommand, ...)` turns a P2a6c-produced
+version into a managed PDF. It first revalidates the construction record
+against the version — subject, version ID, source hash, family, lineage,
+template and Draft/FactQA provenance — then re-reads the managed source,
+re-hashes the actual bytes and re-runs the P2a6a capability scan. Every one
+of those checks happens before the compiler is reachable.
+
+Only one allowlisted engine exists in V1. `LatexCompilerPort` separates a
+cheap `describe()`, which supplies engine, version and normalized flags for
+the binding, from `compile()`, the single side-effecting call — so a replay
+resolves to `UNCHANGED` without starting a compiler. Execution uses
+`shell=False`, a fixed argument vector, a fresh temporary directory as cwd, a
+minimal deterministic environment (stable locale, UTC, `SOURCE_DATE_EPOCH`,
+sandbox-local `HOME` and `TEXMF*`, `shell_escape=f`, `openout_any=p`), a
+wall-clock timeout, POSIX resource limits, and stdout/stderr written to
+capped files inside the sandbox. Flags fix no shell escape, non-interactive,
+halt on error, file/line diagnostics and a bounded output directory. The
+sandbox is removed afterwards and the engine runs at most once.
+
+Deferrals keep the item moving without touching the source. A source that
+pulls in files the registry does not manage returns
+`DEFERRED_SOURCE_INCOMPLETE` — nothing is scanned, downloaded or rewritten.
+A missing engine returns `DEFERRED_COMPILER_UNAVAILABLE`. Ordinary LaTeX
+errors, timeouts and a success exit without a usable PDF return
+`DEFERRED_COMPILATION_ERROR` with bounded diagnostics whose absolute paths,
+home directory and sandbox location are redacted.
+
+A PDF is accepted only after deterministic validation: correct signature,
+non-empty, within the size cap, no symlink, inside the sandbox, and at least
+one page. Page count is parsed with the existing pdfplumber dependency
+rather than scanned from raw bytes, because a real engine compresses page
+objects. The count is recorded and never enforced: whether the resume stays
+on one page belongs to P2a8. Accepted bytes are copied into a
+subject-isolated managed directory and hashed from the stored bytes;
+`.aux`, `.log` and `.fls` never leave the sandbox, only a bounded diagnostic
+summary does.
+
+The compilation binding covers construction record ID and binding, version ID
+and source hash, engine, compiler version, normalized flags and the
+compile/sandbox policy versions, excluding time. A completed binding replays
+as `UNCHANGED` with zero compiler runs, no duplicate PDF and the original
+`compiled_at`; any change creates a new immutable record. A successful
+compile proves only that a structurally valid PDF exists — not that the
+content was re-checked, the layout is sound, it fits one page, or that
+anything may be approved or submitted.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 
