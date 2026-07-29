@@ -594,6 +594,37 @@ findings and a verdict and can never edit the draft. Verdicts are `PASSED`,
 human without auto-retry. A `PASSED` fact verdict is not layout approval,
 material approval or submission authority.
 
+Resume layout is managed as LaTeX. P2a6a is the trusted registry for those
+sources: it accepts only an explicitly supplied UTF-8 `.tex` source, copies
+it into a subject-isolated managed location, hashes the actual bytes, and
+rejects plainly unsafe capabilities—shell escape, external program
+execution, file reads and writes, and absolute include paths—before any
+record exists. That is an admission check, not compile safety, which stays
+with sandboxed compilation. Many versions and many root families coexist by
+design; there is no unique active resume file. Every AI revision or template
+derivation creates a new immutable version that records its parent and
+inherits that parent's root family, so lineage is explicit and history is
+never overwritten. Identity binds source, kind, lineage, optional template,
+draft and fact-QA bindings, labels and contract version, and excludes time,
+so replay is stable and listing order never depends on the filesystem.
+Mapping a draft into a template, compiling and Visual QA remain later Slices.
+
+P2a6b chooses which registered version a fact-QA-passed draft should build
+on. It admits only a `PASSED` fact-QA result bound to that exact draft by ID
+and content hash, re-verifies any fact-QA provenance a candidate version
+declares, and reads version metadata only—never `.tex` content, which is why
+the Agent context carries no source reference. A deterministic ladder settles
+most cases with zero model calls: an explicit version or family requirement
+written as a literal ID in the plan instructions, then no candidate at all,
+then a single candidate, then a unique version bound to the current source
+resume. Recency and filename are never selection signals. Only a genuine tie
+reaches the bounded Agent, once, and its answer is constrained to the
+supplied candidates or the managed template. An unknown or unusable answer
+degrades to the managed default template rather than interrupting the user;
+an explicit user requirement that cannot be satisfied defers the item
+instead. Having no LaTeX history at all is an ordinary
+`MANAGED_TEMPLATE_FALLBACK`, not a deferral.
+
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 
 ## Application Execution

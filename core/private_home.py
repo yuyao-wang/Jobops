@@ -208,6 +208,10 @@ class PrivatePaths:
     candidate_evidence_snapshots: Path
     tailored_resume_drafts: Path
     resume_fact_qa_results: Path
+    resume_latex_versions: Path
+    resume_latex_version_records: Path
+    resume_latex_version_sources: Path
+    base_latex_selections: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +290,18 @@ class PrivateHome:
             resume_fact_qa_results=(
                 state / "preparation" / "resume-fact-qa-results"
             ),
+            resume_latex_versions=(
+                state / "preparation" / "resume-latex-versions"
+            ),
+            resume_latex_version_records=(
+                state / "preparation" / "resume-latex-versions" / "records"
+            ),
+            resume_latex_version_sources=(
+                state / "preparation" / "resume-latex-versions" / "sources"
+            ),
+            base_latex_selections=(
+                state / "preparation" / "base-latex-selections"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -326,6 +342,10 @@ class PrivateHome:
             paths.candidate_evidence_snapshots,
             paths.tailored_resume_drafts,
             paths.resume_fact_qa_results,
+            paths.resume_latex_versions,
+            paths.resume_latex_version_records,
+            paths.resume_latex_version_sources,
+            paths.base_latex_selections,
             paths.browser,
             paths.chromium_profile,
             paths.cache,

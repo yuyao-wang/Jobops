@@ -261,6 +261,78 @@ version without rewriting its content or historical decisions.
 - `PASSED` covers facts only. It is not layout or visual approval, material
   approval, or authority to render or submit anything.
 
+### Managed LaTeX resume versions
+
+- P2a6a registers only an explicitly submitted `.tex` source, inline or from
+  a path already inside Private Home. It never scans a user directory and
+  never imports a file on its own initiative.
+- Managed bytes are copied into a subject-isolated location under Private
+  Home. Nothing downstream may depend on the original external path.
+- The SHA-256 is always computed from the actual managed UTF-8 bytes. A
+  caller-declared hash is never trusted.
+- Registration rejects plainly unsafe capabilities: shell escape, external
+  program execution, file writes, file reads and absolute or home-relative
+  include paths. Relative includes remain legal. This is admission control,
+  not compile safety; sandboxed compilation remains a later Slice.
+- Many LaTeX versions and many root families may be valid at once. There is
+  no unique `current_resume.tex` and no single ACTIVE version.
+- Nothing overwrites history. An AI revision or template derivation creates a
+  new version recording `parent_version_id`.
+- A parent must exist under the same subject, and the child inherits that
+  parent's root family. A supplied family contradicting the parent fails
+  closed.
+- A first parentless version derives a new stable root family from its own
+  binding. Family is never guessed from a filename or a timestamp.
+- User-provided, imported, system-template-derived, AI-generated and
+  AI-revised sources share one registry but keep distinct source kinds.
+- Version identity binds subject, managed source reference and hash, source
+  kind, parent, root family, template, source resume, draft and fact-QA
+  bindings, normalized labels and contract version. Time is excluded.
+- Identical identity replays as `UNCHANGED` without duplicating the managed
+  artifact or the record, preserving the original creation time. Different
+  content under the same identity is an integrity conflict.
+- `list_selectable()` returns typed versions in stable version-ID order,
+  never depending on directory traversal, filename or mtime.
+- Having no LaTeX version is normal, not a deferral. Optional draft and
+  fact-QA bindings are recorded as provenance only; P2a6b verifies that a
+  bound fact-QA result actually passed.
+
+### Base LaTeX version selection
+
+- Only a `PASSED` `ResumeFactQAResult` naming this exact draft, with a
+  matching content hash, may reach LaTeX selection. `BLOCKED` and `DEFERRED`
+  never do.
+- Candidates come only from `list_selectable()` for this subject. No
+  directory is scanned, no `.tex` is parsed, and no other subject's versions
+  are visible.
+- A candidate declaring fact-QA provenance has that record re-read, its hash
+  compared and its verdict confirmed `PASSED`. Corrupt provenance fails
+  closed for the whole selection.
+- Selection reads version metadata only. LaTeX source content is never read
+  and never reaches the Agent.
+- Deterministic order, all with zero Agent calls: an explicit version or
+  family requirement present as a literal ID in the plan instructions; no
+  candidate at all; a single candidate; a unique version bound to the current
+  source resume. Recency and filename are never selection signals.
+- No LaTeX history is an ordinary `MANAGED_TEMPLATE_FALLBACK`, never a reason
+  to ask the user for anything.
+- Only a genuine remaining tie calls the bounded Agent, at most once, over
+  the trusted JD, verbatim user instructions and restricted version metadata.
+  It may return one supplied candidate, the managed template, or a human
+  request, and nothing else.
+- An unknown version, an illegal structure or a human request degrades to the
+  managed template rather than interrupting the user — unless the plan
+  carried an explicit version or family requirement that cannot be satisfied,
+  which defers the item as `DEFERRED_NEEDS_HUMAN`.
+- `MANAGED_TEMPLATE_FALLBACK` states only that the managed default template
+  applies. No template file is chosen or implemented at this stage.
+- Decision identity binds plan, draft ID and hash, passed fact-QA ID and
+  hash, job revision and hash, source resume, candidate-set hash and
+  Agent/prompt/model/contract versions, excluding time. A completed binding
+  replays `UNCHANGED` with zero Agent calls.
+- Selecting a base version says nothing about whether LaTeX has been
+  generated, compiles, passes Visual QA or may be submitted.
+
 ### `MaterialPackage`
 
 ```text

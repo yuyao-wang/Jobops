@@ -83,6 +83,10 @@ P2a4b Subject-specific CandidateEvidence Snapshot      [完成]
 P2a4c Evidence-bound Resume Tailoring Draft            [完成]
   ↓
 P2a5 Evidence-bound Resume Fact QA                     [完成]
+  ↓
+P2a6a Trusted LaTeX Resume Version Registry            [完成]
+  ↓
+P2a6b Automatic Base LaTeX Version Selection           [完成]
 
 C3
   ↓
@@ -761,6 +765,100 @@ regardless of verdict. `PASSED` covers facts only — not layout, visual
 quality, material approval or submission authority. The Slice never modifies
 the draft, repairs claims, renders documents, or touches Visual QA, the
 browser, an ATS or the Application Engine.
+
+## P2a6a — Trusted LaTeX Resume Version Registry `[完成]`
+
+```text
+explicitly supplied .tex source
+→ deterministic capability validation + SHA-256 over actual bytes
+→ managed subject-isolated artifact
+→ immutable ResumeLatexVersion with lineage
+```
+
+`register_resume_latex_version(RegisterResumeLatexVersionCommand, ...)`
+accepts one explicitly supplied UTF-8 LaTeX source — either inline text or a
+`.tex` path already inside Private Home — and never scans a directory or
+imports a file on its own. Bytes are copied into
+`state/preparation/resume-latex-versions/sources/<subject-key>/<sha256>.tex`,
+so the original input path is irrelevant afterwards. The SHA-256 is always
+computed from the managed bytes; no caller-declared hash is trusted.
+
+Registration performs a minimal deterministic capability scan and rejects
+shell escape (`\write18`, `\ShellEscape`), external program execution
+(`shellesc`, `\directlua`), file writes (`\openout`, `\newwrite`), file reads
+(`\openin`, `\newread`) and absolute or home-relative include paths. This is
+an admission check, not compile safety: sandboxed compilation remains P2a7's
+responsibility. Relative includes stay legal.
+
+Many versions and many root families may be valid at once. There is no unique
+`current_resume.tex` and no single ACTIVE version. Nothing is ever
+overwritten: an AI revision or template derivation registers a new version
+and records `parent_version_id`. A parent must exist under the same subject,
+and the child inherits its `root_family_id`; a supplied family that
+contradicts the parent fails closed. A first parentless version derives a new
+stable family deterministically from its own binding, never from a filename
+or a timestamp. User-provided, imported, template-derived and AI-generated or
+AI-revised sources share one registry while keeping distinct source kinds.
+
+Version identity binds subject, managed source reference and hash, source
+kind, parent, root family, optional template, source resume, draft and
+fact-QA bindings, normalized labels and contract version; time is excluded,
+so identical input replays as `UNCHANGED` without duplicating the artifact or
+record. A different content under the same identity is an integrity conflict
+that never overwrites history. `list_selectable()` returns typed versions
+sorted by version ID, independent of path, filename or mtime, and an empty
+registry is a normal `SUCCEEDED` result rather than a deferral.
+
+The Slice performs no version selection, no draft-to-template mapping, no
+compilation or PDF generation, no Visual QA, no chat command parsing, and no
+Agent, browser, ATS or Application Engine call.
+
+## P2a6b — Automatic Base LaTeX Version Selection `[完成]`
+
+```text
+ApplicationPlan + PASSED FactQA + TailoredResumeDraft + JobPosting
++ selectable LaTeX versions
+→ deterministic selection ladder
+→ bounded BaseLatexSelectionAgentPort (only on a genuine tie)
+→ BaseLatexSelectionDecision
+```
+
+`select_base_latex_version(SelectBaseLatexVersionCommand, ...)` picks the
+LaTeX version that P2a6c should build on. It first revalidates the whole
+Plan/FactQA/Draft/Selection/Job binding, and admits only a fact-QA result
+that names this draft, matches its content hash and carries verdict
+`PASSED`; `BLOCKED` and `DEFERRED` never reach LaTeX selection.
+
+Candidates come only from `ResumeLatexVersionProvider.list_selectable()`.
+Any candidate declaring fact-QA provenance has that record re-read, hash
+compared and verdict confirmed `PASSED`; corrupt provenance fails closed.
+Only version metadata is used — the Slice never opens a `.tex` file, and the
+Agent context carries no source reference at all.
+
+The deterministic ladder resolves most cases with zero Agent calls: an
+explicit version or family requirement found as a literal ID in the plan's
+user instructions wins first; no candidate at all yields
+`MANAGED_TEMPLATE_FALLBACK`, which is a normal outcome rather than a
+deferral; a single candidate is `ONLY_CANDIDATE`; and a unique version bound
+to the current source resume is `EXACT_SOURCE_RESUME_MATCH`. Nothing is ever
+chosen by recency or filename.
+
+Only a genuine remaining tie calls the bounded Agent, at most once, over the
+trusted JD, the plan's verbatim user instructions and restricted version
+metadata. The Agent may name one candidate, ask for the managed template, or
+ask for a human. An unknown ID, an illegal structure or a human request falls
+back to the managed template rather than interrupting the user — unless the
+plan carried an explicit version or family requirement that cannot then be
+satisfied, in which case the item defers as `DEFERRED_NEEDS_HUMAN`.
+
+`MANAGED_TEMPLATE_FALLBACK` only records that P2a6c should use the managed
+default template; no template file is chosen or implemented here. Decision
+identity binds plan, draft ID and hash, passed fact-QA ID and hash, job
+revision and hash, source resume, candidate-set hash and
+Agent/prompt/model/contract versions, excluding time, so a completed binding
+replays as `UNCHANGED` with zero Agent calls and a changed candidate set
+creates a new immutable decision. Selection implies nothing about whether
+LaTeX exists, compiles, passes Visual QA or may be submitted.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 

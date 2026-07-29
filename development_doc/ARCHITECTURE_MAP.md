@@ -459,9 +459,36 @@ Application Preparation                                [部分]
 │   ├── ownership/maturity/impact/causality/scope judgments
 │   ├── PASSED / BLOCKED / DEFERRED, never edits the draft
 │   └── immutable result + pre-Agent UNCHANGED replay
+├── Managed Resume Document Versions                   [部分]
+│   ├── Trusted LaTeX Resume Version Registry          [完成 P2a6a]
+│   │   ├── explicit inline source or in-home .tex only
+│   │   ├── SHA-256 over actual managed bytes
+│   │   ├── subject-isolated managed source copy
+│   │   ├── deterministic capability rejection
+│   │   ├── many versions and families, no ACTIVE one
+│   │   ├── immutable CREATED / UNCHANGED records
+│   │   └── typed get + stable list_selectable
+│   ├── Version Lineage                                [完成 P2a6a]
+│   │   ├── parent must exist under the same subject
+│   │   ├── child inherits the parent root family
+│   │   └── parentless version derives a stable family
+│   ├── Automatic Base LaTeX Version Selection         [完成 P2a6b]
+│   │   ├── PASSED FactQA bound to this exact draft only
+│   │   ├── candidates only from list_selectable()
+│   │   ├── candidate FactQA provenance re-verified
+│   │   ├── version metadata only, never .tex content
+│   │   ├── user-required ID → only → source-resume match
+│   │   ├── no candidate → managed template, zero Agent
+│   │   ├── bounded Agent once on a genuine tie
+│   │   ├── unusable Agent answer → managed template
+│   │   ├── unsatisfiable user requirement → defer
+│   │   └── immutable decision + pre-Agent UNCHANGED replay
+│   ├── TailoredDraft → LaTeX Construction             [计划 P2a6c]
+│   └── Conversational Version Override                [计划 后续]
+├── Sandboxed LaTeX Compilation                        [计划 P2a7]
 ├── Cover Letter                                       [计划]
 ├── Application Answers                               [计划]
-├── Visual QA                                          [计划]
+├── Resume Visual QA                                   [计划 P2a8]
 ├── Human Attention Queue                              [计划]
 │   └── item-scoped defer-and-continue
 ├── Material manifest                                  [完成]

@@ -36,6 +36,8 @@ This document is the authority for component contracts and implementation eviden
 | `create_candidate_evidence_snapshot()` / `CandidateEvidenceSnapshot` | Implemented P2a4b subject-specific immutable source-resume evidence boundary |
 | `tailor_resume()` / `TailoredResumeDraft` | Implemented P2a4c evidence-bound tailoring draft with deterministic Agent-output validation |
 | `run_resume_fact_qa()` / `ResumeFactQAResult` | Implemented P2a5 independent fact gate with deterministic checks before any bounded QA Agent call |
+| `register_resume_latex_version()` / `ResumeLatexVersionProvider` | Implemented P2a6a trusted subject-scoped LaTeX version registry with managed sources and explicit lineage |
+| `select_base_latex_version()` / `BaseLatexSelectionDecision` | Implemented P2a6b metadata-only base-version selection gated on a PASSED fact-QA result |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
 Machine-readable contracts:
@@ -706,6 +708,79 @@ verdicts all persist immutably below
 `state/preparation/resume-fact-qa-results/<subject-key>/`; a completed
 binding replays as `UNCHANGED` with zero Agent calls.
 
+#### `register_resume_latex_version()`
+
+```text
+register_resume_latex_version(
+    RegisterResumeLatexVersionCommand(
+        subject_id,
+        source_kind,
+        explicit now,
+        latex_source | source_path,
+        optional parent_version_id,
+        optional root_family_id,
+        optional template / source resume / draft / fact-QA bindings,
+        optional labels,
+    ),
+    home,
+    repository,
+) -> RegisterResumeLatexVersionResult
+```
+
+Exactly one of `latex_source` and `source_path` is required; supplying both
+is `SOURCE_AMBIGUOUS` and supplying neither is `SOURCE_MISSING`. A path must
+already resolve inside Private Home, end in `.tex`, and not be a symlink.
+Bytes are decoded as UTF-8, capability-scanned, hashed, then written to
+`state/preparation/resume-latex-versions/sources/<subject-key>/<sha256>.tex`;
+records live under the sibling `records/<subject-key>/`. Rejected
+capabilities are reported as a typed `ResumeLatexCapability` alongside
+`SOURCE_CAPABILITY_REJECTED`.
+
+`ResumeLatexVersionProvider.list_selectable(subject_id)` returns typed
+versions in stable version-ID order and treats an empty registry as
+`SUCCEEDED`. `ResumeLatexVersionRepository` adds `save()` and
+`get(subject_id, latex_version_id)`. Reads and writes re-verify the managed
+source: a missing artifact, a hash drift or a newly unsafe capability turns
+the record into `INTEGRITY_FAILURE` and fails any listing that contains it.
+
+#### `select_base_latex_version()`
+
+```text
+select_base_latex_version(
+    SelectBaseLatexVersionCommand(
+        subject_id,
+        application_plan_id,
+        fact_qa_result_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    fact_qa_repository,
+    draft_repository,
+    selection_repository,
+    job_repository,
+    latex_version_provider,
+    agent: BaseLatexSelectionAgentPort,
+    metadata: BaseLatexSelectionAgentMetadata,
+    decision_repository,
+) -> SelectBaseLatexVersionResult
+```
+
+The supplied fact-QA result must bind this plan and job, name the draft it is
+paired with, match that draft's content hash, and carry verdict `PASSED`;
+otherwise the call fails closed with zero Agent calls and no record.
+Candidates arrive only through `ResumeLatexVersionProvider.list_selectable()`
+and are projected into `BaseLatexCandidateView`, which carries version ID,
+source kind, source hash, family, lineage, template, source resume, labels
+and a verified `has_passed_fact_qa` flag — never a source reference or any
+LaTeX content.
+
+`selection_kind` is `EXISTING_VERSION` or `MANAGED_TEMPLATE_FALLBACK`, and
+`selection_method` is `USER_REQUIRED_VERSION`, `ONLY_CANDIDATE`,
+`EXACT_SOURCE_RESUME_MATCH`, `AGENT_SELECTED` or
+`MANAGED_TEMPLATE_FALLBACK`. Every method except `AGENT_SELECTED` is reached
+with `agent_invoked=False`. Decisions persist immutably below
+`state/preparation/base-latex-selections/<subject-key>/`.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -906,6 +981,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Automatic Base LaTeX Version Selection | Implemented P2a6b | 23 synthetic fake-Agent cases for managed-template fallback, single-candidate and source-resume determinism, one bounded Agent call, metadata-only Agent context, unusable Agent answers, explicit version requirements and unsatisfiable deferral, non-PASSED and drift-bound fact QA, candidate provenance verification, subject isolation, replay, candidate-set change, conflicts, restart reads and zero-compilation/Visual-QA/execution boundaries |
+| Trusted LaTeX Resume Version Registry | Implemented P2a6a | 47 synthetic cases for explicit-source registration, managed-byte hashing, survival after deleting the original input, coexisting versions and families, parent/child lineage, unknown or cross-subject parents, family conflicts, all five source kinds, replay and identity conflicts, nine rejected capabilities, unmanaged and non-UTF-8 sources, subject isolation, filesystem-independent ordering, artifact drift and record corruption, restart reads and zero-selection/compilation/Agent boundaries |
 | Evidence-bound Resume Fact QA | Implemented P2a5 | 31 synthetic fake-Agent cases for binding blocks, deterministic unsupported claims with zero Agent calls, altered unrewritten text, missing source coverage, advisory JD references, four semantic exaggerations, restricted Agent context, replay of passed and blocked results, invalid findings and uncertain verdicts, new results on version change, immutable conflicts, restart reads and zero-rendering/Visual-QA/browser/execution boundaries |
 | Evidence-bound Resume Tailoring Draft | Implemented P2a4c | 26 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, safe context, evidence/JD/verb validation, user-retention protection, deferred outcomes, immutable replay/restart, conflicts and zero-rendering/QA/browser/execution boundaries |
 | Material preparation workflow | Partial | material/bundle tests; end-to-end service not yet unified |
