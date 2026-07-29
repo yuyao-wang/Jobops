@@ -523,16 +523,17 @@ Application Preparation                                [部分]
 │   └── find_current_for_plan by publication time, not mtime
 ├── Plan-scoped Material Manifest                      [完成 P2b1]
 │   ├── separate from the legacy MaterialManifest
-│   ├── RESUME entry from PreparedResumeMaterial only
+│   ├── v1 compatibility read, no rewrite or inferred size
+│   ├── v2 RESUME entry from PreparedResumeMaterial
 │   ├── full plan/job/provenance binding recheck
-│   ├── managed PDF re-read, re-hashed, page count checked
+│   ├── managed PDF hash + byte size + page count
 │   ├── references the artifact, never copies it
 │   ├── one entry per role, deterministic order
 │   ├── explicit included_roles + assembly_state
 │   ├── never claims completeness or Gate A
 │   ├── no placeholder or fake entries
 │   └── immutable manifest + UNCHANGED replay
-├── Cover Letter                                       [部分]
+├── Cover Letter                                       [完成 P2b2a–P2b2d]
 │   ├── Cover Letter Evidence Snapshot                  [完成 P2b2a]
 │   │   ├── independent of Resume Tailoring evidence scope
 │   │   ├── own COVER_LETTER scope, never reused or inherited
@@ -560,8 +561,135 @@ Application Preparation                                [部分]
 │   │   ├── UNCERTAIN or illegal output → DEFERRED_NEEDS_HUMAN, no persist
 │   │   ├── never rewrites or modifies the Draft
 │   │   └── immutable result + UNCHANGED replay
-│   └── Cover Letter Document Publication               [计划 P2b2d]
-├── Application Answers                               [计划 P2b3]
+│   └── Cover Letter Document Publication               [完成 P2b2d]
+│       ├── PASSED Fact QA + full Plan/Job/Draft binding recheck
+│       ├── managed-cover-letter-one-page-v1, no catalogue
+│       ├── greeting + ordered paragraphs + closing only
+│       ├── one-pass escaping + stable paragraph-ID markers
+│       ├── subject-isolated managed UTF-8 source + actual-byte hash
+│       ├── existing LatexCompilerPort, zero Agent/subprocess duplication
+│       ├── unavailable/error/overflow typed deferrals
+│       ├── exactly one page + exact visible-text projection
+│       ├── immutable material + pre-compile UNCHANGED replay
+│       └── no PlanMaterialManifest inclusion
+├── Manifest Cover Letter Inclusion                    [完成 P2b2e]
+│   ├── prior immutable v2 PlanMaterialManifest
+│   ├── preserved RESUME entry, field-for-field
+│   ├── Cover Letter hash + byte size + page count
+│   ├── v1 prior → typed NOT_READY, never in-place migration
+│   ├── ordered RESUME → COVER_LETTER entries
+│   ├── immutable lineage-bound manifest version
+│   └── no Answers / Gate A / Browser / ATS state
+├── Preparation-to-Execution Material Contract         [完成 P2c0]
+│   ├── explicit Manifest v1/v2 parsing and identity
+│   ├── v2 artifact_byte_size for every PDF entry
+│   ├── optional typed managed Cover Letter PDF reference
+│   ├── legacy Cover Letter text remains unchanged
+│   └── no PDF upload / selection / conversion behavior
+├── Plan-scoped Application Bundle Assembly             [完成 P2c1]
+│   ├── exact Plan / Job / v2 Manifest / AnswerSet binding
+│   ├── managed Resume + Cover Letter PDF revalidation
+│   ├── blocking unresolved → NOT_READY; optional skips retained
+│   ├── existing ApplicationBundle + CanonicalApplicationAnswers
+│   ├── immutable provenance record + deterministic replay/current read
+│   └── no SemanticMapper / Gate / Browser / ATS / Engine
+├── Recoverable Application Bundle Envelope              [完成 P2c1b]
+│   ├── complete existing ApplicationBundle snapshot
+│   ├── managed materials + canonical answers + profile + policy
+│   ├── AssemblyRecord / bundle hash binding
+│   ├── subject-isolated immutable save + typed recovery
+│   └── no backfill / factory / Gate / Browser / ATS / Engine
+├── Canonical Document Upload Mapping                    [完成 P2c2]
+│   ├── FormIR FILE + shared RESUME / COVER_LETTER_FILE keys
+│   ├── at-most-once typed upload plan before file mutation
+│   ├── subject path + symlink + hash + size + PDF validation
+│   ├── required failure / optional skip / UNKNOWN fail-safe
+│   ├── shared BaseATSAdapter fill and read-back support
+│   └── legacy Resume path + Cover Letter text unchanged
+├── Plan-scoped Gate A + Non-submit Engine Integration   [完成 P2c3]
+│   ├── recover exact P2c1b ApplicationBundle
+│   ├── formal Gate A before Browser / Engine
+│   ├── one Browser lease + one Engine Review call
+│   ├── request_submit=False + empty review approval
+│   ├── typed runtime-input / Browser defer
+│   └── immutable record + zero-call replay / no Gate B / no submit
+├── Gate B Submission Authorization                      [完成 P2c4]
+│   ├── exact P2c3 Review + P2c1b Bundle binding
+│   ├── existing gate_b_actor / submit_authority policy
+│   ├── AUTOMATIC or review-scoped EXPLICIT_USER
+│   ├── validation / unresolved / submission fail-closure
+│   ├── immutable Decision + deterministic replay/history
+│   └── zero Browser / Engine / ATS / permit / submit intent
+├── Plan-scoped Submission Permit Contract               [完成 P2c5a]
+│   ├── explicit versioned submission bindings
+│   ├── subject / Plan / Bundle / Review / Decision / execution / adapter
+│   ├── SUBMIT_APPLICATION-only action scope
+│   ├── persisted verifiable Gate A consumption reference
+│   ├── stable signer metadata without private-key exposure
+│   ├── subject-isolated opaque bearer-token reference
+│   └── legacy permit serialization and ApplicationBundle bindings unchanged
+├── Plan-scoped Submission Permit Issuance               [完成 P2c5b]
+│   ├── AUTHORIZED Decision + valid Gate A consumption only
+│   ├── policy-owned TTL + PermitService signer metadata
+│   ├── full token stored only in OpaquePermitTokenStore
+│   ├── immutable permit record stores reference + token hash
+│   ├── valid replay → UNCHANGED; expiry follows explicit policy
+│   └── zero Browser / Engine / ATS / submit intent
+├── Authorized Submission Execution                      [完成 P2c6]
+│   ├── recover exact P2c1b ApplicationBundle
+│   ├── verify unexpired, unused, plan-scoped permit before Browser
+│   ├── one Browser lease + one Engine review replay
+│   ├── latest Review must equal permit-approved Review
+│   ├── permit consumed at existing submit point of no return
+│   ├── existing EventLedger intent + adapter submit once
+│   ├── verified evidence or terminal SUBMISSION_UNCERTAIN
+│   └── immutable record + successful zero-call replay / no auto-retry
+├── Single-job Automated Application Execution           [完成 P2c7]
+│   ├── exact serial P2c3 → P2c4 → P2c5b → P2c6 public calls
+│   ├── same subject / Assembly / explicit now
+│   ├── CREATED + compatible UNCHANGED continuation
+│   ├── typed defer / block / failure ordered-prefix stop
+│   ├── terminal uncertainty, never automatic retry
+│   ├── immutable stage lineage + terminal zero-call replay
+│   └── no direct Gate / permit / Browser / Engine / ATS access
+├── Application Answers                               [部分]
+│   ├── Unified Canonical Answer Taxonomy              [完成 P2b3a]
+│   │   ├── one versioned typed key registry
+│   │   ├── value type + sensitivity + automation metadata
+│   │   ├── FormIR / SemanticMapper / ApplicationBundle references
+│   │   ├── explicit legacy alias normalization
+│   │   └── UNKNOWN remains fail-safe
+│   └── Application Answers Preparation                [完成 P2b3b]
+│       ├── CandidateVault typed trusted-record projection
+│       ├── subject-bound deterministic ApplicationFactSnapshot
+│       ├── canonical typed answers + supporting fact IDs
+│       ├── safe-skip and human-required unresolved items
+│       ├── demographic decline and attestation boundaries
+│       ├── immutable identity/replay/history repository
+│       └── no FormIR / SemanticMapper / Browser / ATS / Gate
+├── Single-job Automated Preparation                   [完成 P2b4]
+│   ├── existing ApplicationPlan ownership check
+│   ├── exact serial P2a3 → P2b3b public-Slice recipe
+│   ├── same subject / Plan / explicit now for every stage
+│   ├── CREATED + UNCHANGED continuation
+│   ├── Visual QA pass-skip or P2a8b final lineage
+│   ├── typed defer/failure short-circuit, no rollback/retry
+│   ├── completed zero-call replay + immutable Run history
+│   └── no Human Queue / batch / Gate / Browser / ATS
+├── Current Human Attention Queue                      [完成 P2b5]
+│   ├── subject-scoped Run list + deterministic current per Plan
+│   ├── current DEFERRED / FAILED projection
+│   ├── completed Run blocking AnswerSet expansion
+│   ├── USER fact / choice / attestation / manual review
+│   ├── OPERATOR system / integrity / unknown reason
+│   ├── stable identity, priority/audience/kind ordering
+│   └── zero store / write / retry / resolution
+├── Selective Batch Preparation                        [完成 P2b6]
+│   ├── explicit allowlist or bounded subject Plan list
+│   ├── one fixed P2b5 snapshot + current-attention skip
+│   ├── deterministic serial P2b4 calls, max concurrency one
+│   ├── per-Plan defer/failure isolation and typed summary
+│   └── zero batch store / retry / checkpoint / Scheduler
 ├── Resume Visual QA                                   [完成 P2a8a]
 │   ├── full compilation/version/draft binding re-check
 │   ├── PDF re-read, re-hashed, page count re-verified
@@ -587,8 +715,8 @@ Application Preparation                                [部分]
 │   ├── AI_REVISED child per attempt, same root family
 │   ├── exhausted → DEFERRED_ATTEMPTS_EXHAUSTED with lineage
 │   └── immutable run + pre-work UNCHANGED replay
-├── Human Attention Queue                              [计划]
-│   └── item-scoped defer-and-continue
+├── Conversational Human Resolution                    [计划]
+│   └── typed upstream update then P2b4 rerun
 ├── Material manifest                                  [完成]
 │   └── load_material_manifest(
 │           home: PrivateHome,
@@ -613,6 +741,32 @@ Application Preparation                                [部分]
 ```text
 Application Execution                                  [完成]
 │
+├── Plan-scoped Non-submit Execution                   [完成 P2c3]
+│   └── execute_non_submit_application(...)
+│       → NonSubmitApplicationExecutionRecord
+│
+├── Gate B Submission Authorization                    [完成 P2c4]
+│   └── decide_submission_authorization(...)
+│       → SubmissionAuthorizationDecision
+│
+├── Submission Permit                                  [完成 P2c5a/P2c5b]
+│   ├── issue_submission_permit(...)
+│   │   → SubmissionPermitRecord
+│   └── OpaquePermitTokenStore
+│       → subject-isolated token recovery
+│
+├── Authorized Submission Execution                    [完成 P2c6]
+│   └── async execute_authorized_submission(
+│           command: ExecuteAuthorizedSubmissionCommand,
+│           ...
+│       ) -> ExecuteAuthorizedSubmissionResult
+│
+├── Single-job Automated Application Execution          [完成 P2c7]
+│   └── async run_application_execution(
+│           command: RunApplicationExecutionCommand,
+│           ...
+│       ) -> RunApplicationExecutionResult
+│
 ├── Application Engine                                 [完成]
 │   └── async JobApplicationEngine.execute(
 │           *,
@@ -621,6 +775,9 @@ Application Execution                                  [完成]
 │           request_submit: bool = False,
 │           approve_gate_a: bool = False,
 │           approved_review_hash: str = "",
+│           submission_permit_token: str = "",
+│           submission_permit_bindings:
+│               PlanScopedSubmissionPermitBindings | None = None,
 │           credential_store: CredentialStore | None = None,
 │           mailbox_verifier: MailboxVerifier | None = None,
 │           brain: Any = None,
@@ -628,6 +785,7 @@ Application Execution                                  [完成]
 │           tenant: str = "",
 │           lease_ttl_seconds: float = 1800.0,
 │           browser_lease: Lease | None = None,
+│           private_home: PrivateHome | None = None,
 │       ) -> ApplicationOutcome
 │
 ├── ATS Routing                                        [完成]
@@ -747,7 +905,21 @@ Application Preparation
   ↓
 ApplicationPlan 与审批
   ↓
-Application Execution
+P2c1 ApplicationBundle Assembly
+  ↓
+P2c1b Recoverable Bundle Envelope
+  ↓
+P2c3 Gate A + Non-submit Review
+  ↓
+P2c4 Gate B Authorization
+  ↓
+P2c5b Short-lived Submission Permit
+  ↓
+P2c6 Review Replay
+  ↓ exact Review match
+Point-of-no-return Permit Consumption
+  ↓
+Submission Intent → Submit Once → Verification Evidence
   ↓
 人工接管或记录结果
 ```
@@ -776,7 +948,13 @@ ApplicationPlan
   ↓
 Approval Policy
   ↓
-Application Execution
+Bundle Assembly + Recoverable Envelope
+  ↓
+Gate A + Non-submit Review
+  ↓
+Gate B Authorization + Submission Permit
+  ↓
+Authorized Submit Once + Evidence Verification
 ```
 
 ## 8. 关键边界

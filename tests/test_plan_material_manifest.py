@@ -164,9 +164,18 @@ def test_manifest_does_not_claim_completeness_or_gate_a(
 
     assert manifest.resume_prepared is True
     assert manifest.complete_application_material_prepared is False
-    assert PlanMaterialRole.__members__.keys() == {"RESUME"}
+    assert PlanMaterialRole.RESUME in PlanMaterialRole
+    assert manifest.manifest_id == (
+        "plan-material-manifest-"
+        "b7131d74f73c70058fa5574078a78e46b31ba0d5cdc13c7ac223ba3ad654d828"
+    )
+    assert manifest.manifest_content_hash == (
+        "86417c7b10f53a56640cdb7a9059827dff606d5b487c700dddd84c7b2a3066a4"
+    )
     rendered = manifest.to_dict()
     assert "cover_letter" not in rendered
+    assert "prior_manifest_id" not in rendered
+    assert "prepared_cover_letter_material_id" not in rendered
     assert "application_answers" not in rendered
     assert not any("gate" in key.lower() for key in rendered)
     assert not any(

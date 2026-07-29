@@ -9,7 +9,9 @@ from urllib.parse import urlparse
 from auth.credentials import CredentialStore
 from auth.mailbox import MailboxVerifier
 from auth.workday_hosts import is_trusted_workday_host
+from core.bundles import MaterialBundle
 from core.outcomes import ApplicationOutcome
+from core.private_home import PrivateHome
 
 from .ashby import AshbyAdapter
 from .generic_ai import GenericAIAdapter
@@ -40,6 +42,8 @@ class AdapterRunRequest:
     platform_hint: str = ""
     tenant: str = ""
     navigate: bool = True
+    materials: MaterialBundle | None = None
+    private_home: PrivateHome | None = None
 
 
 class AdapterRegistry:
@@ -91,14 +95,24 @@ class AdapterRegistry:
 
     async def run(self, request: AdapterRunRequest) -> ApplicationOutcome:
         name = self.route_name(request.job_url, request.platform_hint)
+        resume_path = (
+            str(request.materials.resume_path)
+            if request.materials is not None
+            else request.resume_path
+        )
+        cover_letter = (
+            request.materials.cover_letter
+            if request.materials is not None
+            else request.cover_letter
+        )
         if name == "generic_ai":
             return await self._generic_adapter().run(
                 page=request.page,
                 job_url=request.job_url,
                 profile=dict(request.profile),
                 brain=request.brain,
-                cover_letter=request.cover_letter,
-                resume_path=request.resume_path,
+                cover_letter=cover_letter,
+                resume_path=resume_path,
                 run_id=request.run_id,
                 job_id=request.job_id,
                 platform=request.platform_hint or "generic",
@@ -107,6 +121,8 @@ class AdapterRegistry:
                 gate_b_token=request.gate_b_permit,
                 gate_b_validator=request.gate_b_validator,
                 navigate=request.navigate,
+                materials=request.materials,
+                private_home=request.private_home,
             )
 
         if name == "workday":
@@ -116,8 +132,8 @@ class AdapterRegistry:
                 profile=request.profile,
                 job_id=request.job_id,
                 run_id=request.run_id,
-                resume_path=request.resume_path,
-                cover_letter=request.cover_letter,
+                resume_path=resume_path,
+                cover_letter=cover_letter,
                 answers=request.answers,
                 request_submit=request.request_submit,
                 gate_b_permit=request.gate_b_permit,
@@ -126,6 +142,8 @@ class AdapterRegistry:
                 credential_store=request.credential_store,
                 mailbox_verifier=request.mailbox_verifier,
                 navigate=request.navigate,
+                materials=request.materials,
+                private_home=request.private_home,
             )
             return await self._specialized[name].run(context)
 
@@ -135,13 +153,15 @@ class AdapterRegistry:
             job_id=request.job_id,
             run_id=request.run_id,
             profile=request.profile,
-            resume_path=request.resume_path,
-            cover_letter=request.cover_letter,
+            resume_path=resume_path,
+            cover_letter=cover_letter,
             answers=request.answers,
             request_submit=request.request_submit,
             gate_b_permit=request.gate_b_permit,
             gate_b_validator=request.gate_b_validator,
             navigate=request.navigate,
+            materials=request.materials,
+            private_home=request.private_home,
         )
         return await self._specialized[name].run(context)
 

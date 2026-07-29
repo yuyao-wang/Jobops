@@ -35,10 +35,21 @@ from .outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
-from .permits import PermitError, PermitGate, PermitService
+from .permits import (
+    GateAConsumptionReference,
+    PlanScopedSubmissionPermitBindings,
+    PermitError,
+    PermitGate,
+    PermitService,
+    SubmissionPermitAction,
+)
 from .policy import ApprovalActor
 from .private_home import PrivateHome
-from .secrets import load_or_create_permit_secret
+from .secrets import (
+    PERMIT_SECRET_ACCOUNT,
+    PERMIT_SECRET_SERVICE,
+    load_or_create_permit_secret,
+)
 
 
 class JobApplicationEngine:
@@ -79,6 +90,9 @@ class JobApplicationEngine:
         permits = PermitService(
             secret=load_or_create_permit_secret(credential_store),
             ledger=ledger,
+            signer_key_id=(
+                f"keychain:{PERMIT_SECRET_SERVICE}:{PERMIT_SECRET_ACCOUNT}"
+            ),
         )
         return cls(
             ledger=ledger,
@@ -255,6 +269,24 @@ class JobApplicationEngine:
                 continue
         return None
 
+    def gate_a_consumption_reference(
+        self, run_id: str
+    ) -> GateAConsumptionReference | None:
+        """Recover the latest consumed Gate A receipt without exposing a token."""
+
+        for event in reversed(self.ledger.list_events(run_id=run_id)):
+            if event.event_type != "GATE_A_PERMIT_CONSUMED":
+                continue
+            permit_jti = str(event.payload.get("jti") or "")
+            if not permit_jti:
+                return None
+            return self.permits.gate_a_consumption_reference(
+                permit_jti=permit_jti,
+                consumer="P2C3_NON_SUBMIT_EXECUTION",
+                action="PREPARE_REVIEW",
+            )
+        return None
+
     @staticmethod
     def _review_attestation(outcome: ApplicationOutcome | None) -> str:
         if outcome is None:
@@ -309,6 +341,10 @@ class JobApplicationEngine:
         request_submit: bool = False,
         approve_gate_a: bool = False,
         approved_review_hash: str = "",
+        submission_permit_token: str = "",
+        submission_permit_bindings: (
+            PlanScopedSubmissionPermitBindings | None
+        ) = None,
         credential_store: CredentialStore | None = None,
         mailbox_verifier: MailboxVerifier | None = None,
         brain: Any = None,
@@ -316,6 +352,7 @@ class JobApplicationEngine:
         tenant: str = "",
         lease_ttl_seconds: float = 1800.0,
         browser_lease: Lease | None = None,
+        private_home: PrivateHome | None = None,
     ) -> ApplicationOutcome:
         """Fill to Review, and submit only after a separate Gate B approval.
 
@@ -326,6 +363,43 @@ class JobApplicationEngine:
         """
 
         self._ensure_run(bundle)
+        external_submission_permit = bool(submission_permit_token) or (
+            submission_permit_bindings is not None
+        )
+        if external_submission_permit:
+            if (
+                not submission_permit_token
+                or not isinstance(
+                    submission_permit_bindings,
+                    PlanScopedSubmissionPermitBindings,
+                )
+                or not request_submit
+                or submission_permit_bindings.action
+                is not SubmissionPermitAction.SUBMIT_APPLICATION
+            ):
+                raise ValueError(
+                    "plan-scoped submission permit input is incomplete"
+                )
+            current = bundle.permit_bindings(
+                review_hash=submission_permit_bindings.review_hash
+            )
+            if (
+                submission_permit_bindings.run_id != current.run_id
+                or submission_permit_bindings.job_id != current.job_id
+                or submission_permit_bindings.job_url_hash
+                != current.job_url_hash
+                or submission_permit_bindings.material_hash
+                != current.material_hash
+                or submission_permit_bindings.answer_hash
+                != current.answer_hash
+                or submission_permit_bindings.policy_hash
+                != current.policy_hash
+                or approved_review_hash
+                != submission_permit_bindings.review_hash
+            ):
+                raise ValueError(
+                    "plan-scoped submission permit does not bind this bundle"
+                )
         submission_guard = self.submission_preflight(bundle)
         if submission_guard is not None:
             self._record_outcome(submission_guard)
@@ -354,7 +428,7 @@ class JobApplicationEngine:
 
         plan_hash = self._plan_hash(bundle)
         gate_a_bindings = bundle.permit_bindings(review_hash=plan_hash)
-        gate_a_authorized = (
+        gate_a_authorized = external_submission_permit or (
             bundle.policy.gate_a_actor is ApprovalActor.CODEX or approve_gate_a
         )
         if not gate_a_authorized:
@@ -367,23 +441,25 @@ class JobApplicationEngine:
             self._record_outcome(outcome)
             return outcome
 
-        gate_a_token = self.permits.issue_gate_a(gate_a_bindings)
-        gate_a_claims = self.permits.consume(
-            gate_a_token,
-            expected_gate=PermitGate.GATE_A,
-            expected_bindings=gate_a_bindings,
-        )
-        self.ledger.append_event(
-            run_id=bundle.run_id,
-            job_id=bundle.job.job_id,
-            event_type="GATE_A_AUTHORIZED",
-            payload={
-                "actor": bundle.policy.gate_a_actor.value
-                if not approve_gate_a
-                else ApprovalActor.HUMAN.value,
-                "binding_digest": gate_a_bindings.digest,
-            },
-        )
+        gate_a_claims = None
+        if not external_submission_permit:
+            gate_a_token = self.permits.issue_gate_a(gate_a_bindings)
+            gate_a_claims = self.permits.consume(
+                gate_a_token,
+                expected_gate=PermitGate.GATE_A,
+                expected_bindings=gate_a_bindings,
+            )
+            self.ledger.append_event(
+                run_id=bundle.run_id,
+                job_id=bundle.job.job_id,
+                event_type="GATE_A_AUTHORIZED",
+                payload={
+                    "actor": bundle.policy.gate_a_actor.value
+                    if not approve_gate_a
+                    else ApprovalActor.HUMAN.value,
+                    "binding_digest": gate_a_bindings.digest,
+                },
+            )
 
         intent_box: dict[str, SubmissionIntent | None] = {"intent": None}
         validator_succeeded = {"value": False}
@@ -440,6 +516,8 @@ class JobApplicationEngine:
                         brain=brain,
                         platform_hint=platform_hint,
                         tenant=tenant,
+                        materials=bundle.materials,
+                        private_home=private_home,
                     )
                 )
                 if review_outcome.status is OutcomeStatus.SUBMITTED_VERIFIED:
@@ -472,14 +550,38 @@ class JobApplicationEngine:
 
                 current_review_attestation = self._review_attestation(review_outcome)
 
-                gate_b_bindings = bundle.permit_bindings(review_hash=review_hash)
-                human_gate_b = bundle.policy.gate_b_actor is ApprovalActor.HUMAN
-                gate_b_authorized = not human_gate_b or (
-                    bool(approved_review_hash)
-                    and bool(previously_reviewed_hash)
-                    and approved_review_hash == previously_reviewed_hash
-                    and approved_review_hash == review_hash
-                )
+                if external_submission_permit:
+                    assert submission_permit_bindings is not None
+                    gate_b_bindings = submission_permit_bindings
+                    human_gate_b = False
+                    gate_b_authorized = (
+                        approved_review_hash == review_hash
+                        and gate_b_bindings.review_hash == review_hash
+                        and review_outcome.adapter
+                        == gate_b_bindings.adapter_platform
+                    )
+                    if gate_b_authorized:
+                        try:
+                            self.permits.verify(
+                                submission_permit_token,
+                                expected_gate=PermitGate.GATE_B,
+                                expected_bindings=gate_b_bindings,
+                            )
+                        except PermitError:
+                            gate_b_authorized = False
+                else:
+                    gate_b_bindings = bundle.permit_bindings(
+                        review_hash=review_hash
+                    )
+                    human_gate_b = (
+                        bundle.policy.gate_b_actor is ApprovalActor.HUMAN
+                    )
+                    gate_b_authorized = not human_gate_b or (
+                        bool(approved_review_hash)
+                        and bool(previously_reviewed_hash)
+                        and approved_review_hash == previously_reviewed_hash
+                        and approved_review_hash == review_hash
+                    )
                 if not gate_b_authorized:
                     outcome = self._awaiting_gate(
                         bundle,
@@ -490,16 +592,24 @@ class JobApplicationEngine:
                     self._record_outcome(outcome)
                     return outcome
 
-                gate_b_token = self.permits.issue_gate_b(
-                    gate_b_bindings,
-                    gate_a_jti=gate_a_claims.jti,
-                )
+                if external_submission_permit:
+                    gate_b_token = submission_permit_token
+                else:
+                    assert gate_a_claims is not None
+                    gate_b_token = self.permits.issue_gate_b(
+                        gate_b_bindings,
+                        gate_a_jti=gate_a_claims.jti,
+                    )
                 self.ledger.append_event(
                     run_id=bundle.run_id,
                     job_id=bundle.job.job_id,
                     event_type="GATE_B_AUTHORIZED",
                     payload={
-                        "actor": bundle.policy.gate_b_actor.value,
+                        "actor": (
+                            "PLAN_SCOPED_SUBMISSION_PERMIT"
+                            if external_submission_permit
+                            else bundle.policy.gate_b_actor.value
+                        ),
                         "binding_digest": gate_b_bindings.digest,
                         "prior_review_matched": not human_gate_b
                         or approved_review_hash == previously_reviewed_hash,
@@ -586,6 +696,8 @@ class JobApplicationEngine:
                             platform_hint=platform_hint,
                             tenant=tenant,
                             navigate=False,
+                            materials=bundle.materials,
+                            private_home=private_home,
                         )
                     )
                 except Exception as exc:
@@ -717,6 +829,17 @@ class JobApplicationEngine:
                                 "human_reconciliation_required": True,
                             },
                         )
+                if intent is not None:
+                    outcome_value = submit_outcome.to_dict()
+                    outcome_details = dict(submit_outcome.details)
+                    outcome_details["submission_intent_id"] = intent.intent_id
+                    outcome_details["actual_pre_submit_review_hash"] = (
+                        review_hash
+                    )
+                    outcome_value["details"] = outcome_details
+                    submit_outcome = ApplicationOutcome.from_dict(
+                        outcome_value
+                    )
                 self._record_outcome(submit_outcome)
                 return submit_outcome
         except LeaseUnavailableError as exc:

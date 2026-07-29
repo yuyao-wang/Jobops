@@ -71,6 +71,11 @@ class ApplicationPlanReadStatus(str, Enum):
     INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
 
 
+class ApplicationPlanListStatus(str, Enum):
+    SUCCEEDED = "SUCCEEDED"
+    INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
+
+
 class ApplicationPlanFailureReason(str, Enum):
     INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
@@ -462,6 +467,33 @@ class ApplicationPlanReadResult:
             raise ValueError("integrity-failure plan result is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class ApplicationPlanListResult:
+    status: ApplicationPlanListStatus
+    plans: tuple[ApplicationPlan, ...]
+
+    def __post_init__(self) -> None:
+        status = ApplicationPlanListStatus(self.status)
+        object.__setattr__(self, "status", status)
+        if not isinstance(self.plans, tuple) or any(
+            not isinstance(plan, ApplicationPlan) for plan in self.plans
+        ):
+            raise TypeError("listed application plans must be typed")
+        if status is ApplicationPlanListStatus.INTEGRITY_FAILURE:
+            if self.plans:
+                raise ValueError("failed plan list must not expose plans")
+            return
+        expected = tuple(sorted(self.plans, key=_plan_domain_sort_key))
+        if self.plans != expected or len(
+            {plan.plan_id for plan in self.plans}
+        ) != len(self.plans):
+            raise ValueError("application plan list ordering is invalid")
+        if self.plans and len(
+            {plan.subject_id for plan in self.plans}
+        ) != 1:
+            raise ValueError("application plan list mixes subjects")
+
+
 @runtime_checkable
 class ApplicationPlanRepository(Protocol):
     def save(self, plan: ApplicationPlan) -> ApplicationPlanWriteResult:
@@ -469,6 +501,11 @@ class ApplicationPlanRepository(Protocol):
 
     def get(self, plan_id: str) -> ApplicationPlanReadResult:
         """Read one immutable ApplicationPlan by stable identity."""
+
+    def list_for_subject(
+        self, subject_id: str
+    ) -> ApplicationPlanListResult:
+        """List one subject's plans in deterministic domain order."""
 
 
 def _plan_from_dict(value: Any) -> ApplicationPlan:
@@ -531,6 +568,23 @@ def _semantic_content(plan: ApplicationPlan) -> dict[str, Any]:
     value = plan.to_dict()
     value.pop("created_at")
     return value
+
+
+_PLAN_PRIORITY_ORDER = {
+    ProposedPriorityLevel.P0: 0,
+    ProposedPriorityLevel.P1: 1,
+    ProposedPriorityLevel.P2: 2,
+    ProposedPriorityLevel.P3: 3,
+}
+
+
+def _plan_domain_sort_key(plan: ApplicationPlan) -> tuple[Any, ...]:
+    return (
+        _PLAN_PRIORITY_ORDER[plan.priority_level],
+        plan.created_at.astimezone(timezone.utc),
+        plan.job_id,
+        plan.plan_id,
+    )
 
 
 class PrivateHomeApplicationPlanRepository:
@@ -598,6 +652,57 @@ class PrivateHomeApplicationPlanRepository:
             return ApplicationPlanReadResult(
                 status=ApplicationPlanReadStatus.FOUND,
                 plan=plan,
+            )
+
+    def list_for_subject(
+        self, subject_id: str
+    ) -> ApplicationPlanListResult:
+        subject = _clean_id("subject_id", subject_id, maximum=160)
+        directory = self._home.paths.application_plans
+        with self._lock:
+            if not directory.exists():
+                return ApplicationPlanListResult(
+                    ApplicationPlanListStatus.SUCCEEDED,
+                    (),
+                )
+            if directory.is_symlink() or not directory.is_dir():
+                return ApplicationPlanListResult(
+                    ApplicationPlanListStatus.INTEGRITY_FAILURE,
+                    (),
+                )
+            try:
+                entries = tuple(directory.iterdir())
+            except OSError:
+                return ApplicationPlanListResult(
+                    ApplicationPlanListStatus.INTEGRITY_FAILURE,
+                    (),
+                )
+            plans: list[ApplicationPlan] = []
+            for entry in entries:
+                if (
+                    entry.is_symlink()
+                    or not entry.is_file()
+                    or entry.suffix != ".json"
+                    or _PLAN_ID_PATTERN.fullmatch(entry.stem) is None
+                ):
+                    return ApplicationPlanListResult(
+                        ApplicationPlanListStatus.INTEGRITY_FAILURE,
+                        (),
+                    )
+                read = self.get(entry.stem)
+                if (
+                    read.status is not ApplicationPlanReadStatus.FOUND
+                    or read.plan is None
+                ):
+                    return ApplicationPlanListResult(
+                        ApplicationPlanListStatus.INTEGRITY_FAILURE,
+                        (),
+                    )
+                if read.plan.subject_id == subject:
+                    plans.append(read.plan)
+            return ApplicationPlanListResult(
+                ApplicationPlanListStatus.SUCCEEDED,
+                tuple(sorted(plans, key=_plan_domain_sort_key)),
             )
 
     def save(self, plan: ApplicationPlan) -> ApplicationPlanWriteResult:
@@ -1042,6 +1147,8 @@ __all__ = [
     "ApplicationAutomationPolicy",
     "ApplicationPlan",
     "ApplicationPlanFailureReason",
+    "ApplicationPlanListResult",
+    "ApplicationPlanListStatus",
     "ApplicationPlanReadResult",
     "ApplicationPlanReadStatus",
     "ApplicationPlanRepository",

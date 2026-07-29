@@ -27,6 +27,12 @@ from core.outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
+from core.application_answer_taxonomy import (
+    CanonicalApplicationAnswerKey,
+    normalize_canonical_application_answer_key,
+)
+from core.bundles import MaterialBundle
+from core.private_home import PrivateHome
 
 from .shared import (
     FieldSpec,
@@ -41,6 +47,12 @@ from .shared import (
     resolve_confirmed_value,
     select_exact_option,
     unique,
+)
+from .document_upload import (
+    ApplicationDocumentUploadFailure,
+    ApplicationDocumentUploadPlanStatus,
+    document_control_id,
+    plan_application_document_uploads,
 )
 
 
@@ -70,7 +82,7 @@ class AdapterSupport:
 
 @dataclass(frozen=True)
 class FieldIR:
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     label: str
     selectors: tuple[str, ...]
     kind: FieldKind
@@ -80,9 +92,20 @@ class FieldIR:
     options: tuple[tuple[str, str], ...] = ()
     sensitive: bool = False
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_key",
+            normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+                allow_custom_unknown=True,
+            ),
+        )
+
     @property
     def is_custom(self) -> bool:
-        return self.canonical_key.startswith("custom:")
+        return self.canonical_key is CanonicalApplicationAnswerKey.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -114,14 +137,27 @@ class ApplicationContext:
     navigate: bool = True
     navigation_timeout_ms: int = 30_000
     settle_timeout_ms: int = 250
+    materials: MaterialBundle | None = None
+    private_home: PrivateHome | None = None
 
 
 @dataclass(frozen=True)
 class UnresolvedField:
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     label: str
     reason: str
     sensitive: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_key",
+            normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+                allow_custom_unknown=True,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -130,6 +166,7 @@ class FillReport:
     uploaded_files: tuple[str, ...] = ()
     unresolved_required: tuple[UnresolvedField, ...] = ()
     errors: tuple[str, ...] = ()
+    document_upload_failure: ApplicationDocumentUploadFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -299,7 +336,7 @@ class BaseATSAdapter(ABC):
         # representation, not a page snapshot, and therefore remains cheap.
         required_controls = await page.evaluate(
             """() => Array.from(document.querySelectorAll(
-                'input[required], textarea[required], select[required], '
+                'input[type="file"], input[required], textarea[required], select[required], '
                 + '[aria-required="true"]'
             )).filter(element => !element.disabled && !['hidden', 'submit', 'button'].includes((element.type || '').toLowerCase()))
             .map((element, index) => {
@@ -333,7 +370,14 @@ class BaseATSAdapter(ABC):
             canonical_key = canonical_key_for(raw["label"], raw["name"], raw["type"])
             # A known semantic field may already have been claimed through a
             # different duplicate selector. Keep the first stable field.
-            if any(field.canonical_key == canonical_key and not field.is_custom for field in fields):
+            if (
+                raw["type"] != "file"
+                and any(
+                    field.canonical_key == canonical_key
+                    and not field.is_custom
+                    for field in fields
+                )
+            ):
                 continue
             fields.append(
                 FieldIR(
@@ -378,6 +422,30 @@ class BaseATSAdapter(ABC):
         unresolved: list[UnresolvedField] = []
         errors: list[str] = []
         resume_path = context.resume_path or nested_value(context.profile, "resume_path", "documents.resume")
+        document_upload_failure = None
+        upload_items = {}
+        if context.materials is not None:
+            if context.private_home is None:
+                document_upload_failure = (
+                    ApplicationDocumentUploadFailure
+                    .ARTIFACT_INTEGRITY_FAILURE
+                )
+            else:
+                upload_result = plan_application_document_uploads(
+                    form=form,
+                    materials=context.materials,
+                    private_home=context.private_home,
+                )
+                if (
+                    upload_result.status
+                    is ApplicationDocumentUploadPlanStatus.FAILED
+                ):
+                    document_upload_failure = upload_result.failure
+                elif upload_result.plan is not None:
+                    upload_items = {
+                        item.control_id: item
+                        for item in upload_result.plan.items
+                    }
 
         for form_field in form.fields:
             locator, _ = await first_locator(page, form_field.selectors)
@@ -387,6 +455,43 @@ class BaseATSAdapter(ABC):
                 continue
             try:
                 if form_field.kind is FieldKind.FILE:
+                    if context.materials is not None:
+                        item = upload_items.get(
+                            document_control_id(form_field)
+                        )
+                        if item is not None:
+                            await locator.set_input_files(
+                                str(item.resolved_path)
+                            )
+                            uploaded_name = await locator.evaluate(
+                                "element => element.files && element.files.length ? element.files[0].name : ''"
+                            )
+                            if uploaded_name:
+                                uploaded.append(
+                                    item.canonical_material_key
+                                )
+                                filled.append(
+                                    item.canonical_material_key
+                                )
+                            elif form_field.required:
+                                unresolved.append(
+                                    UnresolvedField(
+                                        form_field.canonical_key,
+                                        form_field.label,
+                                        "document upload was not recognized",
+                                        form_field.sensitive,
+                                    )
+                                )
+                        elif form_field.required:
+                            unresolved.append(
+                                UnresolvedField(
+                                    form_field.canonical_key,
+                                    form_field.label,
+                                    "required document upload is unavailable",
+                                    form_field.sensitive,
+                                )
+                            )
+                        continue
                     if form_field.canonical_key == "resume" and resume_path:
                         path = Path(resume_path).expanduser()
                         if not path.is_file():
@@ -444,11 +549,17 @@ class BaseATSAdapter(ABC):
             uploaded_files=unique(uploaded),
             unresolved_required=tuple(_unique_unresolved(unresolved)),
             errors=unique(errors),
+            document_upload_failure=document_upload_failure,
         )
 
     async def validate(self, page: Any, form: FormIR, fill: FillReport) -> ValidationReport:
         missing: list[str] = [item.label for item in fill.unresolved_required]
         errors: list[str] = list(fill.errors)
+        if fill.document_upload_failure is not None:
+            errors.append(
+                "document_upload:"
+                f"{fill.document_upload_failure.value}"
+            )
         for form_field in form.fields:
             if not form_field.required:
                 continue
@@ -612,7 +723,11 @@ class BaseATSAdapter(ABC):
 
             if not review.ready:
                 has_sensitive = any(item.sensitive for item in fill.unresolved_required)
-                has_unknown = any(item.canonical_key.startswith("custom:") for item in fill.unresolved_required)
+                has_unknown = any(
+                    item.canonical_key
+                    is CanonicalApplicationAnswerKey.UNKNOWN
+                    for item in fill.unresolved_required
+                )
                 if has_sensitive:
                     reason = ReasonCode.SENSITIVE_ANSWER_REQUIRED
                 elif has_unknown:
@@ -893,10 +1008,27 @@ async def _review_binding_digests(
 
 
 def _expected_field_value(context: ApplicationContext, field: FieldIR) -> Any:
-    if field.kind is FieldKind.FILE and field.canonical_key == "resume":
-        return context.resume_path or nested_value(
-            context.profile, "resume_path", "documents.resume"
-        )
+    if field.kind is FieldKind.FILE:
+        if context.materials is not None:
+            if field.canonical_key is CanonicalApplicationAnswerKey.RESUME:
+                return context.materials.resume_path
+            if (
+                field.canonical_key
+                is CanonicalApplicationAnswerKey.COVER_LETTER_FILE
+                and context.materials.cover_letter_pdf is not None
+                and context.private_home is not None
+            ):
+                try:
+                    return context.private_home.contained_path(
+                        context.materials.cover_letter_pdf.reference
+                    )
+                except Exception:
+                    return None
+            return None
+        if field.canonical_key is CanonicalApplicationAnswerKey.RESUME:
+            return context.resume_path or nested_value(
+                context.profile, "resume_path", "documents.resume"
+            )
     return resolve_confirmed_value(
         field.canonical_key,
         field.label,

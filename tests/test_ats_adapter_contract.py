@@ -207,10 +207,10 @@ async def test_review_fingerprint_binds_browser_values_and_uploaded_bytes(
 
 def test_identity_classifier_rejects_third_party_contacts_and_prefers_preferred_name():
     assert canonical_key_for("Preferred First Name") == "preferred_name"
-    assert canonical_key_for("Reference email address").startswith("custom:")
-    assert canonical_key_for("Hiring manager phone number").startswith("custom:")
-    assert canonical_key_for("Supervisor first name").startswith("custom:")
-    assert canonical_key_for("Current salary").startswith("custom:")
+    assert canonical_key_for("Reference email address") == "unknown"
+    assert canonical_key_for("Hiring manager phone number") == "unknown"
+    assert canonical_key_for("Supervisor first name") == "unknown"
+    assert canonical_key_for("Current salary") == "unknown"
     assert canonical_key_for("Desired salary") == "salary"
 
 

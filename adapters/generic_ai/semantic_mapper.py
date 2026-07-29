@@ -6,22 +6,20 @@ import re
 from dataclasses import dataclass
 from typing import ClassVar, Iterable, Literal, Protocol, runtime_checkable
 
+from core.application_answer_taxonomy import (
+    CANONICAL_APPLICATION_ANSWER_TAXONOMY,
+    CanonicalApplicationAnswerKey,
+    normalize_canonical_application_answer_key,
+)
 from .models import FormControl
 
 
-CanonicalKey = Literal[
-    "email",
-    "phone_number",
-    "work_authorization",
-    "unknown",
-]
+CanonicalKey = CanonicalApplicationAnswerKey
 MappingStatus = Literal["mapped", "needs_review", "unsupported"]
 
-_STATUS_BY_KEY: dict[str, MappingStatus] = {
-    "email": "mapped",
-    "phone_number": "mapped",
-    "work_authorization": "needs_review",
-    "unknown": "unsupported",
+_STATUS_BY_KEY: dict[CanonicalApplicationAnswerKey, MappingStatus] = {
+    key: definition.semantic_mapping_status.value
+    for key, definition in CANONICAL_APPLICATION_ANSWER_TAXONOMY.items()
 }
 
 
@@ -177,11 +175,16 @@ class MappingResponse:
     def __post_init__(self) -> None:
         if type(self.index) is not int or self.index < 0:
             raise ValueError("index must be a non-negative integer")
-        if (
-            not isinstance(self.canonical_key, str)
-            or self.canonical_key not in _STATUS_BY_KEY
-        ):
-            raise ValueError("canonical_key is outside the mapping taxonomy")
+        try:
+            key = normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "canonical_key is outside the mapping taxonomy"
+            ) from exc
+        object.__setattr__(self, "canonical_key", key)
         if not isinstance(self.status, str) or self.status not in {
             "mapped",
             "needs_review",
@@ -192,14 +195,26 @@ class MappingResponse:
             raise ValueError("status conflicts with canonical-key policy")
 
     @classmethod
-    def for_key(cls, index: int, canonical_key: CanonicalKey) -> "MappingResponse":
+    def for_key(
+        cls,
+        index: int,
+        canonical_key: CanonicalKey | str,
+    ) -> "MappingResponse":
         try:
-            status = _STATUS_BY_KEY[canonical_key]
+            key = normalize_canonical_application_answer_key(
+                canonical_key,
+                allow_legacy_alias=True,
+            )
+            status = _STATUS_BY_KEY[key]
         except (KeyError, TypeError) as exc:
             raise ValueError(
                 "canonical_key is outside the mapping taxonomy"
             ) from exc
-        return cls(index=index, canonical_key=canonical_key, status=status)
+        except ValueError as exc:
+            raise ValueError(
+                "canonical_key is outside the mapping taxonomy"
+            ) from exc
+        return cls(index=index, canonical_key=key, status=status)
 
 
 @runtime_checkable

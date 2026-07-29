@@ -224,6 +224,18 @@ class PrivatePaths:
     cover_letter_evidence_snapshots: Path
     cover_letter_drafts: Path
     cover_letter_fact_qa_results: Path
+    cover_letter_latex_sources: Path
+    compiled_cover_letters: Path
+    prepared_cover_letter_materials: Path
+    prepared_application_answer_sets: Path
+    application_preparation_runs: Path
+    application_bundle_assemblies: Path
+    recoverable_application_bundle_envelopes: Path
+    non_submit_application_executions: Path
+    submission_authorization_decisions: Path
+    submission_permits: Path
+    authorized_submission_executions: Path
+    application_execution_runs: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +362,44 @@ class PrivateHome:
             cover_letter_fact_qa_results=(
                 state / "preparation" / "cover-letter-fact-qa-results"
             ),
+            cover_letter_latex_sources=(
+                state / "preparation" / "cover-letter-latex-sources"
+            ),
+            compiled_cover_letters=(
+                state / "preparation" / "compiled-cover-letters"
+            ),
+            prepared_cover_letter_materials=(
+                state / "preparation" / "prepared-cover-letter-materials"
+            ),
+            prepared_application_answer_sets=(
+                state / "preparation" / "prepared-application-answer-sets"
+            ),
+            application_preparation_runs=(
+                state / "preparation" / "application-preparation-runs"
+            ),
+            application_bundle_assemblies=(
+                state / "preparation" / "application-bundle-assemblies"
+            ),
+            recoverable_application_bundle_envelopes=(
+                state
+                / "preparation"
+                / "recoverable-application-bundle-envelopes"
+            ),
+            non_submit_application_executions=(
+                state / "execution" / "non-submit-application-executions"
+            ),
+            submission_authorization_decisions=(
+                state / "execution" / "submission-authorization-decisions"
+            ),
+            submission_permits=(
+                state / "execution" / "submission-permits"
+            ),
+            authorized_submission_executions=(
+                state / "execution" / "authorized-submission-executions"
+            ),
+            application_execution_runs=(
+                state / "execution" / "application-execution-runs"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -406,6 +456,18 @@ class PrivateHome:
             paths.cover_letter_evidence_snapshots,
             paths.cover_letter_drafts,
             paths.cover_letter_fact_qa_results,
+            paths.cover_letter_latex_sources,
+            paths.compiled_cover_letters,
+            paths.prepared_cover_letter_materials,
+            paths.prepared_application_answer_sets,
+            paths.application_preparation_runs,
+            paths.application_bundle_assemblies,
+            paths.recoverable_application_bundle_envelopes,
+            paths.non_submit_application_executions,
+            paths.submission_authorization_decisions,
+            paths.submission_permits,
+            paths.authorized_submission_executions,
+            paths.application_execution_runs,
             paths.browser,
             paths.chromium_profile,
             paths.cache,

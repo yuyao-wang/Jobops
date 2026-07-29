@@ -1,0 +1,33 @@
+{
+  "application_plan_id": "application-plan-v1-fixture",
+  "assembled_at": "2026-01-01T00:00:00Z",
+  "assembly_state": "RESUME_ONLY",
+  "contract_version": "plan-material-manifest-v1",
+  "entries": [
+    {
+      "artifact_reference": "state/preparation/compiled-resumes/subject-fixture/82d3bfd82ac0f2aac0faa1fa61080a618f804c8059d030ae611b923de4bf15e3.pdf",
+      "artifact_sha256": "82d3bfd82ac0f2aac0faa1fa61080a618f804c8059d030ae611b923de4bf15e3",
+      "entry_id": "plan-material-entry-0be0db88b2e5b2bb0d1729d5a33fc627dac13907b719cdb09f07c1f4b887e744",
+      "material_role": "RESUME",
+      "media_type": "application/pdf",
+      "order": 0,
+      "page_count": 1,
+      "prepared_material_id": "prepared-resume-v1-fixture",
+      "provenance_type": "PREPARED_RESUME_MATERIAL",
+      "source_record_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_record_id": "prepared-resume-v1-fixture"
+    }
+  ],
+  "included_roles": [
+    "RESUME"
+  ],
+  "job_content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "job_id": "job-v1-fixture",
+  "job_revision": 1,
+  "manifest_content_hash": "bd5a776e04c62f296e4b9cd304dad96222e211dcdf9e8e5117b4d5fe0d4b0ed5",
+  "manifest_id": "plan-material-manifest-a4293e1646963c82247d703952289809da26891974fce67be2021bee66646037",
+  "prepared_resume_material_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "prepared_resume_material_id": "prepared-resume-v1-fixture",
+  "resume_artifact_sha256": "82d3bfd82ac0f2aac0faa1fa61080a618f804c8059d030ae611b923de4bf15e3",
+  "subject_id": "subject-v1-fixture"
+}

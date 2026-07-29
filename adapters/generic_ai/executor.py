@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.application_answer_taxonomy import CanonicalApplicationAnswerKey
 from .cache import RecipeAction
 from .fingerprinter import control_signature
 from .models import FormControl
@@ -17,7 +18,7 @@ from .resolver import ResolvedField
 class FillFailure:
     index: int
     label: str
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     reason: str
 
 

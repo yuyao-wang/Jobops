@@ -33,7 +33,15 @@ from .private_home import PrivateHome, PrivateHomeError
 from .resume_compilation import pdf_page_count
 
 
-PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION = "plan-material-manifest-v1"
+PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V1 = "plan-material-manifest-v1"
+PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2 = "plan-material-manifest-v2"
+PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION = (
+    PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2
+)
+_SUPPORTED_MANIFEST_CONTRACT_VERSIONS = {
+    PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V1,
+    PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2,
+}
 RESUME_MEDIA_TYPE = "application/pdf"
 
 _HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -45,16 +53,19 @@ _ENTRY_ID_PATTERN = re.compile(r"^plan-material-entry-[a-f0-9]{64}$")
 
 class PlanMaterialRole(str, Enum):
     RESUME = "RESUME"
+    COVER_LETTER = "COVER_LETTER"
 
 
 class PlanMaterialProvenanceType(str, Enum):
     PREPARED_RESUME_MATERIAL = "PREPARED_RESUME_MATERIAL"
+    PREPARED_COVER_LETTER_MATERIAL = "PREPARED_COVER_LETTER_MATERIAL"
 
 
 class PlanMaterialAssemblyState(str, Enum):
     """What this manifest actually contains — never a single ambiguous flag."""
 
     RESUME_ONLY = "RESUME_ONLY"
+    RESUME_AND_COVER_LETTER = "RESUME_AND_COVER_LETTER"
 
 
 class PlanMaterialManifestStatus(str, Enum):
@@ -80,6 +91,19 @@ class PlanMaterialManifestNotReadyReason(str, Enum):
     PREPARED_RESUME_NOT_PUBLISHED = "PREPARED_RESUME_NOT_PUBLISHED"
     PREPARED_RESUME_PLAN_MISMATCH = "PREPARED_RESUME_PLAN_MISMATCH"
     PREPARED_RESUME_ROLE_MISMATCH = "PREPARED_RESUME_ROLE_MISMATCH"
+    PLAN_MATERIAL_MANIFEST_NOT_READY = "PLAN_MATERIAL_MANIFEST_NOT_READY"
+    PREPARED_COVER_LETTER_NOT_PUBLISHED = (
+        "PREPARED_COVER_LETTER_NOT_PUBLISHED"
+    )
+    PREPARED_COVER_LETTER_PLAN_MISMATCH = (
+        "PREPARED_COVER_LETTER_PLAN_MISMATCH"
+    )
+    PREPARED_COVER_LETTER_ROLE_MISMATCH = (
+        "PREPARED_COVER_LETTER_ROLE_MISMATCH"
+    )
+    PLAN_MATERIAL_MANIFEST_VERSION_INCOMPATIBLE = (
+        "PLAN_MATERIAL_MANIFEST_VERSION_INCOMPATIBLE"
+    )
 
 
 class PlanMaterialManifestFailureReason(str, Enum):
@@ -93,6 +117,9 @@ class PlanMaterialManifestFailureReason(str, Enum):
     )
     PREPARED_RESUME_INTEGRITY_FAILURE = (
         "PREPARED_RESUME_INTEGRITY_FAILURE"
+    )
+    PREPARED_COVER_LETTER_INTEGRITY_FAILURE = (
+        "PREPARED_COVER_LETTER_INTEGRITY_FAILURE"
     )
     ARTIFACT_UNREADABLE = "ARTIFACT_UNREADABLE"
     ARTIFACT_HASH_DRIFT = "ARTIFACT_HASH_DRIFT"
@@ -180,8 +207,16 @@ class PlanMaterialEntry:
     provenance_type: PlanMaterialProvenanceType
     source_record_id: str
     source_record_hash: str
+    artifact_byte_size: int | None = None
+    contract_version: str = PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V1
 
     def __post_init__(self) -> None:
+        contract = _clean_text(
+            "contract_version", self.contract_version, maximum=80
+        )
+        if contract not in _SUPPORTED_MANIFEST_CONTRACT_VERSIONS:
+            raise ValueError("material entry contract is unsupported")
+        object.__setattr__(self, "contract_version", contract)
         if type(self.order) is not int or self.order < 0:
             raise ValueError("entry order must be a non-negative integer")
         role = PlanMaterialRole(self.material_role)
@@ -196,10 +231,25 @@ class PlanMaterialEntry:
         )
         _require_hash("artifact_sha256", self.artifact_sha256)
         media = _clean_text("media_type", self.media_type, maximum=120)
-        if role is PlanMaterialRole.RESUME and media != RESUME_MEDIA_TYPE:
-            raise ValueError("a resume entry must be a PDF")
+        if role in {
+            PlanMaterialRole.RESUME,
+            PlanMaterialRole.COVER_LETTER,
+        } and media != RESUME_MEDIA_TYPE:
+            raise ValueError("document material entries must be PDFs")
         if type(self.page_count) is not int or self.page_count < 1:
             raise ValueError("page_count must be at least one")
+        if contract == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V1:
+            if self.artifact_byte_size is not None:
+                raise ValueError(
+                    "v1 material entries cannot carry artifact byte size"
+                )
+        elif (
+            type(self.artifact_byte_size) is not int
+            or self.artifact_byte_size < 1
+        ):
+            raise ValueError(
+                "v2 material entries require positive artifact byte size"
+            )
         _clean_text(
             "source_record_id", self.source_record_id, maximum=160
         )
@@ -213,7 +263,7 @@ class PlanMaterialEntry:
             raise ValueError("entry_id does not match its content")
 
     def content_dict(self) -> dict[str, Any]:
-        return {
+        content = {
             "artifact_reference": self.artifact_reference,
             "artifact_sha256": self.artifact_sha256,
             "material_role": self.material_role.value,
@@ -225,9 +275,21 @@ class PlanMaterialEntry:
             "source_record_hash": self.source_record_hash,
             "source_record_id": self.source_record_id,
         }
+        if (
+            self.contract_version
+            == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2
+        ):
+            content["artifact_byte_size"] = self.artifact_byte_size
+        return content
 
     def to_dict(self) -> dict[str, Any]:
         return {"entry_id": self.entry_id, **self.content_dict()}
+
+    @property
+    def artifact_byte_size_available(self) -> bool:
+        """Whether the persisted entry explicitly binds artifact size."""
+
+        return self.artifact_byte_size is not None
 
 
 def plan_material_entry_id(content: Mapping[str, Any]) -> str:
@@ -247,8 +309,15 @@ def _identity_payload(
     resume_artifact_sha256: str,
     entry_hashes: tuple[str, ...],
     assembly_state: PlanMaterialAssemblyState,
+    artifact_byte_sizes: tuple[int, ...] | None = None,
+    prior_manifest_id: str | None = None,
+    prior_manifest_content_hash: str | None = None,
+    prepared_cover_letter_material_id: str | None = None,
+    prepared_cover_letter_material_hash: str | None = None,
+    cover_letter_artifact_sha256: str | None = None,
+    preserved_resume_entry_hash: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "application_plan_id": application_plan_id,
         "assembly_state": assembly_state.value,
         "contract_version": contract_version,
@@ -261,12 +330,48 @@ def _identity_payload(
         "resume_artifact_sha256": resume_artifact_sha256,
         "subject_id": subject_id,
     }
+    if contract_version == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2:
+        if artifact_byte_sizes is None:
+            raise ValueError("v2 manifest identity requires artifact sizes")
+        payload["artifact_byte_sizes"] = list(artifact_byte_sizes)
+    elif artifact_byte_sizes is not None:
+        raise ValueError("v1 manifest identity cannot carry artifact sizes")
+    if assembly_state is PlanMaterialAssemblyState.RESUME_AND_COVER_LETTER:
+        payload.update(
+            {
+                "cover_letter_artifact_sha256": (
+                    cover_letter_artifact_sha256
+                ),
+                "prepared_cover_letter_material_hash": (
+                    prepared_cover_letter_material_hash
+                ),
+                "prepared_cover_letter_material_id": (
+                    prepared_cover_letter_material_id
+                ),
+                "preserved_resume_entry_hash": (
+                    preserved_resume_entry_hash
+                ),
+                "prior_manifest_content_hash": (
+                    prior_manifest_content_hash
+                ),
+                "prior_manifest_id": prior_manifest_id,
+            }
+        )
+    return payload
 
 
 def plan_material_manifest_id(**values: Any) -> str:
     return "plan-material-manifest-" + _canonical_hash(
         _identity_payload(**values)
     )
+
+
+def plan_material_manifest_content_hash(
+    content: Mapping[str, Any],
+) -> str:
+    """Return the canonical content hash used by persisted manifests."""
+
+    return _canonical_hash(content)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,12 +391,18 @@ class PlanMaterialManifest:
     entries: tuple[PlanMaterialEntry, ...]
     manifest_content_hash: str
     assembled_at: datetime
+    prior_manifest_id: str | None = None
+    prior_manifest_content_hash: str | None = None
+    prepared_cover_letter_material_id: str | None = None
+    prepared_cover_letter_material_hash: str | None = None
+    cover_letter_artifact_sha256: str | None = None
+    preserved_resume_entry_hash: str | None = None
 
     def __post_init__(self) -> None:
         contract = _clean_text(
             "contract_version", self.contract_version, maximum=80
         )
-        if contract != PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION:
+        if contract not in _SUPPORTED_MANIFEST_CONTRACT_VERSIONS:
             raise ValueError("manifest contract is unsupported")
         subject = _clean_text("subject_id", self.subject_id, maximum=160)
         plan_id = _clean_text(
@@ -324,6 +435,12 @@ class PlanMaterialManifest:
             )
         ):
             raise TypeError("entries must be a non-empty typed tuple")
+        if any(
+            item.contract_version != contract for item in self.entries
+        ):
+            raise ValueError(
+                "manifest and material entry contract versions differ"
+            )
         if tuple(item.order for item in self.entries) != tuple(
             range(len(self.entries))
         ):
@@ -345,11 +462,85 @@ class PlanMaterialManifest:
             )
         resume = self.entries[0]
         if (
+            resume.material_role is not PlanMaterialRole.RESUME
+            or resume.provenance_type
+            is not PlanMaterialProvenanceType.PREPARED_RESUME_MATERIAL
+        ):
+            raise ValueError("the first entry must be a prepared resume")
+        if (
             resume.prepared_material_id != material_id
             or resume.source_record_hash != material_hash
             or resume.artifact_sha256 != artifact_hash
         ):
             raise ValueError("the resume entry does not match its binding")
+        extension_values = (
+            self.prior_manifest_id,
+            self.prior_manifest_content_hash,
+            self.prepared_cover_letter_material_id,
+            self.prepared_cover_letter_material_hash,
+            self.cover_letter_artifact_sha256,
+            self.preserved_resume_entry_hash,
+        )
+        if state is PlanMaterialAssemblyState.RESUME_ONLY:
+            if any(item is not None for item in extension_values):
+                raise ValueError(
+                    "resume-only serialization cannot carry "
+                    "cover-letter fields"
+                )
+        else:
+            if roles != (
+                PlanMaterialRole.RESUME,
+                PlanMaterialRole.COVER_LETTER,
+            ):
+                raise ValueError(
+                    "the cover-letter assembly has exactly two ordered entries"
+                )
+            if any(item is None for item in extension_values):
+                raise ValueError(
+                    "the cover-letter assembly lineage is incomplete"
+                )
+            if (
+                not isinstance(self.prior_manifest_id, str)
+                or _MANIFEST_ID_PATTERN.fullmatch(self.prior_manifest_id)
+                is None
+            ):
+                raise ValueError("prior_manifest_id is invalid")
+            _require_hash(
+                "prior_manifest_content_hash",
+                self.prior_manifest_content_hash,
+            )
+            _clean_text(
+                "prepared_cover_letter_material_id",
+                self.prepared_cover_letter_material_id,
+                maximum=160,
+            )
+            _require_hash(
+                "prepared_cover_letter_material_hash",
+                self.prepared_cover_letter_material_hash,
+            )
+            _require_hash(
+                "cover_letter_artifact_sha256",
+                self.cover_letter_artifact_sha256,
+            )
+            if self.preserved_resume_entry_hash != resume.entry_id:
+                raise ValueError("the preserved resume entry hash is invalid")
+            cover_letter = self.entries[1]
+            if (
+                cover_letter.provenance_type
+                is not PlanMaterialProvenanceType
+                .PREPARED_COVER_LETTER_MATERIAL
+                or cover_letter.prepared_material_id
+                != self.prepared_cover_letter_material_id
+                or cover_letter.source_record_id
+                != self.prepared_cover_letter_material_id
+                or cover_letter.source_record_hash
+                != self.prepared_cover_letter_material_hash
+                or cover_letter.artifact_sha256
+                != self.cover_letter_artifact_sha256
+            ):
+                raise ValueError(
+                    "the cover-letter entry does not match its binding"
+                )
         expected = plan_material_manifest_id(
             contract_version=contract,
             subject_id=subject,
@@ -361,7 +552,27 @@ class PlanMaterialManifest:
             prepared_resume_material_hash=material_hash,
             resume_artifact_sha256=artifact_hash,
             entry_hashes=tuple(item.entry_id for item in self.entries),
+            artifact_byte_sizes=(
+                tuple(
+                    item.artifact_byte_size for item in self.entries
+                )
+                if contract
+                == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2
+                else None
+            ),
             assembly_state=state,
+            prior_manifest_id=self.prior_manifest_id,
+            prior_manifest_content_hash=self.prior_manifest_content_hash,
+            prepared_cover_letter_material_id=(
+                self.prepared_cover_letter_material_id
+            ),
+            prepared_cover_letter_material_hash=(
+                self.prepared_cover_letter_material_hash
+            ),
+            cover_letter_artifact_sha256=(
+                self.cover_letter_artifact_sha256
+            ),
+            preserved_resume_entry_hash=self.preserved_resume_entry_hash,
         )
         if (
             not isinstance(self.manifest_id, str)
@@ -405,7 +616,7 @@ class PlanMaterialManifest:
         return None
 
     def content_dict(self) -> dict[str, Any]:
-        return {
+        content = {
             "manifest_id": self.manifest_id,
             "contract_version": self.contract_version,
             "subject_id": self.subject_id,
@@ -424,6 +635,31 @@ class PlanMaterialManifest:
             "included_roles": [item.value for item in self.included_roles],
             "entries": [item.to_dict() for item in self.entries],
         }
+        if (
+            self.assembly_state
+            is PlanMaterialAssemblyState.RESUME_AND_COVER_LETTER
+        ):
+            content.update(
+                {
+                    "prior_manifest_id": self.prior_manifest_id,
+                    "prior_manifest_content_hash": (
+                        self.prior_manifest_content_hash
+                    ),
+                    "prepared_cover_letter_material_id": (
+                        self.prepared_cover_letter_material_id
+                    ),
+                    "prepared_cover_letter_material_hash": (
+                        self.prepared_cover_letter_material_hash
+                    ),
+                    "cover_letter_artifact_sha256": (
+                        self.cover_letter_artifact_sha256
+                    ),
+                    "preserved_resume_entry_hash": (
+                        self.preserved_resume_entry_hash
+                    ),
+                }
+            )
+        return content
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -516,7 +752,9 @@ class PlanMaterialManifestRepository(Protocol):
         """Resolve the current manifest for one plan."""
 
 
-def _entry_from_dict(value: Any) -> PlanMaterialEntry:
+def _entry_from_dict(
+    value: Any, *, contract_version: str
+) -> PlanMaterialEntry:
     expected = {
         "entry_id",
         "order",
@@ -530,6 +768,8 @@ def _entry_from_dict(value: Any) -> PlanMaterialEntry:
         "source_record_id",
         "source_record_hash",
     }
+    if contract_version == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2:
+        expected.add("artifact_byte_size")
     if not isinstance(value, Mapping) or set(value) != expected:
         raise ValueError("persisted PlanMaterialEntry is invalid")
     return PlanMaterialEntry(
@@ -546,11 +786,13 @@ def _entry_from_dict(value: Any) -> PlanMaterialEntry:
         ),
         source_record_id=value["source_record_id"],
         source_record_hash=value["source_record_hash"],
+        artifact_byte_size=value.get("artifact_byte_size"),
+        contract_version=contract_version,
     )
 
 
 def _manifest_from_dict(value: Any) -> PlanMaterialManifest:
-    expected = {
+    legacy_expected = {
         "manifest_id",
         "contract_version",
         "subject_id",
@@ -567,9 +809,30 @@ def _manifest_from_dict(value: Any) -> PlanMaterialManifest:
         "manifest_content_hash",
         "assembled_at",
     }
+    extension = {
+        "prior_manifest_id",
+        "prior_manifest_content_hash",
+        "prepared_cover_letter_material_id",
+        "prepared_cover_letter_material_hash",
+        "cover_letter_artifact_sha256",
+        "preserved_resume_entry_hash",
+    }
+    if not isinstance(value, Mapping):
+        raise ValueError("persisted PlanMaterialManifest is invalid")
+    contract_version = value.get("contract_version")
+    if contract_version not in _SUPPORTED_MANIFEST_CONTRACT_VERSIONS:
+        raise ValueError("persisted manifest contract is unsupported")
+    assembly_state = value.get("assembly_state")
+    expected = (
+        legacy_expected
+        if assembly_state == PlanMaterialAssemblyState.RESUME_ONLY.value
+        else legacy_expected | extension
+        if assembly_state
+        == PlanMaterialAssemblyState.RESUME_AND_COVER_LETTER.value
+        else set()
+    )
     if (
-        not isinstance(value, Mapping)
-        or set(value) != expected
+        set(value) != expected
         or not isinstance(value["entries"], list)
         or not isinstance(value["included_roles"], list)
     ):
@@ -592,10 +855,27 @@ def _manifest_from_dict(value: Any) -> PlanMaterialManifest:
             PlanMaterialRole(item) for item in value["included_roles"]
         ),
         entries=tuple(
-            _entry_from_dict(item) for item in value["entries"]
+            _entry_from_dict(item, contract_version=contract_version)
+            for item in value["entries"]
         ),
         manifest_content_hash=value["manifest_content_hash"],
         assembled_at=_parse_timestamp(value["assembled_at"]),
+        prior_manifest_id=value.get("prior_manifest_id"),
+        prior_manifest_content_hash=value.get(
+            "prior_manifest_content_hash"
+        ),
+        prepared_cover_letter_material_id=value.get(
+            "prepared_cover_letter_material_id"
+        ),
+        prepared_cover_letter_material_hash=value.get(
+            "prepared_cover_letter_material_hash"
+        ),
+        cover_letter_artifact_sha256=value.get(
+            "cover_letter_artifact_sha256"
+        ),
+        preserved_resume_entry_hash=value.get(
+            "preserved_resume_entry_hash"
+        ),
     )
 
 
@@ -633,6 +913,11 @@ class PrivateHomePlanMaterialManifestRepository:
             if (
                 hashlib.sha256(content).hexdigest() != entry.artifact_sha256
                 or not content.startswith(b"%PDF-")
+                or (
+                    entry.contract_version
+                    == PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2
+                    and len(content) != entry.artifact_byte_size
+                )
             ):
                 return False
         return True
@@ -786,7 +1071,11 @@ class PrivateHomePlanMaterialManifestRepository:
             raise TypeError("manifest must be a PlanMaterialManifest")
         path = self._path(manifest.subject_id, manifest.manifest_id)
         with self._lock:
-            if not self._entries_are_valid(manifest):
+            if (
+                manifest.contract_version
+                != PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION
+                or not self._entries_are_valid(manifest)
+            ):
                 return PlanMaterialManifestWriteResult(
                     status=PlanMaterialManifestWriteStatus.FAILED,
                     manifest=None,
@@ -1126,6 +1415,7 @@ def assemble_plan_material_manifest(
 
     material_hash = prepared_material_content_hash(material)
     entry_content = {
+        "artifact_byte_size": len(content),
         "artifact_reference": material.pdf_reference,
         "artifact_sha256": material.pdf_sha256,
         "material_role": PlanMaterialRole.RESUME.value,
@@ -1154,6 +1444,8 @@ def assemble_plan_material_manifest(
             ),
             source_record_id=material.material_id,
             source_record_hash=material_hash,
+            artifact_byte_size=len(content),
+            contract_version=PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION,
         )
         identity = {
             "contract_version": PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION,
@@ -1166,6 +1458,7 @@ def assemble_plan_material_manifest(
             "prepared_resume_material_hash": material_hash,
             "resume_artifact_sha256": material.pdf_sha256,
             "entry_hashes": (entry.entry_id,),
+            "artifact_byte_sizes": (len(content),),
             "assembly_state": PlanMaterialAssemblyState.RESUME_ONLY,
         }
         manifest_id = plan_material_manifest_id(**identity)
@@ -1244,6 +1537,8 @@ __all__ = [
     "AssemblePlanMaterialManifestCommand",
     "AssemblePlanMaterialManifestResult",
     "PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION",
+    "PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V1",
+    "PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION_V2",
     "PlanMaterialAssemblyState",
     "PlanMaterialEntry",
     "PlanMaterialManifest",
@@ -1261,6 +1556,7 @@ __all__ = [
     "RESUME_MEDIA_TYPE",
     "assemble_plan_material_manifest",
     "plan_material_entry_id",
+    "plan_material_manifest_content_hash",
     "plan_material_manifest_id",
     "prepared_material_content_hash",
 ]

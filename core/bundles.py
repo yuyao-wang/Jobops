@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from .event_ledger import hash_job_url
+from .application_answer_taxonomy import CanonicalApplicationAnswers
 from .permits import PermitBindings, hash_value
 from .policy import JobTier, PolicyDecision
+
+
+_SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+_SUBJECT_KEY_RE = re.compile(r"^subject-[a-f0-9]{64}$")
+APPLICATION_BUNDLE_CONTRACT_VERSION = "application-bundle-v1"
 
 
 def canonical_hash(value: Mapping[str, Any]) -> str:
@@ -72,12 +79,66 @@ class JobSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedArtifactReference:
+    """Value-only reference to one subject-isolated managed artifact."""
+
+    reference: str
+    sha256: str
+    byte_size: int
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.reference, str) or not self.reference.strip():
+            raise ValueError("managed artifact reference is required")
+        reference = self.reference.strip()
+        path = PurePosixPath(reference)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or path.parts[:2] != ("state", "preparation")
+            or not any(
+                _SUBJECT_KEY_RE.fullmatch(part) for part in path.parts
+            )
+        ):
+            raise ValueError(
+                "managed artifact reference must be subject-isolated"
+            )
+        if (
+            not isinstance(self.sha256, str)
+            or _SHA256_RE.fullmatch(self.sha256) is None
+        ):
+            raise ValueError("managed artifact hash must be SHA-256")
+        if type(self.byte_size) is not int or self.byte_size < 1:
+            raise ValueError("managed artifact byte size must be positive")
+        if self.media_type != "application/pdf":
+            raise ValueError("managed Cover Letter artifact must be a PDF")
+        object.__setattr__(self, "reference", reference)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "byte_size": self.byte_size,
+            "media_type": self.media_type,
+            "reference": self.reference,
+            "sha256": self.sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MaterialBundle:
     resume_path: Path
     resume_sha256: str
     cover_letter: str = ""
     cover_letter_sha256: str = ""
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    cover_letter_pdf: ManagedArtifactReference | None = None
+
+    def __post_init__(self) -> None:
+        if self.cover_letter_pdf is not None and not isinstance(
+            self.cover_letter_pdf, ManagedArtifactReference
+        ):
+            raise TypeError(
+                "cover_letter_pdf must be a ManagedArtifactReference"
+            )
 
     @classmethod
     def build(
@@ -86,6 +147,7 @@ class MaterialBundle:
         resume_path: str | Path,
         cover_letter: str = "",
         metadata: Mapping[str, Any] | None = None,
+        cover_letter_pdf: ManagedArtifactReference | None = None,
     ) -> "MaterialBundle":
         path = Path(resume_path).expanduser().resolve()
         if not path.is_file():
@@ -96,17 +158,19 @@ class MaterialBundle:
             cover_letter=cover_letter,
             cover_letter_sha256=hash_value(cover_letter),
             metadata=dict(metadata or {}),
+            cover_letter_pdf=cover_letter_pdf,
         )
 
     @property
     def digest(self) -> str:
-        return canonical_hash(
-            {
-                "resume_sha256": self.resume_sha256,
-                "cover_letter_sha256": self.cover_letter_sha256,
-                "metadata": dict(self.metadata),
-            }
-        )
+        content = {
+            "resume_sha256": self.resume_sha256,
+            "cover_letter_sha256": self.cover_letter_sha256,
+            "metadata": dict(self.metadata),
+        }
+        if self.cover_letter_pdf is not None:
+            content["cover_letter_pdf"] = self.cover_letter_pdf.to_dict()
+        return canonical_hash(content)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +179,20 @@ class ApplicationBundle:
     job: JobSpec
     materials: MaterialBundle
     profile: Mapping[str, Any]
-    answers: Mapping[str, Any]
+    answers: CanonicalApplicationAnswers
     policy: PolicyDecision
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.answers, CanonicalApplicationAnswers):
+            object.__setattr__(
+                self,
+                "answers",
+                CanonicalApplicationAnswers.from_mapping(self.answers),
+            )
 
     @property
     def answer_hash(self) -> str:
-        return canonical_hash(dict(self.answers))
+        return canonical_hash(self.answers.to_dict())
 
     def permit_bindings(self, *, review_hash: str) -> PermitBindings:
         return PermitBindings(
@@ -152,6 +224,33 @@ class ApplicationBundle:
         }
 
 
+def application_bundle_canonical_hash(bundle: ApplicationBundle) -> str:
+    """Stable identity of the complete execution-relevant bundle contract."""
+
+    if not isinstance(bundle, ApplicationBundle):
+        raise TypeError("bundle must be an ApplicationBundle")
+    return canonical_hash(
+        {
+            "answers": bundle.answers.to_dict(),
+            "application_bundle_contract_version": (
+                APPLICATION_BUNDLE_CONTRACT_VERSION
+            ),
+            "job": {
+                "company": bundle.job.company,
+                "job_id": bundle.job.job_id,
+                "tier": bundle.job.tier.value,
+                "title": bundle.job.title,
+                "url": bundle.job.url,
+            },
+            "materials": bundle.materials.digest,
+            "policy_hash": bundle.policy.policy_hash,
+            "profile_hash": canonical_hash(dict(bundle.profile)),
+            "run_id": bundle.run_id,
+            "taxonomy_version": bundle.answers.taxonomy_version,
+        }
+    )
+
+
 def priority_to_tier(priority: str) -> JobTier:
     normalized = str(priority or "").strip().casefold()
     if normalized in {"high", "important", "p0", "p1", "1"}:
@@ -162,9 +261,12 @@ def priority_to_tier(priority: str) -> JobTier:
 
 
 __all__ = [
+    "APPLICATION_BUNDLE_CONTRACT_VERSION",
     "ApplicationBundle",
     "JobSpec",
+    "ManagedArtifactReference",
     "MaterialBundle",
+    "application_bundle_canonical_hash",
     "canonical_hash",
     "file_sha256",
     "normalized_job_url",

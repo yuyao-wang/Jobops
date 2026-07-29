@@ -57,6 +57,8 @@ from core.outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
+from core.bundles import MaterialBundle
+from core.private_home import PrivateHome
 from utils.keychain import (
     KeychainError,
     default_credential_store,
@@ -234,6 +236,8 @@ class WorkdayApplicationContext:
     navigate: bool = True
     navigation_timeout_ms: int = 45_000
     settle_timeout_ms: int = 750
+    materials: MaterialBundle | None = None
+    private_home: PrivateHome | None = None
 
 
 def classify_workday_state(signals: WorkdayPageSignals) -> str:
@@ -2546,6 +2550,8 @@ def _coerce_context(
         navigate=context.navigate,
         navigation_timeout_ms=context.navigation_timeout_ms,
         settle_timeout_ms=context.settle_timeout_ms,
+        materials=context.materials,
+        private_home=context.private_home,
     )
 
 

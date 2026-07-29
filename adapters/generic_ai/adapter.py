@@ -21,6 +21,7 @@ from core.outcomes import (
     ReasonCode,
 )
 from core.private_home import PrivateHome
+from core.bundles import MaterialBundle
 from adapters.shared import invoke_gate_b_validator
 
 from .cache import RecipeCache
@@ -83,12 +84,8 @@ def _validated_semantic_mappings(
         response_indices.add(checked.index)
         validated.append(checked)
 
-    internal_keys = {
-        "email": "email",
-        "phone_number": "phone",
-    }
     mapped = {
-        response.index: internal_keys[response.canonical_key]
+        response.index: response.canonical_key.value
         for response in validated
         if response.status == "mapped"
     }
@@ -366,7 +363,13 @@ class GenericAIAdapter:
         max_steps: int = 12,
         gate_b_token: str | None = None,
         gate_b_validator=None,
+        materials: MaterialBundle | None = None,
+        private_home: PrivateHome | None = None,
     ) -> ApplicationOutcome:
+        if materials is not None:
+            resume_path = str(materials.resume_path)
+            cover_letter = materials.cover_letter
+        del private_home  # retained for the shared subject-isolated contract
         if navigate:
             try:
                 await self._load_page(page, job_url)

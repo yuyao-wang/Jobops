@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Iterable
 
+from core.application_answer_taxonomy import (
+    CanonicalApplicationAnswerKey,
+    normalize_canonical_application_answer_key,
+)
 from .models import FormControl, FormIR
 
 
@@ -22,10 +26,21 @@ class Sensitivity(StrEnum):
 @dataclass(frozen=True)
 class ResolvedField:
     control: FormControl
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     value: str
     source: str
     sensitivity: Sensitivity
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_key",
+            normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+                allow_custom_unknown=True,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -35,28 +50,30 @@ class UnresolvedField:
     sensitivity: Sensitivity
 
 
-_PATTERNS: tuple[tuple[str, Sensitivity, tuple[str, ...]], ...] = (
-    ("preferred_name", Sensitivity.BASIC, (r"\bpreferred(?:\s+first)?\s*name\b", r"\bchosen\s*name\b")),
-    ("first_name", Sensitivity.BASIC, (r"\bfirst\s*name\b", r"\bgiven\s*name\b")),
-    ("last_name", Sensitivity.BASIC, (r"\blast\s*name\b", r"\bsurname\b", r"\bfamily\s*name\b")),
-    ("full_name", Sensitivity.BASIC, (r"\bfull\s*name\b", r"\blegal\s*name\b")),
-    ("email", Sensitivity.BASIC, (r"\be-?mail\b",)),
-    ("phone", Sensitivity.BASIC, (r"\bphone\b", r"\bmobile\b")),
-    ("location", Sensitivity.PERSONAL, (r"\bcurrent\s+location\b", r"\bhome\s+location\b", r"\bwhere\s+do\s+you\s+live\b")),
-    ("linkedin", Sensitivity.BASIC, (r"linkedin",)),
-    ("github", Sensitivity.BASIC, (r"github",)),
-    ("portfolio", Sensitivity.BASIC, (r"portfolio", r"personal\s+website", r"website\s+url")),
-    ("resume", Sensitivity.PERSONAL, (r"\bresume\b", r"\bcv\b")),
-    ("cover_letter", Sensitivity.PERSONAL, (r"cover\s+letter",)),
-    ("work_authorization", Sensitivity.LEGAL, (r"authori[sz]ed\s+to\s+work", r"legally\s+eligible")),
-    ("sponsorship", Sensitivity.LEGAL, (r"sponsorship", r"visa\s+sponsor")),
-    ("relocation", Sensitivity.PERSONAL, (r"relocat",)),
-    ("salary", Sensitivity.COMPENSATION, (r"(?:salary|compensation|pay)\s+expect", r"(?:expected|desired)\s+(?:salary|compensation|pay)")),
-    ("start_date", Sensitivity.PERSONAL, (r"start\s+date", r"available\s+to\s+start", r"notice\s+period")),
-    ("gender", Sensitivity.VOLUNTARY_SELF_ID, (r"\bgender\b",)),
-    ("race_ethnicity", Sensitivity.VOLUNTARY_SELF_ID, (r"race", r"ethnic")),
-    ("veteran_status", Sensitivity.VOLUNTARY_SELF_ID, (r"veteran",)),
-    ("disability_status", Sensitivity.VOLUNTARY_SELF_ID, (r"disab",)),
+_PATTERNS: tuple[
+    tuple[CanonicalApplicationAnswerKey, Sensitivity, tuple[str, ...]], ...
+] = (
+    (CanonicalApplicationAnswerKey.PREFERRED_NAME, Sensitivity.BASIC, (r"\bpreferred(?:\s+first)?\s*name\b", r"\bchosen\s*name\b")),
+    (CanonicalApplicationAnswerKey.FIRST_NAME, Sensitivity.BASIC, (r"\bfirst\s*name\b", r"\bgiven\s*name\b")),
+    (CanonicalApplicationAnswerKey.LAST_NAME, Sensitivity.BASIC, (r"\blast\s*name\b", r"\bsurname\b", r"\bfamily\s*name\b")),
+    (CanonicalApplicationAnswerKey.FULL_NAME, Sensitivity.BASIC, (r"\bfull\s*name\b", r"\blegal\s*name\b")),
+    (CanonicalApplicationAnswerKey.EMAIL, Sensitivity.BASIC, (r"\be-?mail\b",)),
+    (CanonicalApplicationAnswerKey.PHONE, Sensitivity.BASIC, (r"\bphone\b", r"\bmobile\b")),
+    (CanonicalApplicationAnswerKey.LOCATION, Sensitivity.PERSONAL, (r"\bcurrent\s+location\b", r"\bhome\s+location\b", r"\bwhere\s+do\s+you\s+live\b")),
+    (CanonicalApplicationAnswerKey.LINKEDIN, Sensitivity.BASIC, (r"linkedin",)),
+    (CanonicalApplicationAnswerKey.GITHUB, Sensitivity.BASIC, (r"github",)),
+    (CanonicalApplicationAnswerKey.PORTFOLIO, Sensitivity.BASIC, (r"portfolio", r"personal\s+website", r"website\s+url")),
+    (CanonicalApplicationAnswerKey.RESUME, Sensitivity.PERSONAL, (r"\bresume\b", r"\bcv\b")),
+    (CanonicalApplicationAnswerKey.COVER_LETTER, Sensitivity.PERSONAL, (r"cover\s+letter",)),
+    (CanonicalApplicationAnswerKey.WORK_AUTHORIZATION, Sensitivity.LEGAL, (r"authori[sz]ed\s+to\s+work", r"legally\s+eligible")),
+    (CanonicalApplicationAnswerKey.SPONSORSHIP, Sensitivity.LEGAL, (r"sponsorship", r"visa\s+sponsor")),
+    (CanonicalApplicationAnswerKey.RELOCATION, Sensitivity.PERSONAL, (r"relocat",)),
+    (CanonicalApplicationAnswerKey.SALARY, Sensitivity.COMPENSATION, (r"(?:salary|compensation|pay)\s+expect", r"(?:expected|desired)\s+(?:salary|compensation|pay)")),
+    (CanonicalApplicationAnswerKey.START_DATE, Sensitivity.PERSONAL, (r"start\s+date", r"available\s+to\s+start", r"notice\s+period")),
+    (CanonicalApplicationAnswerKey.GENDER, Sensitivity.VOLUNTARY_SELF_ID, (r"\bgender\b",)),
+    (CanonicalApplicationAnswerKey.RACE_ETHNICITY, Sensitivity.VOLUNTARY_SELF_ID, (r"race", r"ethnic")),
+    (CanonicalApplicationAnswerKey.VETERAN_STATUS, Sensitivity.VOLUNTARY_SELF_ID, (r"veteran",)),
+    (CanonicalApplicationAnswerKey.DISABILITY_STATUS, Sensitivity.VOLUNTARY_SELF_ID, (r"disab",)),
 )
 
 _THIRD_PARTY_IDENTITY_TERMS = (
@@ -98,18 +115,20 @@ def _looks_like_third_party_identity(text: str) -> bool:
     )
 
 
-def classify_control(control: FormControl) -> tuple[str, Sensitivity] | None:
+def classify_control(
+    control: FormControl,
+) -> tuple[CanonicalApplicationAnswerKey, Sensitivity] | None:
     text = control.semantic_text.casefold()
     if _looks_like_third_party_identity(text):
         return None
     autocomplete = control.autocomplete.replace("-", "_")
     autocomplete_map = {
-        "given_name": "first_name",
-        "family_name": "last_name",
-        "name": "full_name",
-        "email": "email",
-        "tel": "phone",
-        "address_level2": "location",
+        "given_name": CanonicalApplicationAnswerKey.FIRST_NAME,
+        "family_name": CanonicalApplicationAnswerKey.LAST_NAME,
+        "name": CanonicalApplicationAnswerKey.FULL_NAME,
+        "email": CanonicalApplicationAnswerKey.EMAIL,
+        "tel": CanonicalApplicationAnswerKey.PHONE,
+        "address_level2": CanonicalApplicationAnswerKey.LOCATION,
     }
     if autocomplete in autocomplete_map:
         key = autocomplete_map[autocomplete]
@@ -117,25 +136,31 @@ def classify_control(control: FormControl) -> tuple[str, Sensitivity] | None:
             if candidate == key:
                 return candidate, sensitivity
     if control.input_type == "file" and re.search(r"resume|cv", text):
-        return "resume", Sensitivity.PERSONAL
+        return CanonicalApplicationAnswerKey.RESUME, Sensitivity.PERSONAL
     for key, sensitivity, patterns in _PATTERNS:
         if any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns):
             return key, sensitivity
     return None
 
 
-def semantic_mapping_is_compatible(control: FormControl, key: str) -> bool:
+def semantic_mapping_is_compatible(
+    control: FormControl,
+    key: CanonicalApplicationAnswerKey | str,
+) -> bool:
     """Require deterministic structure before accepting a model/cache mapping.
 
     A semantic model may propose a canonical key, but its proposal alone is not
     authority to place a candidate value into an ambiguous control.
     """
 
+    normalized_key = normalize_canonical_application_answer_key(
+        key, allow_legacy_alias=True
+    )
     if _looks_like_third_party_identity(control.semantic_text.casefold()):
         return False
     classified = classify_control(control)
     if classified is not None:
-        return classified[0] == key
+        return classified[0] is normalized_key
 
     input_type = control.input_type.casefold()
     autocomplete = control.autocomplete.replace("-", "_").casefold()
@@ -143,26 +168,30 @@ def semantic_mapping_is_compatible(control: FormControl, key: str) -> bool:
         re.search(rf"\b{re.escape(term)}\b", control.semantic_text, re.IGNORECASE)
         for term in _CANDIDATE_SELF_TERMS
     )
-    if key == "email":
+    if normalized_key is CanonicalApplicationAnswerKey.EMAIL:
         return has_candidate_self_semantics and (
             input_type == "email" or autocomplete == "email"
         )
-    if key == "phone":
+    if normalized_key is CanonicalApplicationAnswerKey.PHONE:
         return has_candidate_self_semantics and (
             input_type == "tel" or autocomplete == "tel"
         )
-    if key == "first_name":
+    if normalized_key is CanonicalApplicationAnswerKey.FIRST_NAME:
         return autocomplete == "given_name"
-    if key == "last_name":
+    if normalized_key is CanonicalApplicationAnswerKey.LAST_NAME:
         return autocomplete == "family_name"
-    if key == "full_name":
+    if normalized_key is CanonicalApplicationAnswerKey.FULL_NAME:
         return autocomplete == "name"
-    if key == "location":
+    if normalized_key is CanonicalApplicationAnswerKey.LOCATION:
         return autocomplete in {"address_level1", "address_level2", "country"}
     return False
 
 
-def _legacy_value(profile: dict[str, Any], key: str, cover_letter: str) -> str:
+def _legacy_value(
+    profile: dict[str, Any],
+    key: CanonicalApplicationAnswerKey,
+    cover_letter: str,
+) -> str:
     personal = profile.get("personal", {})
     common = profile.get("common_answers", {})
     values = {
@@ -188,7 +217,7 @@ def _legacy_value(profile: dict[str, Any], key: str, cover_letter: str) -> str:
         "veteran_status": common.get("veteran_status", ""),
         "disability_status": common.get("disability_status", ""),
     }
-    return str(values.get(key) or "").strip()
+    return str(values.get(key.value) or "").strip()
 
 
 class AnswerResolver:
@@ -232,14 +261,21 @@ class AnswerResolver:
                     values.add(normalized)
         return tuple(sorted(values, key=len, reverse=True))
 
-    def value_for_key(self, key: str) -> str:
+    def value_for_key(
+        self, key: CanonicalApplicationAnswerKey | str
+    ) -> str:
+        normalized_key = normalize_canonical_application_answer_key(
+            key, allow_legacy_alias=True
+        )
         canonical = self.profile.get("canonical_answers", {})
-        if key in canonical:
-            value = canonical[key]
+        if normalized_key.value in canonical:
+            value = canonical[normalized_key.value]
             if isinstance(value, dict):
                 value = value.get("value", "")
             return str(value or "").strip()
-        return _legacy_value(self.profile, key, self.cover_letter)
+        return _legacy_value(
+            self.profile, normalized_key, self.cover_letter
+        )
 
     def exact_verified_answer(self, question: str) -> str:
         """Return only an explicitly verified answer for the exact prompt.
@@ -266,13 +302,26 @@ class AnswerResolver:
             return str(stored or "").strip()
         return ""
 
-    def resolve(self, control: FormControl, mapped_key: str = "") -> ResolvedField | UnresolvedField:
-        if mapped_key and not semantic_mapping_is_compatible(control, mapped_key):
+    def resolve(
+        self,
+        control: FormControl,
+        mapped_key: CanonicalApplicationAnswerKey | str = "",
+    ) -> ResolvedField | UnresolvedField:
+        normalized_mapped_key = (
+            normalize_canonical_application_answer_key(
+                mapped_key, allow_legacy_alias=True
+            )
+            if mapped_key
+            else None
+        )
+        if normalized_mapped_key and not semantic_mapping_is_compatible(
+            control, normalized_mapped_key
+        ):
             mapped_sensitivity = next(
                 (
                     sensitivity
                     for candidate, sensitivity, _patterns in _PATTERNS
-                    if candidate == mapped_key
+                    if candidate is normalized_mapped_key
                 ),
                 Sensitivity.PERSONAL,
             )
@@ -281,14 +330,18 @@ class AnswerResolver:
                 "semantic mapping lacks deterministic structural confirmation",
                 mapped_sensitivity,
             )
-        classification = (mapped_key, Sensitivity.PERSONAL) if mapped_key else classify_control(control)
+        classification = (
+            (normalized_mapped_key, Sensitivity.PERSONAL)
+            if normalized_mapped_key
+            else classify_control(control)
+        )
         if classification:
             key, sensitivity = classification
             for candidate, candidate_sensitivity, _ in _PATTERNS:
                 if candidate == key:
                     sensitivity = candidate_sensitivity
                     break
-            if mapped_key and sensitivity in {
+            if normalized_mapped_key and sensitivity in {
                 Sensitivity.LEGAL,
                 Sensitivity.COMPENSATION,
                 Sensitivity.VOLUNTARY_SELF_ID,
@@ -309,7 +362,7 @@ class AnswerResolver:
         if exact_answer:
             return ResolvedField(
                 control,
-                "verified_question_answer",
+                CanonicalApplicationAnswerKey.UNKNOWN,
                 exact_answer,
                 "verified_answer_bank",
                 Sensitivity.PERSONAL,
@@ -380,7 +433,7 @@ def map_unknown_controls(
     """Use one bounded model call to classify unknown controls, never answer them."""
     if not controls or brain is None:
         return {}
-    keys = [key for key, _, _ in _PATTERNS]
+    keys = [key.value for key, _, _ in _PATTERNS]
     payload = _redact_private_strings(
         [control.compact_dict() for control in controls[:40]],
         tuple(private_values),

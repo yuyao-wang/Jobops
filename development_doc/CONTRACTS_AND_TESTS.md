@@ -8,6 +8,21 @@ This document is the authority for component contracts and implementation eviden
 
 | Contract | Status |
 |---|---|
+| `CanonicalApplicationAnswerKey` / shared taxonomy registry | Implemented P2b3a as the single versioned field-language contract for FormIR, SemanticMapper and ApplicationBundle |
+| `prepare_application_answers()` / `PreparedApplicationAnswerSet` | Implemented P2b3b as the immutable plan-scoped projection of trusted CandidateVault facts into prepared and unresolved canonical answers |
+| `run_application_preparation()` / `ApplicationPreparationRun` | Implemented P2b4 as strict serial composition of the existing public preparation Slices with typed lineage, defer/failure short-circuiting and completed zero-call replay |
+| `build_current_human_attention_queue()` / `HumanAttentionQueueResult` | Implemented P2b5 as a zero-write subject read model over current PreparationRuns and blocking AnswerSet unresolved items |
+| `run_selective_batch_preparation()` / `SelectiveBatchPreparationResult` | Implemented P2b6 as bounded serial P2b4 composition using one fixed P2b5 snapshot, deterministic Plan selection and per-Plan failure isolation |
+| `PlanMaterialManifest` v1/v2 / `ManagedArtifactReference` | Implemented P2c0 as exact v1 compatibility read, v2 PDF byte-size binding, and optional managed Cover Letter PDF support in the existing MaterialBundle |
+| `assemble_application_bundle()` / `ApplicationBundleAssemblyRecord` | Implemented P2c1 as the fail-closed plan-scoped handoff from a v2 Manifest and canonical AnswerSet into the existing ApplicationBundle |
+| `RecoverableApplicationBundleEnvelopeRepository.get_for_assembly()` | Implemented P2c1b as the immutable, subject-isolated and hash-verified recovery contract for the exact P2c1 ApplicationBundle |
+| `plan_application_document_uploads()` / `ApplicationDocumentUploadPlan` | Implemented P2c2 as deterministic at-most-once Resume/Cover Letter PDF selection for typed FormIR file controls and shared BaseATSAdapter fill |
+| `execute_non_submit_application()` / `NonSubmitApplicationExecutionRecord` | Implemented P2c3 as the Gate-A-aware, one-shot Browser/Engine handoff for one recovered P2c1 bundle with a hard non-submit boundary |
+| `decide_submission_authorization()` / `SubmissionAuthorizationDecision` | Implemented P2c4 as the offline Gate B policy decision for one exact P2c3 Review, with automatic or review-scoped explicit-user authorization and zero submission side effects |
+| `PlanScopedSubmissionPermitBindings` / `GateAConsumptionReference` / `OpaquePermitTokenReference` | Implemented P2c5a as an explicit versioned extension of the existing Foundation Permit contract; legacy permit bytes and semantics remain unchanged, P2c3 v2 records persist verifiable Gate A consumption provenance, signer metadata is read-only, and bearer tokens remain behind subject-isolated opaque credential references |
+| `issue_submission_permit()` / `SubmissionPermitRecord` | Implemented P2c5b as the offline issuance boundary that converts one exact `AUTHORIZED` Decision into a 300-second, plan/review/adapter/action-scoped Foundation Gate B permit while persisting only an opaque token reference |
+| `execute_authorized_submission()` / `AuthorizedSubmissionExecutionRecord` | Implemented P2c6 as the one-shot Browser/Engine bridge for a plan-scoped permit, with Review replay, adapter-callback point-of-no-return consumption, existing submission-intent/evidence reuse, immutable verified/uncertain outcomes and zero automatic retry |
+| `run_application_execution()` / `ApplicationExecutionRun` | Implemented P2c7 as strict serial composition of the four public P2c3–P2c6 stages, with typed ordered lineage, defer/block/failure short-circuiting, terminal uncertainty and completed/uncertain zero-call replay |
 | `SemanticMapper.map_controls()` | Implemented as an in-process provider-neutral Protocol |
 | `AdapterRegistry.run()` / deterministic ATS lifecycle | Implemented |
 | `run_discovery(JobDiscoveryRequest)` | Implemented for typed conversational proposals and Private Home upsert |
@@ -47,6 +62,8 @@ This document is the authority for component contracts and implementation eviden
 | `create_cover_letter_evidence_snapshot()` / `CoverLetterEvidenceSnapshot` | Implemented P2b2a subject-specific cover-letter evidence with its own `COVER_LETTER` scope, independent of resume-tailoring evidence |
 | `draft_cover_letter()` / `CoverLetterDraft` | Implemented P2b2b evidence-bound cover letter draft with deterministic Agent-output validation |
 | `review_cover_letter_fact_qa()` / `CoverLetterFactQAResult` | Implemented P2b2c independent fact QA over one CoverLetterDraft, deterministic-first with a bounded QA Agent for semantic exaggeration only |
+| `publish_prepared_cover_letter()` / `PreparedCoverLetterMaterial` | Implemented P2b2d deterministic publication of one PASSED Draft through the managed one-page template and existing sandboxed compiler port |
+| `include_cover_letter_in_plan_material_manifest()` | Implemented P2b2e immutable inclusion of one published cover letter while preserving the prior Resume entry |
 | `LatexBuildProvenance` | Implemented P2a8b shared protocol letting construction and revision records both describe one managed build |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
@@ -1050,9 +1067,9 @@ location, with no change to `load_material_manifest()` or
 `build_tier_materials()`. A test asserts the two types and their symbols stay
 separate.
 
-Each `PlanMaterialEntry` carries a content-derived `entry_id`, the material
-role, the prepared material ID, the managed artifact reference and SHA-256,
-the media type, the page count, and a `provenance_type` of
+Each v2 `PlanMaterialEntry` carries a content-derived `entry_id`, the material
+role, the prepared material ID, the managed artifact reference, SHA-256 and
+actual byte size, the media type, the page count, and a `provenance_type` of
 `PREPARED_RESUME_MATERIAL` with the source record ID and a hash of that
 record's own content, computed here by `prepared_material_content_hash()`
 without altering P2a9.
@@ -1067,7 +1084,43 @@ letters and answers exist. Gate A has no representation in this contract.
 `ARTIFACT_UNREADABLE`, `ARTIFACT_HASH_DRIFT` and `ARTIFACT_INVALID`.
 Manifests persist below
 `state/preparation/plan-material-manifests/<subject-key>/`; reads and writes
-re-verify every referenced artifact.
+re-verify every referenced artifact. Explicit v1 parsing omits byte size and
+retains the original entry/manifest serialization and identity; explicit v2
+parsing requires it.
+
+#### `include_cover_letter_in_plan_material_manifest()`
+
+```text
+include_cover_letter_in_plan_material_manifest(
+    IncludeCoverLetterInPlanMaterialManifestCommand(
+        subject_id,
+        application_plan_id,
+        plan_material_manifest_id,
+        prepared_cover_letter_material_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    manifest_repository,
+    prepared_cover_letter_repository,
+    home,
+) -> IncludeCoverLetterInPlanMaterialManifestResult
+```
+
+The operation returns `CREATED`, `UNCHANGED`, `NOT_READY` or `FAILED`. It
+preserves the input RESUME entry exactly and appends one
+`PREPARED_COVER_LETTER_MATERIAL` entry in fixed order. Before assembly it
+validates Plan, prior-manifest and publication provenance, then re-reads the
+managed cover-letter PDF to verify containment, regular-file status,
+signature, actual-byte hash, size and page count.
+
+The v2 two-entry identity adds prior manifest ID/content hash, preserved Resume
+entry hash, prepared cover-letter material ID/content hash, PDF hash and byte
+size, and ordered entry hashes. These fields are conditionally absent from
+Resume-only serialization. Historical v1 records keep their original IDs and
+canonical hashes; P2b2e refuses a v1 prior instead of upgrading it in place.
+The resulting assembly state is `RESUME_AND_COVER_LETTER`, while
+`complete_application_material_prepared` remains false and no Answers, Gate,
+approval, submission or ATS state is serialized.
 
 #### `create_cover_letter_evidence_snapshot()`
 
@@ -1222,6 +1275,66 @@ EvidenceSnapshot/QA-version always creates a new immutable Result. Results
 persist below
 `state/preparation/cover-letter-fact-qa-results/<subject-key>/`.
 
+#### `publish_prepared_cover_letter()`
+
+```text
+publish_prepared_cover_letter(
+    PublishPreparedCoverLetterCommand(
+        subject_id,
+        application_plan_id,
+        cover_letter_fact_qa_result_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    job_repository,
+    draft_repository,
+    fact_qa_repository,
+    template_provider: ManagedCoverLetterTemplateProvider,
+    compiler: LatexCompilerPort,
+    material_repository,
+    home,
+) -> PublishPreparedCoverLetterResult
+```
+
+The service revalidates the complete subject/Plan/JobPosting/Draft/Fact-QA
+lineage and requires the named typed result to be `PASSED`. `BLOCKED`, an
+absent/deferred result, or a binding mismatch returns `NOT_READY` before
+template lookup, compiler description, source persistence or compilation.
+
+`DefaultManagedCoverLetterTemplateProvider` returns exactly
+`managed-cover-letter-one-page-v1`. `render_cover_letter_latex()` is
+deterministic and Agent-free: it consumes only the Draft greeting, ordered
+paragraphs and closing, escapes each input character once, and emits each
+paragraph once under its stable ID marker. Template and rendered-source
+validation reject shell escape, arbitrary TeX file I/O, external programs,
+unallowlisted packages and unmanaged file dependencies. The sole managed
+package is TeX Live's `fontenc[T1]`, which keeps escaped ASCII glyphs
+recognizable in the PDF text projection. The actual UTF-8 bytes are stored at
+`state/preparation/cover-letter-latex-sources/<subject-key>/<sha>.tex`.
+
+Compilation calls the P2a7 `LatexCompilerPort.describe()/compile()` contract
+without reproducing process or sandbox logic. Compiler absence maps to
+`DEFERRED_COMPILER_UNAVAILABLE`; any compile error/timeout/invalid compiler
+output maps to `DEFERRED_COMPILATION_ERROR`; more than one parsed page maps
+to `DEFERRED_LAYOUT_OVERFLOW`. No branch edits the Draft or retries.
+
+Before PDF persistence, the service requires a valid signature, bounded
+actual bytes, at least one parsed page and an exact normalized visible-text
+projection of the Draft greeting, every paragraph in order, and closing.
+Missing, duplicated, placeholder or unknown visible content fails closed.
+The accepted one-page PDF is stored at
+`state/preparation/compiled-cover-letters/<subject-key>/<sha>.pdf`.
+
+`PreparedCoverLetterMaterial` records both artifact references/hashes and
+sizes, PDF page count and projection hash, template ID/version/hash,
+compiler engine/version/flags/policies, Plan/job/evidence/Draft/PASSED-QA
+lineage, `COVER_LETTER` role, publication policy/contract,
+`material_content_hash` and immutable `published_at`. Publication identity
+excludes time; lookup occurs before `compile()`, so a completed binding
+replays `UNCHANGED` with the original timestamp and no compiler or duplicate
+artifact. Repository reads re-hash and re-parse both managed artifacts and
+fail closed on conflicts, corruption, drift or cross-subject access.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -1247,14 +1360,13 @@ Contract invariants:
 - response indices are unique and must have been requested;
 - any invalid response rejects the entire batch.
 
-The only valid response pairs are:
-
-| `canonical_key` | `status` | Runtime effect |
-|---|---|---|
-| `email` | `mapped` | local resolver may fetch verified email |
-| `phone_number` | `mapped` | local resolver may fetch verified phone |
-| `work_authorization` | `needs_review` | human handoff; no value is fetched |
-| `unknown` | `unsupported` | leave unresolved |
+`MappingResponse.canonical_key` is the shared
+`CanonicalApplicationAnswerKey`, not a mapper-local Literal. Response status
+is derived from the V1 definition: ordinary facts and material semantics are
+`mapped`; legal/compensation/sensitive facts, voluntary-demographic fields
+and attestation/consent/signature are `needs_review`; `unknown` is
+`unsupported`. The legacy mapper output `phone_number` is normalized at the
+response boundary to canonical `phone`; it is never retained internally.
 
 The mapper has no CandidateVault, browser, filesystem, tool, state-mutation, permit, or submission capability. Provider choice is hidden behind the Protocol, so Jobops does not depend on a concrete model provider. `FakeSemanticMapper` makes results and failures controllable in tests.
 
@@ -1424,6 +1536,23 @@ These are sanitized fixture results, not live-site reliability claims.
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
 | Evidence-bound Cover Letter Draft | Implemented P2b2b | 21 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, restricted Agent context, unevidenced-claim rejection, JD-requirement-as-fact rejection, placeholder rejection (greeting/closing/paragraph), insufficient-evidence deferral, illegal-output deferral (four variants), Agent unavailability, replay, restart reads, conflicts and zero-FactQA/rendering/manifest/execution boundaries |
 | Evidence-bound Cover Letter Fact QA | Implemented P2b2c | 23 synthetic fake-QA-Agent cases for binding mismatch (plan/job/snapshot/draft, zero Agent calls), deterministic blocking (unknown evidence, unsupported claim, JD-requirement-as-fact — all zero Agent calls), Agent-blocked semantic exaggeration (responsibility-level, fabricated company connection), restricted Agent context, illegal Agent-finding references (three variants) and uncertain/untyped Agent output all deferring without persisting, draft non-mutation, replay, new-Result-on-version-change, restart reads, conflicts and zero-rendering/manifest/execution boundaries |
+| Cover Letter Document Publication | Implemented P2b2d | 31 synthetic/controlled cases for typed publication, deterministic exactly-once rendering, one-pass escaping, template/source capability rejection, blocked/missing/mismatched Fact QA with zero compiler calls, compiler absence/errors, one-page overflow, invalid PDFs, missing/duplicated/placeholder/unknown visible text, replay before compile, changed Draft/QA/template/compiler identities, restart hashes, artifact and record drift, subject isolation, zero-Agent/Manifest/Browser/ApplicationEngine boundaries, and optional real sandboxed-pdflatex text fidelity |
+| Plan Manifest Cover Letter Inclusion | Implemented P2b2e | 16 synthetic cases for ordered RESUME+COVER_LETTER assembly, field-for-field Resume preservation, publication/PDF provenance, prior-manifest lineage identity, replay and already-included idempotency, changed-cover-letter history, binding mismatch, missing/corrupt prior manifest, PDF hash/signature/size/page drift, repository conflict without overwrite, restart/current resolution, subject isolation, artifact immutability and zero generation/compilation/Gate/Browser/ATS/ApplicationEngine boundaries |
+| Unified Canonical Application Answer Taxonomy | Implemented P2b3a | 11 synthetic contract cases for complete typed metadata, contact/legal/demographic/attestation distinctions, phone and vault alias normalization, fail-safe UNKNOWN, sensitive mapper review status, typed ApplicationBundle answers, out-of-taxonomy rejection, explicit legacy conversion, stable serialization/hash, shared caller types and zero candidate/execution capability |
+| Application Answers Preparation | Implemented P2b3b | 21 synthetic Private Home cases for authoritative fact metadata/snapshot identity, alias normalization, unsupported UNKNOWN, strict value types, no high-stakes inference, demographic choice/decline policy, immutable attestation boundaries, skip versus human-required states, Plan restrictions, salary confirmation, expired/job-scoped exclusion, conflicts without safe-answer loss, no-trusted-fact and human deferrals, subject/binding failures, replay, changed-binding history, restart/current reads, corruption, isolation and zero FormIR/SemanticMapper/Browser/ATS/Gate/ApplicationEngine capability |
+| Single-job Automated Application Preparation | Implemented P2b4 | 20 synthetic application-layer cases for exact serial order and common inputs, CREATED/UNCHANGED continuation, Visual-QA pass skip and revision-final-lineage publication, Resume and Cover-Letter defer short-circuiting, preserved completed roles, blocking-answer attention, typed/exception failures without rollback, completed zero-call replay, changed upstream binding history, immutable restart reads, corruption and subject isolation, missing-output contract failure, dependency-source boundary, plus one real P2b3b public-call composition |
+| Current Human Attention Queue Read Model | Implemented P2b5 | 16 synthetic read-model cases covering typed deferred items, clean completed omission, per-blocking AnswerSet expansion with optional skips excluded, attestation/fact/choice/manual/operator mappings, failed and unknown reasons forced to operator, superseded-item disappearance, repository current ordering, stable item/snapshot hashes across restart/mtime/reversed listing, priority/audience/kind ordering, subject isolation, missing/mismatched AnswerSet fail-closure, and byte/mtime-proven zero-write dependency boundaries |
+| Selective Batch Application Preparation | Implemented P2b6 | 15 synthetic and real-composition cases covering P0-to-P3 subject Plan ordering, caller-order allowlists and de-duplication, positive execution bounds with attention skips excluded, one fixed attention snapshot, multi-item single-plan skip, subject/not-found isolation, strict maximum concurrency one, COMPLETED/UNCHANGED/deferred/failure aggregation, exception isolation, fatal queue/list reads, P2b4 replay, stable Plan listing and a real two-Plan P2b4 defer-then-continue path |
+| Preparation-to-Execution Material Contract Migration | Implemented P2c0 | 15 compatibility cases covering fixed v1 Resume-only and Resume+Cover Letter bytes/IDs/hashes, explicit unavailable-size projection, v1 restart reads without rewrite, v2 actual byte-size writes for both roles, byte-size identity/hash participation, invalid and missing-size fail-closure, v2 Resume preservation, typed v1-prior rejection, unchanged legacy MaterialBundle digest/text, typed managed Cover Letter PDF carriage through ApplicationBundle, strict reference validation and zero adapter/Engine selection behavior |
+| Plan-scoped Application Bundle Assembly | Implemented P2c1 | 20 synthetic cases covering execution-compatible bundle construction, exact canonical answers and managed material carriage, factory-bound prepared inputs, blocking and non-blocking unresolved handling, subject/job/Manifest/AnswerSet binding fail-closure, incomplete and v1 Manifest rejection, PDF absence/hash/size/signature/page-count/symlink/cross-subject failures, immutable replay and changed-AnswerSet history, restart and mtime-independent current reads, record corruption, factory drift rejection and zero Preparation/SemanticMapper/Browser/ATS/Gate/Engine imports |
+| Recoverable Application Bundle Envelope | Implemented P2c1b | 7 focused synthetic cases covering complete typed material/answer/profile/policy recovery, shared canonical hash equality, subject and AssemblyRecord hash fail-closure, immutable replay and conflict protection, persisted-payload corruption, restart recovery, historical `NOT_FOUND`, and zero Manifest/AnswerSet/factory/Gate/Browser/ATS/Engine dependency |
+| Canonical Resume / Cover Letter Upload Mapping | Implemented P2c2 | 9 focused synthetic cases covering legacy Resume upload, exact two-role selection and non-crossing, absent/required/optional Cover Letter behavior, hash/size/signature/symlink/containment fail-closure, typed Base validation failure, unknown/ambiguous controls, at-most-once shared fill, taxonomy classification and representative Greenhouse/Ashby inheritance; 167 affected execution/Workday compatibility tests pass with 14 environment skips, plus 2 sanitized Chromium adapter cases pass separately |
+| Plan-scoped Gate A and Non-submit Engine Integration | Implemented P2c3/P2c5a provenance extension | 9 focused synthetic cases covering authorized one-shot Review persistence with a typed consumed-Gate-A reference, human Gate A pre-Browser defer, exact recovered materials/answers and hard non-submit arguments, Browser defer without retry, runtime sensitive-input handoff, submission-evidence fail-closure, zero-call immutable replay that reuses the reference, managed-artifact drift plus restart reads, and Workday special-route Bundle carriage |
+| Plan-scoped Gate B Submission Authorization | Implemented P2c4 | 6 focused synthetic cases covering explicit-user authorization, default human defer, formally autonomous authorization, exact attestation/consent/signature handoff, validation/binding/submission-boundary blocking, immutable replay and changed authorization history with zero Browser/Engine/ATS/ledger dependency; 60 focused and Gate-B/review regressions pass |
+| Plan-scoped Submission Permit Contract Migration | Implemented P2c5a | 4 focused cases plus Foundation Permit and P2c3 regressions cover byte-compatible legacy bindings, exact plan/subject/authorization/execution/adapter/action scope validation, ledger-verifiable Gate A consumption references, non-secret signer metadata, subject-isolated opaque token recovery, token drift fail-closure, and zero submission-permit issuance or Browser/Engine/ATS/submit capability |
+| Plan-scoped Submission Permit Issuance | Implemented P2c5b | 4 focused cases cover exact AUTHORIZED issuance with token-only opaque storage, unauthorized/binding/Gate-A/submission-state fail-closure, validator rejection after every plan-scoped binding mutation, zero-issue unexpired replay, v1 expiry requiring reauthorization, issuer/store/record failure isolation, and zero Browser/Engine/ATS/submission-intent/submit capability; 26 focused P2c3–P2c5b and Foundation Permit regressions pass |
+| Authorized Submission Execution and Evidence | Implemented P2c6 | 5 focused cases cover one verified submit with intent and bounded evidence, expired/consumed/binding/token rejection before Browser, changed-Review and runtime-input defer before consumption, adapter-callback point-of-no-return consumption, successful zero-call replay, consumed-but-unverified uncertainty with no retry, and bearer-token exclusion; 100 focused and affected P2c3–P2c6, Foundation Permit, Engine, shared-adapter and Workday regressions pass with 47 environment skips |
+| Single-job Automated Application Execution | Implemented P2c7 | 5 focused cases cover exact P2c3→P2c4→P2c5b→P2c6 order with one shared explicit timestamp and maximum concurrency one, Gate A and explicit-user authorization deferrals with zero later calls, failure prefix preservation, immutable restart recovery, terminal uncertainty with no retry, and completed/uncertain zero-call replay |
 | Cover Letter Evidence Snapshot | Implemented P2b2a | 16 synthetic cases for exact source lineage, `COVER_LETTER`-only scope, evidence-ID disjointness from resume-tailoring evidence, stable replay/restart, binding failures, missing locator, empty evidence, changed Plan/Selection/Projection, contract-version identity, subject isolation, immutable conflicts and zero-JD/Agent/tailoring/execution boundaries |
 | Plan-scoped Material Manifest Assembly | Implemented P2b1 | 19 synthetic cases for typed assembly, exactly one RESUME entry, entry provenance binding, refusal to claim completeness or Gate A, no placeholder entries, plan and subject mismatch, unknown prepared material, PDF drift, removal and page-count drift, artifact immutability, no legacy-directory fallback, replay, changed material, deterministic current-manifest resolution, conflicts, restart reads, subject isolation and separation from the legacy manifest |
 | Prepared Resume Material Publication | Implemented P2a9 | 25 synthetic cases for the direct and revision publication paths, distinct provenance per path, unapproved visual QA, unsuccessful and exhausted revision runs, blocked fact QA, draft and compilation binding mismatch, PDF drift, removal and page-count drift, never copying or regenerating the artifact, subject isolation, replay, changed chains, current-material resolution by publication time rather than mtime, conflicts, restart reads and zero-compiler/renderer/Agent boundaries |

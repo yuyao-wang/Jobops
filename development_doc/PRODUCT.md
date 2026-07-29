@@ -62,8 +62,14 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
   - CandidateEvidence 和已审批 ResumeVersion。
   - P0/P1 定制材料，P2 复用材料，P3 暂缓。
   - Resume、Cover Letter、ATS custom-question answer proposals、事实验证、render/visual QA。
+  - plan-scoped execution bundle 在装配成功时保存可恢复、hash-verified
+    的 immutable envelope；历史 assembly 不自动 backfill。
   - 材料预览、修改、Gate A request 和 policy-required approval。
 - Application Execution
+  - plan-scoped P2c1 bundle 经正式 Gate A 后可进入一次 non-submit
+    Browser/Engine execution，并在 Review 或 typed runtime handoff 停止。
+  - Gate B 对持久化 Review 做离线、plan-scoped 授权判断；只有正式
+    autonomy policy 或同一 review 的显式用户授权可产生 authorization。
   - Greenhouse、Lever、Ashby、Jobvite、Workday 的 deterministic adapter path。
   - Generic Adapter only when local rules/cache plus the four-key provider-neutral SemanticMapper resolve every required control; otherwise handoff。
   - login/registration、Review、Gate B、handoff、resume 和 evidence。

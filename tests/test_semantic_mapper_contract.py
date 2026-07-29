@@ -107,7 +107,9 @@ def test_response_allows_only_policy_safe_key_status_pairs(
 ) -> None:
     response = MappingResponse.for_key(3, canonical_key)  # type: ignore[arg-type]
 
-    assert response.canonical_key == canonical_key
+    assert response.canonical_key == (
+        "phone" if canonical_key == "phone_number" else canonical_key
+    )
     assert response.status == status
 
 
@@ -115,7 +117,7 @@ def test_response_rejects_illegal_canonical_key() -> None:
     with pytest.raises(ValueError, match="outside the mapping taxonomy"):
         MappingResponse(  # type: ignore[arg-type]
             index=3,
-            canonical_key="salary",
+            canonical_key="not_a_canonical_key",
             status="mapped",
         )
 
@@ -189,7 +191,11 @@ def test_consumer_rejects_the_whole_batch_on_an_invalid_result() -> None:
     requests = (_request(index=1), _request(index=2))
     responses = (
         MappingResponse.for_key(1, "email"),
-        {"index": 2, "canonical_key": "salary", "status": "mapped"},
+        {
+            "index": 2,
+            "canonical_key": "not_a_canonical_key",
+            "status": "mapped",
+        },
     )
 
     with pytest.raises(TypeError, match="invalid response"):

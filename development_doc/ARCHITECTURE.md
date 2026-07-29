@@ -488,11 +488,15 @@ flowchart TB
     RP --> TD["TailoredResumeDraft"]
     P --> CL["Cover Letter"]
     P --> AN["Application Answers"]
+    AN --> AF["Authoritative CandidateVault fact projection"]
+    AF --> AS["Immutable PreparedApplicationAnswerSet"]
     P --> FQ["Fact QA"]
     P --> VQ["Visual QA"]
     P --> MA["Material Assembly"]
-    P --> HA["Future Human Attention Queue"]
+    P --> HA["Current Human Attention Queue"]
     HA --> DC["Defer current item and continue"]
+    HA --> SB["Selective Batch Preparation"]
+    SB --> P
     MA --> MM["Material Manifest + tier loading"]
     MM --> GA["Approval Gate A"]
 ```
@@ -769,6 +773,347 @@ or illegal Agent output defers for a human without persisting a result, so
 the draft is never touched and other jobs continue; `PASSED` implies only
 that the fact check passed, nothing about documents, the Manifest, or Gate
 A.
+
+P2b2d is the deterministic document boundary after that gate. It re-reads
+the current Plan, JobPosting, exact Draft and named Fact-QA Result and
+requires an intact `PASSED` lineage before rendering is reachable. The
+single `managed-cover-letter-one-page-v1` provider supplies a versioned,
+self-contained template; ordinary code inserts only the greeting, ordered
+paragraphs and closing, with one-pass LaTeX escaping and one stable
+paragraph-ID marker per paragraph. The generated UTF-8 source is stored and
+hashed in a subject-isolated Private Home directory, then handed to the
+existing `LatexCompilerPort`; P2b2d contains no subprocess, sandbox,
+timeout or environment implementation of its own.
+
+Compiler absence and compilation failure defer the current job. Successful
+bytes are still fail-closed: P2b2d requires a regular managed PDF with a
+valid signature and actual-byte hash, exactly one parsed page, and a
+normalized visible-text projection exactly equal to the Draft's
+greeting/paragraphs/closing with no placeholder or unknown visible content.
+Only then is an immutable `PreparedCoverLetterMaterial` saved. Its
+pre-compile identity binds Plan, Draft, Fact QA, template, source,
+compiler/policies and publication contract but not time, so a completed
+replay returns `UNCHANGED` without calling `compile()` and keeps the first
+`published_at`. The new material is deliberately not included in
+`PlanMaterialManifest`; P2b2e owns that later boundary.
+
+P2b2e owns that inclusion boundary without reopening either publication
+pipeline. It reads the explicitly named prior `PlanMaterialManifest` and
+`PreparedCoverLetterMaterial`, validates both against the current Plan, and
+re-verifies the cover-letter PDF's managed subject location, signature,
+actual-byte hash, size and page count. It preserves the prior RESUME entry
+field-for-field and creates a new immutable manifest with exactly the ordered
+roles `RESUME, COVER_LETTER`; no PDF is copied or modified.
+
+The expanded manifest identity binds the prior manifest ID/content hash, the
+preserved Resume entry hash, prepared cover-letter material ID/content hash,
+cover-letter PDF hash, ordered entry hashes, assembly state and contract.
+Those lineage fields are serialized only for the two-entry state, so existing
+Resume-only IDs, canonical hashes and serialized content remain unchanged.
+Replay returns `UNCHANGED` and preserves `assembled_at`; selecting a different
+published cover letter against an explicit prior manifest creates another
+history version. This state still reports the full application material set
+as incomplete because Application Answers and Gate A remain outside P2b2e.
+
+P2c0 establishes the versioned material handoff required before application
+bundle assembly. Persisted `plan-material-manifest-v1` records remain
+byte-for-byte readable with their original manifest ID, content hash and
+entry IDs. Their typed entries explicitly report unavailable artifact size;
+the reader never derives, injects or writes that value back.
+
+All new P2b1/P2b2e writes use `plan-material-manifest-v2`. Every PDF entry
+stores a positive `artifact_byte_size` obtained from the actual managed
+bytes, and the value participates in entry identity, manifest identity,
+canonical serialization and repository validation. P2b2e preserves a v2
+Resume entry field-for-field, but returns typed `NOT_READY` for an explicitly
+selected v1 prior manifest; a future caller must request a new v2 Resume
+assembly rather than mutate history.
+
+Execution's existing `MaterialBundle` now has one optional immutable
+`ManagedArtifactReference` for a subject-isolated Cover Letter PDF
+(reference, SHA-256, byte size and `application/pdf`). The legacy Cover
+Letter text remains a distinct unchanged field. When the PDF reference is
+`None`, construction and material digest behavior are unchanged. P2c0 does
+not extract text, generate files, choose between the two forms, or alter any
+adapter, Engine, Gate, review or submit path.
+
+P2c1 is the plan-scoped Preparation-to-Execution handoff. It reads only the
+explicit ApplicationPlan, current-bound JobPosting, v2 PlanMaterialManifest
+and PreparedApplicationAnswerSet named by the command. Both required managed
+PDFs are re-read and checked for subject containment, non-symlink status,
+actual-byte SHA-256 and size, PDF signature and parsed page count. The
+manifest must contain exactly the ordered roles `RESUME, COVER_LETTER`; no
+legacy manifest, job directory or fallback material is consulted.
+
+Blocking AnswerSet unresolved items return typed `NOT_READY`; non-blocking
+safe skips remain outside the execution answers and do not prevent assembly.
+Prepared values stay in `CanonicalApplicationAnswers`. An injected
+composition-root `ApplicationBundleFactory` supplies the existing execution
+profile and legacy policy without making P2c1 translate the new priority
+contract. P2c1 verifies that the returned existing `ApplicationBundle`
+preserves the exact prepared materials, answers and JobPosting identity.
+
+The immutable `ApplicationBundleAssemblyRecord` binds Plan/job, Manifest,
+ordered Resume and Cover Letter entries, both prepared-material lineages,
+AnswerSet, taxonomy, ApplicationBundle contract and the canonical bundle
+hash. Time is excluded from identity; replay returns `UNCHANGED` with the
+original `assembled_at`, while deterministic current lookup uses domain time
+and record ID rather than mtime. Assembly is only an execution input handoff:
+it calls no SemanticMapper, Browser, ATS adapter, Gate or Application Engine
+and grants no approval or submit authority.
+
+P2c1b persists the exact successful P2c1 result as a subject-isolated
+`RecoverableApplicationBundleEnvelope`. Its versioned payload round-trips the
+existing `ApplicationBundle`, including both managed material references,
+legacy Cover Letter text, canonical answers, execution profile and
+`PolicyDecision`. The envelope binds the AssemblyRecord ID/content hash,
+bundle contract and canonical bundle hash; read recomputes every envelope and
+bundle hash before returning a typed bundle. It neither re-reads Manifest,
+AnswerSet or CandidateVault nor invokes the bundle factory. Existing P2c1
+records without an envelope return typed `NOT_FOUND` and are never backfilled.
+
+P2c2 adds one deterministic document-upload boundary shared by every
+`BaseATSAdapter`. `FormIR` file controls keep using the P2b3a taxonomy:
+`RESUME` selects only the bundle Resume PDF and `COVER_LETTER_FILE` selects
+only the optional managed Cover Letter PDF. `COVER_LETTER` remains the
+legacy textarea/text contract. Optional file controls are now included in
+inspection; an unlabeled or unrelated file control stays `UNKNOWN` rather
+than being guessed as Resume.
+
+`plan_application_document_uploads()` creates an at-most-once typed plan
+before any file input is changed. It rejects duplicate required controls for
+one role, required missing material and required unknown controls; optional
+missing Cover Letter and optional unknown controls are stable skips. Every
+selected PDF is re-read below subject-isolated Private Home and checked for a
+non-symlink managed path, actual SHA-256, byte size and PDF signature. Resume
+and Cover Letter references must carry the same subject storage key.
+
+`BaseATSAdapter.fill()` uses that plan only when the new MaterialBundle
+context is present. A planning failure becomes a typed fill result and a
+validation error, so no planned file is uploaded after ambiguity or integrity
+failure. When no MaterialBundle is supplied, the legacy Resume-only
+`resume_path` path is unchanged. P2c2 does not alter Workday's separate flow,
+invoke SemanticMapper, start Browser Broker, or grant Gate/review/submit
+authority.
+
+P2c3 is the only plan-scoped entry from a recoverable P2c1 bundle into the
+existing Application Engine. It reads the ApplicationPlan, JobPosting,
+AssemblyRecord and P2c1b envelope, then verifies their subject, Plan, job
+revision, taxonomy, bundle hash and managed material bindings without
+re-reading Manifest, AnswerSet or CandidateVault. Gate A continues to use the
+existing `PolicyDecision.gate_a_actor` and explicit `approve_gate_a` contract.
+A missing required human approval returns before Browser Broker or Engine.
+
+After Gate A authorization, an injected Browser lease provider supplies one
+existing broker lease and page. P2c3 calls `JobApplicationEngine.execute()`
+exactly once with the recovered bundle, `request_submit=False`, an empty
+approved-review hash, the external lease and Private Home. AdapterRunRequest
+now carries the same MaterialBundle and Private Home through the shared,
+Workday and Generic routes; legacy Resume/Cover Letter arguments are derived
+from that bundle when present. No route gains submit authority.
+
+The immutable `NonSubmitApplicationExecutionRecord` binds the AssemblyRecord,
+Plan/job revision, canonical bundle hash, formal Gate A binding, Browser,
+Engine and adapter contract metadata, and the non-submit policy. It stores
+only the routed adapter and bounded fill/validation/review outcome references,
+runtime unresolved controls and `submission_attempted=False`. Review is
+`CREATED`; confirmed runtime user input becomes a typed defer record. Missing
+Browser capacity defers without retry. Any submit phase/status or submission
+evidence fails closed and is never persisted as successful execution.
+Matching completed identity replays `UNCHANGED` before Browser or Engine.
+
+P2c4 is an offline Gate B decision boundary over one persisted P2c3 Review.
+It reads only the subject-owned ApplicationPlan, immutable non-submit
+execution record and matching P2c1b envelope. The review fingerprint is the
+recorded checkpoint; P2c3's outcome-reference hash is the bounded
+fill/validation summary. Review-ready state, zero runtime unresolved controls
+and the upstream `submission_attempted=False` contract are required.
+
+Authorization semantics are not redefined. A recovered `PolicyDecision` with
+`gate_b_actor=CODEX` and `submit_authority=CODEX_WITH_PERMIT` may produce
+`AUTHORIZED/AUTOMATIC`. HUMAN policy defaults to
+`USER_AUTHORIZATION_REQUIRED`; a typed explicit authorization must bind the
+same subject, Plan, execution record, review fingerprint and single-review
+submission scope before it produces `AUTHORIZED/EXPLICIT_USER`. Policy
+blockers, validation/material failures, invalid review state, binding drift or
+any submit status/phase are blocked.
+
+The immutable `SubmissionAuthorizationDecision` binds Plan/job, execution
+record ID/content hash, AssemblyRecord, canonical bundle hash, review digest,
+fill/validation outcome hash, the existing Gate B policy projection, optional
+explicit authorization ID/hash, scope and contract. Time is excluded from
+identity. Exact replay is `UNCHANGED`; changed review, policy or user
+authorization creates history. P2c4 issues no permit, creates no submission
+intent, opens no Browser and calls no Engine or adapter. `AUTHORIZED` is only
+an input for a later P2c5 attempt, never submission evidence.
+
+P2c5a/P2c5b extend the existing Foundation Permit boundary without changing
+legacy `PermitBindings` or `ApplicationBundle.permit_bindings()`. P2c3 v2
+records retain a ledger-verifiable Gate A consumption reference. P2c5b joins
+that reference with one `AUTHORIZED` Decision, the exact execution record and
+recovered Bundle to build `PlanScopedSubmissionPermitBindings`, then uses the
+existing HMAC signer to issue a Gate B token for `SUBMIT_APPLICATION`.
+
+The v1 submission-permit policy fixes a 300-second TTL and requires a new
+authorization after expiry. Bearer bytes go directly to the existing
+credential-backed, subject-isolated `OpaquePermitTokenStore`; the immutable
+`SubmissionPermitRecord` stores only the token reference/hash, JTI, signer
+metadata, scoped bindings and issuance/expiry timestamps. An unexpired exact
+replay verifies and returns the existing record without another signature or
+token write. P2c5b opens no Browser, calls no Engine or ATS, creates no
+submission intent and does not consume the permit.
+
+P2c6 is the only plan-scoped bridge from that opaque permit to the existing
+submit-capable Engine. It validates the PermitRecord, P2c4 Decision, P2c3
+execution and P2c1b envelope before loading token bytes, and returns any
+expired, consumed, drifted or corrupted permit before Browser or Engine. An
+immutable successful or uncertain execution record is checked even earlier,
+so replay never reloads the token or reacquires Browser.
+
+The Engine accepts the externally signed `PlanScopedSubmissionPermitBindings`
+without issuing replacement Gate A/Gate B permits. It replays the normal
+route/inspect/map/fill/validate/Review path and compares the resulting Review
+and adapter with the permit. The existing adapter Gate B callback remains the
+point of no return: it rechecks leases, consumes the permit in EventLedger,
+creates the existing submission intent, marks it SUBMITTING, and only then
+allows one submit click. Existing verification marks the intent VERIFIED only
+with eligible evidence; every consumed-but-unverified result is persisted as
+`SUBMISSION_UNCERTAIN` and cannot be retried automatically. P2c6 stores only a
+typed consumption reference, intent ID and hashed/bounded evidence summary,
+never bearer bytes or browser content.
+
+P2c7 adds the single-Plan public orchestration boundary above P2c3–P2c6.
+Given one existing `ApplicationBundleAssemblyRecord`, it invokes only the four
+public stage callables in the fixed order non-submit execution, Gate B
+authorization, submission-permit issuance and authorized submission. Every
+stage receives the same subject and explicit timezone-aware timestamp.
+`CREATED` and a compatible `UNCHANGED` record continue; a typed defer,
+Gate-B block, failure or exception stops the ordered prefix without rollback
+or retry. `SUBMISSION_UNCERTAIN` remains a terminal no-retry outcome.
+
+The immutable `ApplicationExecutionRun` binds the AssemblyRecord, Gate A
+input, optional review-scoped explicit authorization, current P2c3–P2c6
+contract/policy metadata and ordered stage hashes. Completed and uncertain
+bindings replay before every public stage call, so neither Browser nor submit
+can be reached again. The orchestrator does not recover the Bundle, interpret
+evidence, access permit/token infrastructure, acquire Browser, call Engine or
+create a second submission state machine. Batch execution, scheduling and
+human-resolution flows remain outside P2c7.
+
+P2b3a establishes the field-language boundary required before Application
+Answers can be prepared. `CanonicalApplicationAnswerKey` and its immutable V1
+registry are the only canonical definitions used by protocol `FormIR`,
+`SemanticMapper` responses and `ApplicationBundle.answers`. Each definition
+records value type, sensitivity, automation category, aliases and taxonomy
+version; canonical serialization and the taxonomy hash are deterministic.
+The registry contains no candidate values and makes no answer decision.
+
+Legacy names are admitted only by explicit boundary normalization:
+`phone_number` becomes `phone`, verified-vault compatibility names map to
+their existing canonical meanings, and legacy `custom:*` fields become
+`UNKNOWN`. Internally, aliases and free-form custom keys are not valid
+canonical keys. `UNKNOWN` remains unresolved/unsupported, while legal,
+compensation, voluntary-demographic and attestation categories retain review
+semantics. P2b3a does not read CandidateVault, prepare an answer, change the
+mapper's value-free request, or alter fill/review/submit authority.
+
+P2b3b consumes that shared field language without opening an execution
+surface. `PrivateHomeApplicationFactProvider` reads only CandidateVault
+application-answer records that explicitly carry stable fact/source IDs,
+verified or user-confirmed classification, sensitivity, scope and timestamps.
+It canonicalizes legacy aliases through P2b3a and produces a deterministic,
+subject-bound `ApplicationFactSnapshot`; loose legacy answers, normalized
+profile data, CandidateSummary, job requirements and generated materials are
+not authoritative inputs.
+
+The versioned `ApplicationAnswerPolicy` separates trusted prepared values,
+policy-only demographic `DECLINE_TO_ANSWER` defaults, safe-skip defaults and
+human-required attestation or choice. Type checking comes from the P2b3a
+definition. Attestation, consent and signature never become prepared answers,
+and an unknown or missing fact is never inferred. Plan instructions may
+further prohibit use but cannot relax those boundaries.
+
+`PreparedApplicationAnswerSet` binds Plan/job, fact snapshot, taxonomy,
+policy, ordered answer hashes and ordered unresolved hashes. It is immutable
+and subject-isolated under Private Home. Time is excluded from identity, so
+replay is `UNCHANGED` and preserves `prepared_at`; changed facts, Plan or
+policy create history instead of overwrite. P2b3b does not inspect FormIR,
+call SemanticMapper, fill an ATS, obtain an attestation, or authorize Gate A.
+
+P2b4 is the single-job application-layer composition boundary over those
+completed public Slices. A versioned `ApplicationPreparationRecipe` supplies
+the exact ordered public callables, each Slice's contract/policy/configuration
+metadata, a composition-root `input_binding_hash`, and the V1 formal
+required-material policy. The input binding is explicit because completed
+zero-call replay and detection of changed upstream bindings cannot both be
+derived by reopening Slice repositories. V1 formally requires both Resume and
+Cover Letter; the orchestrator never guesses from priority or job text.
+
+`run_application_preparation()` validates the existing Plan once, then passes
+the same subject, Plan ID and timezone-aware `now` through a strictly serial
+stage request. Each injected adapter invokes one existing public Slice and
+returns only its typed public status, stable result/hash and downstream output
+references. `CREATED` and `UNCHANGED` both continue. Any deferred/not-ready
+status or typed failure records the stage and reason, persists the immutable
+partial lineage and stops this job without retry or rollback.
+
+Visual QA is the only branch: `PASSED` records Layout Revision as skipped;
+`REVISION_REQUIRED` invokes P2a8b and replaces the current LaTeX,
+Compilation and VisualQA references with its formal final passing lineage.
+Resume publication therefore cannot fall back to the initial failing layout.
+Cover Letter deferral preserves the already published Resume and Resume-only
+manifest. Blocking unresolved application answers still complete preparation
+while setting `human_attention_required`.
+
+`ApplicationPreparationRun` binds Plan/job, recipe metadata, required-material
+policy, ordered stage hashes, final Manifest/AnswerSet IDs and outcome. Time is
+excluded from identity but retained as immutable `started_at/completed_at`.
+A completed Run with the same preparation binding returns `UNCHANGED` before
+any Slice call. Changed composition-root input or Slice metadata creates a new
+Run and lets each Slice's own idempotency decide which records are reused.
+The Run contains no Gate A, ATS, attestation, approval or submission claim.
+
+P2b5 adds the read-only current Human Attention Queue over those immutable
+results; it does not add a queue store. The Run repository exposes a typed
+subject list ordered by Plan ID, domain `completed_at` and Run ID, while
+`find_current_for_plan()` remains the authoritative selector for each Plan.
+The read model therefore ignores file mtime, directory iteration order and
+superseded Run history.
+
+A current `DEFERRED` Run yields one item through an exact
+stage/public-status mapping. A current `FAILED` Run is always an
+operator-facing system item. A completed Run is absent when no attention is
+required; otherwise P2b5 reads the exact final AnswerSet and expands only its
+blocking unresolved items. Attestation, missing fact and user choice remain
+distinct user kinds. Non-blocking optional skips are excluded, and unknown
+typed defer reasons fail safe to an operator item instead of disappearing.
+
+Every item binds Plan, current Run/binding, source stage and record, exact
+upstream reason, optional AnswerSet ID/hash and canonical key, plus the
+mapping/queue contract versions. Source event time is retained for ordering
+but no evaluated `now` enters item identity. Queue ordering is priority,
+audience, attention kind, source event time, Plan ID and item ID. Re-reading
+the same upstream state produces identical item and snapshot hashes; a newer
+clean Run makes old items disappear without modifying history. P2b5 performs
+no acknowledgement, resolution, user-data write or preparation retry.
+
+P2b6 adds a bounded, non-persistent batch entry over P2b5 and P2b4. It reads
+exactly one Human Attention Queue snapshot, selects only existing
+subject-owned Plans, skips every Plan present in that snapshot, and invokes
+the public single-job orchestrator at most once for each remaining Plan.
+Explicit allowlists retain caller order after de-duplication; otherwise the
+ApplicationPlan repository supplies P0-to-P3 domain ordering. A positive
+`max_plans` bounds actual P2b4 calls, while attention skips and not-found IDs
+remain typed results without consuming an execution slot.
+
+Calls use one ordinary serial loop and forward the identical subject and
+timezone-aware `now`. A deferred, failed or exception-producing Plan is
+recorded locally and the next Plan still runs; no retry, rollback, queue
+refresh, batch record or checkpoint is created. Batch replay safety comes only
+from the current-attention projection and P2b4's immutable idempotency. The
+summary distinguishes `NOOP`, fully successful completion, partial failure
+and fatal selection/read failure, and carries no Gate, ATS or submission
+claim.
 
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 

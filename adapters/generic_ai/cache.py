@@ -12,6 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from core.application_answer_taxonomy import (
+    CanonicalApplicationAnswerKey,
+    normalize_canonical_application_answer_key,
+)
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_SELECTOR_RE = re.compile(
@@ -43,9 +47,20 @@ def _safe_action(action: "RecipeAction") -> "RecipeAction | None":
 @dataclass(frozen=True)
 class RecipeAction:
     control_signature: str
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     selector: str
     operation: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_key",
+            normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+                allow_custom_unknown=True,
+            ),
+        )
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
+from core.application_answer_taxonomy import (
+    CanonicalApplicationAnswerKey,
+    normalize_canonical_application_answer_key,
+)
 
 _SPACE_RE = re.compile(r"\s+")
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
@@ -131,7 +135,7 @@ _PROFILE_PATHS: dict[str, tuple[str, ...]] = {
 
 
 def resolve_confirmed_value(
-    canonical_key: str,
+    canonical_key: CanonicalApplicationAnswerKey | str,
     label: str,
     *,
     profile: Mapping[str, Any],
@@ -146,9 +150,14 @@ def resolve_confirmed_value(
     separate opt-in resolver and must never happen in the normal adapter path.
     """
 
-    if canonical_key == "cover_letter":
+    key = normalize_canonical_application_answer_key(
+        canonical_key,
+        allow_legacy_alias=True,
+        allow_custom_unknown=True,
+    )
+    if key is CanonicalApplicationAnswerKey.COVER_LETTER:
         return cover_letter or nested_value(profile, "cover_letter")
-    if canonical_key == "full_name":
+    if key is CanonicalApplicationAnswerKey.FULL_NAME:
         explicit = nested_value(profile, "personal.full_name", "full_name")
         if explicit:
             return explicit
@@ -158,12 +167,12 @@ def resolve_confirmed_value(
         ]
         full_name = " ".join(str(part).strip() for part in parts if part)
         return full_name or None
-    if canonical_key in _PROFILE_PATHS:
-        value = nested_value(profile, *_PROFILE_PATHS[canonical_key])
+    if key.value in _PROFILE_PATHS:
+        value = nested_value(profile, *_PROFILE_PATHS[key.value])
         if value is not None:
             return value
 
-    candidates = (canonical_key, label, normalize_text(label))
+    candidates = (key.value, label, normalize_text(label))
     normalized_answers = {normalize_text(key): value for key, value in answers.items()}
     for candidate in candidates:
         if candidate in answers and answers[candidate] not in (None, ""):
@@ -174,7 +183,9 @@ def resolve_confirmed_value(
     return None
 
 
-def canonical_key_for(label: str, name: str = "", input_type: str = "") -> str:
+def _legacy_canonical_key_for(
+    label: str, name: str = "", input_type: str = ""
+) -> str:
     """Map common ATS field semantics to a local canonical key."""
 
     text = normalize_text(" ".join((label, name)))
@@ -224,9 +235,13 @@ def canonical_key_for(label: str, name: str = "", input_type: str = "") -> str:
         if "disability" in text:
             return "disability_status"
         return f"custom:{normalize_text(label or name) or 'unnamed'}"
-    if input_type == "file" or "resume" in text or "cv" == text:
+    if input_type == "file":
         if "cover" in text:
             return "cover_letter_file"
+        if "resume" in text or text in {"cv", "curriculum vitae"}:
+            return "resume"
+        return f"custom:{normalize_text(label or name) or 'unnamed-file'}"
+    if "resume" in text or text in {"cv", "curriculum vitae"}:
         return "resume"
     if "preferred name" in text or "preferred first name" in text:
         return "preferred_name"
@@ -265,12 +280,35 @@ def canonical_key_for(label: str, name: str = "", input_type: str = "") -> str:
     return f"custom:{normalize_text(label or name) or 'unnamed'}"
 
 
+def canonical_key_for(
+    label: str, name: str = "", input_type: str = ""
+) -> CanonicalApplicationAnswerKey:
+    """Classify through the legacy rules, then enter the shared taxonomy."""
+
+    return normalize_canonical_application_answer_key(
+        _legacy_canonical_key_for(label, name, input_type),
+        allow_legacy_alias=True,
+        allow_custom_unknown=True,
+    )
+
+
 @dataclass(frozen=True)
 class FieldSpec:
-    canonical_key: str
+    canonical_key: CanonicalApplicationAnswerKey
     selectors: tuple[str, ...]
     kind: str = "text"
     label: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "canonical_key",
+            normalize_canonical_application_answer_key(
+                self.canonical_key,
+                allow_legacy_alias=True,
+                allow_custom_unknown=True,
+            ),
+        )
 
 
 async def first_locator(page: Any, selectors: Sequence[str]) -> tuple[Any | None, str | None]:
