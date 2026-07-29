@@ -230,7 +230,7 @@ verifier.py       exact read-back and strict confirmation detection
 cache.py          selectors and canonical keys only; never candidate values
 ```
 
-Known fields and cached recipes use zero model calls. `--semantic-mapper` may make one compact classification request only through a tool-free OpenAI Responses API backend. Codex CLI and Claude CLI are rejected for browser-derived labels before Playwright starts; without a safe backend, an unknown required field becomes a user handoff. A model response cannot create facts, map sensitive fields for automatic use, or bypass exact option/read-back checks. API keys are accepted only by environment-variable name or `${ENV_NAME}` reference, never as profile literals.
+Known fields and cached recipes use zero model calls. `--semantic-mapper` may make one compact classification request only, through a structured-output API backend or through Claude Code/Codex CLI guided by a defined system prompt; without a configured backend, an unknown required field becomes a user handoff. A model response cannot create facts, map sensitive fields for automatic use, or bypass exact option/read-back checks. API keys are accepted only by environment-variable name or `${ENV_NAME}` reference, never as profile literals.
 
 ## Private Home
 

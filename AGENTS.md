@@ -45,7 +45,7 @@ Any bespoke or targeted plan—legacy High/Medium—must load a valid `documents
 - `workers/node/`: versioned JSON-lines coexistence bridge; no payload in argv.
 - `.agents/skills/`: auto-discovered, repository-scoped Codex workflows; no candidate data.
 
-The normal supported-ATS path must make zero model calls. A generic semantic request may contain compact control structure only, is limited to one call per run, and must use a tool-free backend approved for untrusted browser input; agentic Codex/Claude CLIs fail closed. Values are injected and verified locally.
+The normal supported-ATS path must make zero model calls. A generic semantic request may contain compact control structure only, is limited to one call per run, and must use a backend bound to a defined system prompt — a structured-output API, or Claude Code/Codex CLI. Values are injected and verified locally.
 
 ## Outcomes and permits
 
