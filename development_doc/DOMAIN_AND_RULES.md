@@ -195,6 +195,72 @@ version without rewriting its content or historical decisions.
 - P2a4b does not judge JD alignment, ingest additional CandidateVault evidence,
   tailor content, run Fact/Visual QA or authorize preparation execution.
 
+### Evidence-bound resume tailoring
+
+- P2a4c rewrites resume content only inside the bound
+  `CandidateEvidenceSnapshot`. CandidateSummary, selection-safe summaries and
+  ordinary profile fields are never tailoring facts.
+- The Resume Tailoring Agent policy is static and versioned:
+  `Action Verb + Details + Outcome = Skill Statement`, weak verbs banned, JD
+  verbs reusable only with evidence support, no new numbers, skills,
+  experience, titles, degrees, duties or outcomes without evidence.
+- Instruction priority is fixed: facts and the fabrication ban > the current
+  Plan's user preparation instructions > JD alignment > default style. User
+  instructions are passed verbatim and never edit the global policy.
+- The Agent may rewrite, condense, reorder or omit bullets and reorder
+  sections; it must not change identity facts (names, companies, titles,
+  degrees, dates) or return free text instead of the typed result.
+- Every source block must be accounted for exactly once with change type
+  `UNCHANGED | REWRITTEN | REORDERED | OMITTED`. Rewritten bullets carry at
+  least one valid evidence ID, their source reference and a verbatim JD
+  alignment reference.
+- Deterministic validation rejects unknown evidence, sections or blocks,
+  unevidenced numbers or proper-noun facts, JD verbs without cited evidence,
+  weak leading verbs and omission of source text quoted in user instructions.
+  Violations defer the item as `DEFERRED_NEEDS_HUMAN` without auto-retry.
+- Draft identity binds all upstream immutable identities plus
+  Agent/prompt/model/policy/contract versions, never time. A completed
+  binding replays `UNCHANGED` with zero Agent calls.
+- A `TailoredResumeDraft` is an unreviewed AI rewrite. It authorizes no final
+  rendering, Fact QA, Visual QA, human approval or execution.
+
+### Resume fact QA
+
+- P2a5 is an independent gate. Passing the P2a4c validator is never evidence
+  that a draft is factually sound; P2a5 re-derives every checkable fact and
+  shares no validator with the tailoring Slice.
+- Any subject, plan, job revision, artifact, projection, evidence or content
+  hash mismatch returns `BLOCKED_BINDING_MISMATCH` with zero Agent calls and
+  no persisted result.
+- Deterministic checks run first: reference existence, `RESUME_TAILORING`
+  scope, source coverage and duplication, verbatim `UNCHANGED`/`REORDERED`
+  text, at least one usable evidence reference per rewritten bullet, and
+  every number, date, company, title, degree and tool name present in cited
+  evidence. A blocking deterministic finding blocks without a model call.
+- A JD alignment reference absent from the bound job description is
+  `ADVISORY`: it is a provenance defect, not a false candidate claim, so it
+  is recorded without blocking.
+- The bounded QA Agent is called at most once, only for genuinely semantic
+  questions, and receives only rewritten bullets and tailoring-scoped
+  evidence — never the JD, projection, CandidateSummary or profile fields.
+- The Agent may judge only evidence support: unsupported action verbs,
+  overstated ownership, overstated maturity, unsupported impact, unsupported
+  causality and out-of-scope claims. Participation written as leadership, a
+  prototype written as production deployment, tool use written as business
+  impact, and asserted causality the evidence does not state are all
+  unsupported.
+- The Agent returns findings and a verdict only. It cannot modify the draft,
+  propose replacement bullets or call tools. Ordinary code revalidates every
+  finding's bullet and evidence references.
+- Verdicts are `PASSED`, `BLOCKED` or `DEFERRED`. Unknown references, illegal
+  or contradictory output and an uncertain verdict defer the item for a human
+  without auto-retry and without blocking other jobs.
+- QA identity binds the draft ID and hash, projection, evidence snapshot and
+  QA/Agent/prompt/model/policy versions, never time. A completed binding
+  replays as `UNCHANGED` with zero Agent calls whatever its verdict.
+- `PASSED` covers facts only. It is not layout or visual approval, material
+  approval, or authority to render or submit anything.
+
 ### `MaterialPackage`
 
 ```text

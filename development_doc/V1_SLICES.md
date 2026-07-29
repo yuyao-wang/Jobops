@@ -79,6 +79,10 @@ P2a3 Automatic Base Resume Selection                   [完成]
 P2a4a Hash-bound Source Resume Projection              [完成]
   ↓
 P2a4b Subject-specific CandidateEvidence Snapshot      [完成]
+  ↓
+P2a4c Evidence-bound Resume Tailoring Draft            [完成]
+  ↓
+P2a5 Evidence-bound Resume Fact QA                     [完成]
 
 C3
   ↓
@@ -668,6 +672,95 @@ the latest complete immutable Projection for the selected artifact by domain
 timestamp with stable ID tie-break. Any corrupt record fails the complete
 read. P2a4b reads no CandidateSummary, CandidateVault profile, JD or legacy
 profile and performs no Agent/model, tailoring, QA, rendering or execution.
+
+## P2a4c — Evidence-bound Resume Tailoring Draft `[完成]`
+
+```text
+ApplicationPlan + SelectionDecision + JobPosting
++ SourceResumeProjection + CandidateEvidenceSnapshot
+→ ResumeTailoringAgentPort (at most once per new binding)
+→ deterministic validation
+→ TailoredResumeDraft
+```
+
+`tailor_resume(TailorResumeCommand, ...)` validates the complete
+Plan/Job/Selection/Candidate/Projection/EvidenceSnapshot binding and fails
+closed on any subject, job revision, artifact hash or association mismatch
+before the Agent is reached. The Agent receives only the trusted typed JD,
+the SourceResumeProjection, `RESUME_TAILORING`-scoped evidence from the bound
+snapshot, the Plan's verbatim user preparation instructions and the static
+versioned Agent policy. The policy fixes
+`Action Verb + Details + Outcome = Skill Statement`, bans weak verbs and
+fabrication, and fixes instruction priority as facts > user instructions >
+JD alignment > default style. User instructions never modify the policy.
+
+The Agent must return a typed structured result covering every source block
+exactly once with change type `UNCHANGED | REWRITTEN | REORDERED | OMITTED`.
+Deterministic validation verifies: evidence IDs exist in the bound snapshot
+with a permitted scope; source section/block/bullet references exist and
+match; JD alignment references are verbatim substrings of the JD; new
+numbers and proper-noun tokens in rewritten bullets appear in cited
+evidence; JD leading verbs are used only with evidence support; weak leading
+verbs are rejected; source text quoted in user instructions cannot be
+`OMITTED`. `UNCHANGED`/`REORDERED` bullets must equal the source text.
+
+The Agent reporting insufficient evidence returns
+`DEFERRED_INSUFFICIENT_EVIDENCE`; any illegal, unknown-reference or
+unverifiable output returns `DEFERRED_NEEDS_HUMAN` without auto-retry.
+Both defer only the current job and create no draft.
+
+Draft identity binds Plan, Selection, Job revision/content hash, artifact,
+Projection, EvidenceSnapshot hash, user instruction hash and
+Agent/prompt/model/policy/contract versions; time is excluded. A completed
+binding replays as `UNCHANGED` with zero Agent calls; changed inputs create
+a distinct immutable draft without overwriting history. The Slice performs
+no final rendering, Fact QA, Visual QA, cover letter, application answers,
+Human Attention Queue, batch, browser or ATS work.
+
+## P2a5 — Evidence-bound Resume Fact QA `[完成]`
+
+```text
+TailoredResumeDraft + CandidateEvidenceSnapshot + SourceResumeProjection
+→ deterministic checks
+→ bounded ResumeFactQAAgentPort (only when semantic judgment is needed)
+→ ResumeFactQAResult
+```
+
+`run_resume_fact_qa(RunResumeFactQACommand, ...)` is an independent fact gate.
+It never treats a draft as trustworthy because P2a4c accepted it: every
+checkable fact is re-derived here, and the module deliberately shares no
+validator with the tailoring Slice. A subject, plan, job revision, artifact,
+projection, evidence or content-hash mismatch returns
+`BLOCKED_BINDING_MISMATCH` with zero Agent calls and zero writes.
+
+Deterministic checks run first and cover reference existence, evidence scope,
+source coverage and duplication, verbatim `UNCHANGED`/`REORDERED` text, at
+least one usable evidence reference per rewritten bullet, and every number,
+date, company, title, degree and tool name appearing in cited evidence. Any
+blocking deterministic finding returns `BLOCKED_UNSUPPORTED_CLAIM` without
+calling the Agent. A JD alignment reference missing from the bound job
+description is recorded as an `ADVISORY` finding: it is a provenance defect,
+not a false claim about the candidate, so it does not block.
+
+Only when the deterministic pass is clean and rewritten bullets exist is the
+bounded Agent called, at most once. It receives only the rewritten bullets
+and the tailoring-scoped evidence — no JD, no projection, no profile — and
+may judge only evidence support: unsupported action verbs, overstated
+ownership, overstated maturity, unsupported impact, unsupported causality
+and out-of-scope claims. It returns findings and a verdict; it cannot edit
+the draft, propose replacement text or call tools. Ordinary code revalidates
+that every Agent finding references a reviewed bullet and in-scope evidence.
+
+Verdicts are `PASSED`, `BLOCKED` or `DEFERRED`. An unknown reference, an
+illegal or contradictory output, or an `UNCERTAIN` verdict returns
+`DEFERRED_NEEDS_HUMAN` without auto-retry, records why, and pauses only the
+current job. QA identity binds the draft ID and content hash, projection,
+evidence snapshot and QA/Agent/prompt/model/policy versions; time is
+excluded, so a completed binding replays as `UNCHANGED` with zero Agent calls
+regardless of verdict. `PASSED` covers facts only — not layout, visual
+quality, material approval or submission authority. The Slice never modifies
+the draft, repairs claims, renders documents, or touches Visual QA, the
+browser, an ATS or the Application Engine.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 

@@ -560,6 +560,40 @@ only when verified CandidateEvidence supports the action, details and outcome;
 weak verbs should be replaced only with truthful precise verbs, and outcomes
 or metrics must never be invented.
 
+P2a4c applies that rule as the static versioned Resume Tailoring Agent
+policy. `tailor_resume()` fail-closes on any
+Plan/Job/Selection/Candidate/Projection/EvidenceSnapshot binding mismatch,
+then makes at most one bounded tool-free Agent call per new binding over the
+trusted typed JD, the source projection, `RESUME_TAILORING`-scoped evidence
+and the Plan's verbatim user instructions. Instruction priority is fixed:
+facts and no-fabrication > Plan user instructions > JD alignment > default
+style. Ordinary code validates the typed output deterministically—evidence
+references, source references, verbatim JD alignment, unevidenced
+number/proper-noun tokens, JD verbs without evidence, weak verbs and
+user-protected omissions all reject the draft. Unsafe output defers the item
+as `DEFERRED_NEEDS_HUMAN`; missing facts defer as
+`DEFERRED_INSUFFICIENT_EVIDENCE`. The accepted result is an immutable
+`TailoredResumeDraft` with per-bullet evidence provenance, JD references and
+change types; a completed binding replays as `UNCHANGED` with zero Agent
+calls. The draft is an unreviewed AI rewrite: no final rendering, Fact QA,
+Visual QA or human approval is implied.
+
+P2a5 is that missing fact gate, and it is deliberately independent. It shares
+no validator with P2a4c and never treats a draft as trustworthy merely
+because tailoring accepted it; every checkable fact is re-derived from the
+draft, the source projection and the evidence snapshot. Binding mismatches
+block before any Agent call. Deterministic checks then re-verify references,
+evidence scope, source coverage, verbatim unrewritten text and every number,
+date, company, title, degree and tool name, blocking without a model call
+when a claim is plainly unsupported. Only genuinely semantic questions reach
+the bounded QA Agent, which sees rewritten bullets and evidence alone and may
+judge only overstated ownership, overstated maturity, unsupported impact,
+unsupported causality, unsupported verbs and out-of-scope claims. It reports
+findings and a verdict and can never edit the draft. Verdicts are `PASSED`,
+`BLOCKED` or `DEFERRED`; an unreliable Agent output defers the item for a
+human without auto-retry. A `PASSED` fact verdict is not layout approval,
+material approval or submission authority.
+
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 
 ## Application Execution

@@ -441,13 +441,26 @@ Application Preparation                                [部分]
 │   │   ├── PERSONAL / RESUME_TAILORING only
 │   │   ├── USER_PROVIDED_DOCUMENT_STATEMENT
 │   │   └── immutable snapshot / CREATED or UNCHANGED
-│   ├── static Resume Agent Policy
-│   ├── runtime user instructions
-│   ├── Action Verb + Details + evidenced Outcome
-│   └── Evidence-bound TailoredResumeDraft              [计划 P2a4c]
+│   └── Evidence-bound TailoredResumeDraft              [完成 P2a4c]
+│       ├── full Plan/Job/Selection/Projection/Evidence binding check
+│       ├── static versioned Resume Tailoring Agent policy
+│       ├── verbatim Plan user instructions, never policy edits
+│       ├── Action Verb + Details + evidenced Outcome
+│       ├── bounded Agent at most once per new binding
+│       ├── deterministic evidence/JD/verb output validation
+│       ├── DEFERRED_INSUFFICIENT_EVIDENCE / DEFERRED_NEEDS_HUMAN
+│       └── immutable draft + pre-Agent UNCHANGED replay
+├── Resume Fact QA                                     [完成 P2a5]
+│   ├── independent of the tailoring validator
+│   ├── full binding check → BLOCKED_BINDING_MISMATCH
+│   ├── deterministic references/tokens/coverage first
+│   ├── deterministic block → zero Agent calls
+│   ├── bounded Agent at most once, bullets + evidence only
+│   ├── ownership/maturity/impact/causality/scope judgments
+│   ├── PASSED / BLOCKED / DEFERRED, never edits the draft
+│   └── immutable result + pre-Agent UNCHANGED replay
 ├── Cover Letter                                       [计划]
 ├── Application Answers                               [计划]
-├── Fact QA                                            [计划]
 ├── Visual QA                                          [计划]
 ├── Human Attention Queue                              [计划]
 │   └── item-scoped defer-and-continue

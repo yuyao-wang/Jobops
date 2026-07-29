@@ -34,6 +34,8 @@ This document is the authority for component contracts and implementation eviden
 | `select_base_resume()` / `ResumeSelectionDecision` | Implemented P2a3 bounded automatic base-resume selection with pre-Agent idempotency |
 | `create_source_resume_projection()` / `SourceResumeProjection` | Implemented P2a4a deterministic, hash-bound PDF/DOCX source projection |
 | `create_candidate_evidence_snapshot()` / `CandidateEvidenceSnapshot` | Implemented P2a4b subject-specific immutable source-resume evidence boundary |
+| `tailor_resume()` / `TailoredResumeDraft` | Implemented P2a4c evidence-bound tailoring draft with deterministic Agent-output validation |
+| `run_resume_fact_qa()` / `ResumeFactQAResult` | Implemented P2a5 independent fact gate with deterministic checks before any bounded QA Agent call |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
 Machine-readable contracts:
@@ -631,6 +633,79 @@ is `RESUME_TAILORING`; verification is
 typed FOUND/NOT_FOUND/INTEGRITY_FAILURE reads plus
 CREATED/UNCHANGED/DEFERRED_NO_EVIDENCE/FAILED creation outcomes.
 
+#### `tailor_resume()`
+
+```text
+tailor_resume(
+    TailorResumeCommand(
+        subject_id,
+        application_plan_id,
+        evidence_snapshot_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    job_repository,
+    selection_repository,
+    candidate_repository,
+    projection_repository,
+    evidence_snapshot_repository,
+    agent: ResumeTailoringAgentPort,
+    metadata: ResumeTailoringAgentMetadata,
+    draft_repository,
+) -> TailorResumeResult
+```
+
+P2a4c revalidates every Plan/Job/Selection/Candidate/Projection/Snapshot
+identity and content-hash binding, then checks the pre-Agent tailoring
+binding so a completed input replays `UNCHANGED` with zero Agent calls. The
+`ResumeTailoringAgentPort` receives one typed context—trusted JD, source
+projection, `RESUME_TAILORING` evidence, verbatim Plan instructions and the
+static versioned policy—and must return a typed
+`ResumeTailoringAgentOutput` covering every source block exactly once.
+Deterministic validation enforces evidence existence and scope, source
+references, verbatim JD alignment substrings, evidenced numbers and
+proper-noun tokens, evidence-supported JD verbs, weak-verb rejection and
+user-protected retention. Outcomes are typed
+CREATED/UNCHANGED/DEFERRED_INSUFFICIENT_EVIDENCE/DEFERRED_NEEDS_HUMAN/FAILED;
+the immutable draft persists below
+`state/preparation/tailored-resume-drafts/<subject-key>/`.
+
+#### `run_resume_fact_qa()`
+
+```text
+run_resume_fact_qa(
+    RunResumeFactQACommand(
+        subject_id,
+        tailored_resume_draft_id,
+        explicit now,
+    ),
+    draft_repository,
+    application_plan_repository,
+    job_repository,
+    selection_repository,
+    projection_repository,
+    evidence_snapshot_repository,
+    agent: ResumeFactQAAgentPort,
+    metadata: ResumeFactQAAgentMetadata,
+    qa_repository,
+) -> RunResumeFactQAResult
+```
+
+P2a5 revalidates the complete Draft/Plan/Job/Selection/Projection/Snapshot
+binding and returns `BLOCKED_BINDING_MISMATCH` with no Agent call and no
+persisted record on any mismatch. It then re-derives every checkable fact
+independently of the P2a4c validator; a blocking deterministic finding
+returns `BLOCKED_UNSUPPORTED_CLAIM` with zero Agent calls. `ResumeFactQAAgentPort`
+is invoked at most once, only for semantic judgment, over rewritten bullets
+and tailoring-scoped evidence alone, and its findings are accepted only after
+ordinary code confirms every bullet and evidence reference. Each finding
+records a stable content-derived ID, source reference, type, severity
+(`BLOCKING` or `ADVISORY`), claim text, cited evidence, explanation and
+`DETERMINISTIC`/`AGENT` provenance. `PASSED`, `BLOCKED` and `DEFERRED`
+verdicts all persist immutably below
+`state/preparation/resume-fact-qa-results/<subject-key>/`; a completed
+binding replays as `UNCHANGED` with zero Agent calls.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -831,6 +906,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Evidence-bound Resume Fact QA | Implemented P2a5 | 31 synthetic fake-Agent cases for binding blocks, deterministic unsupported claims with zero Agent calls, altered unrewritten text, missing source coverage, advisory JD references, four semantic exaggerations, restricted Agent context, replay of passed and blocked results, invalid findings and uncertain verdicts, new results on version change, immutable conflicts, restart reads and zero-rendering/Visual-QA/browser/execution boundaries |
+| Evidence-bound Resume Tailoring Draft | Implemented P2a4c | 26 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, safe context, evidence/JD/verb validation, user-retention protection, deferred outcomes, immutable replay/restart, conflicts and zero-rendering/QA/browser/execution boundaries |
 | Material preparation workflow | Partial | material/bundle tests; end-to-end service not yet unified |
 | P0–P3 to execution strategy | Migration blocker | legacy runtime maps P0/P1→High, P2→Medium, P3→Low; it must not consume the target policy |
 

@@ -206,6 +206,8 @@ class PrivatePaths:
     resume_selection_decisions: Path
     source_resume_projections: Path
     candidate_evidence_snapshots: Path
+    tailored_resume_drafts: Path
+    resume_fact_qa_results: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +280,12 @@ class PrivateHome:
             candidate_evidence_snapshots=(
                 state / "preparation" / "candidate-evidence-snapshots"
             ),
+            tailored_resume_drafts=(
+                state / "preparation" / "tailored-resume-drafts"
+            ),
+            resume_fact_qa_results=(
+                state / "preparation" / "resume-fact-qa-results"
+            ),
         )
 
     def ensure(self) -> PrivatePaths:
@@ -316,6 +324,8 @@ class PrivateHome:
             paths.resume_selection_decisions,
             paths.source_resume_projections,
             paths.candidate_evidence_snapshots,
+            paths.tailored_resume_drafts,
+            paths.resume_fact_qa_results,
             paths.browser,
             paths.chromium_profile,
             paths.cache,
