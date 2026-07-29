@@ -524,6 +524,84 @@ version without rewriting its content or historical decisions.
 - A page overflow is never solved by shortening or rewriting content. When
   typography alone cannot satisfy the policy, the item defers.
 
+### Prepared resume material publication
+
+- P2a9 records which already managed PDF is the prepared resume for one
+  ApplicationPlan. It never copies, regenerates, recompiles, renders or
+  modifies any upstream record, and calls no Agent.
+- Exactly one source is supplied: a Visual QA result ID, or a layout
+  revision run ID. Supplying both or neither fails closed.
+- The direct path requires the Visual QA result to belong to this plan chain
+  with verdict `PASSED` and intact compilation and version bindings.
+- The revision path requires the run to belong to this plan, to have ended in
+  a passing visual QA, and its final version, compilation and QA result to
+  agree with that QA result.
+- The fact-QA result named by the final LaTeX version is revalidated: it must
+  cover that exact Draft by ID and content hash, belong to this plan, and
+  carry verdict `PASSED`.
+- `NOT_READY` covers unfinished or unapproved work: visual QA not passed, an
+  unsuccessful or exhausted revision run, fact QA not passed, and any
+  cross-chain binding mismatch. It pauses only this material path.
+- `FAILED` covers structural problems: a missing or corrupt record, a subject
+  mismatch, or a PDF that is unreadable, hash-drifted, wrongly sized or of a
+  different page count than its compilation record.
+- Neither outcome writes a material, and neither ever falls back to an older
+  compilation, a historical PDF, the source ResumeCandidate or any
+  unreviewed artifact.
+- The managed PDF is re-read from its subject-isolated location, re-hashed
+  against the compilation record, checked for a valid signature and exact
+  byte size, and its page count re-parsed before publication.
+- Publication identity binds plan and job revision, Draft, passed fact QA,
+  final LaTeX version and source hash, compilation and PDF hash, final
+  passed Visual QA and the optional successful revision run, excluding time.
+  Replay returns `UNCHANGED` with the original publication time.
+- Any changed Draft, fact QA, version, compilation, PDF, visual QA or
+  revision lineage creates a new immutable material; history is never
+  overwritten.
+- `find_current_for_plan()` resolves by stored publication time with a stable
+  material-ID tie-break, never by directory order or mtime.
+- A published resume means the content passed fact QA, the compiled PDF
+  passed visual QA, and the artifact is ready for downstream assembly. It is
+  not a cover letter or answers, not Approval Gate A, and not authority to
+  submit or start ATS execution.
+
+### Plan-scoped material manifest
+
+- P2b1 assembles finished materials only. It generates nothing, calls no
+  Agent, and never re-runs tailoring, fact QA, compilation or visual QA.
+- `PlanMaterialManifest` is a new contract, separate from the legacy
+  job-directory `MaterialManifest`. The legacy names, module, storage and
+  execution semantics are unchanged.
+- The published material must match the plan's subject, plan ID, job ID,
+  revision and content hash, carry the `RESUME` role, and hold complete
+  draft, fact-QA, LaTeX, compilation and visual-QA provenance.
+- The managed PDF is re-read and re-verified before assembly: it exists, is
+  not a symlink, matches its SHA-256 and byte size, has a valid signature,
+  and re-parses to the recorded page count.
+- The manifest references the existing artifact. It never copies, moves,
+  regenerates or modifies a PDF.
+- Only `RESUME` is assembled in V1. A missing cover letter or application
+  answers produce no placeholder file and no fake entry, and never let the
+  plan claim that all materials are complete.
+- Completeness is expressed explicitly, never as one ambiguous boolean. The
+  manifest stores `included_roles` and an `assembly_state`, and separates
+  `resume_prepared` from `complete_application_material_prepared`. Approval
+  Gate A is not represented by this contract at all.
+- Each material role appears at most once, and entries use a deterministic
+  order that never depends on the repository, filename or mtime.
+- Manifest identity binds plan and job binding, prepared material ID and
+  content hash, PDF artifact hash, ordered entry hashes and the contract
+  version, excluding time. Replay returns `UNCHANGED` with the original
+  assembly time; any change creates a new immutable manifest.
+- `find_current_for_plan()` resolves by stored assembly time with a stable
+  manifest-ID tie-break.
+- An unresolvable or mismatched prepared resume returns `NOT_READY` and
+  never falls back to a legacy job directory, a historical PDF or the source
+  ResumeCandidate. It pauses only this job.
+- A manifest means one formal resume material exists for this plan. It does
+  not mean a cover letter or answers are ready, that Gate A passed, or that
+  ATS execution or submission is authorized.
+
 ### `MaterialPackage`
 
 ```text

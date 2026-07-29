@@ -697,6 +697,32 @@ attempt budget all end the run with the full lineage preserved and the job
 paused rather than the résumé shortened: this Slice never solves a page
 overflow by rewriting content.
 
+P2a9 closes the resume path by declaring which compiled PDF is the prepared
+resume for one plan. It publishes from either a directly passing visual QA
+result or a layout revision run that ended in one, revalidates the whole
+chain back to the fact-QA result covering that exact Draft, and re-reads and
+re-hashes the managed PDF before recording it. It records the existing
+artifact rather than copying or regenerating one, and calls no Agent,
+compiler or renderer. Unapproved or mismatched chains return `NOT_READY`;
+missing, corrupt or drifted artifacts fail closed. Neither ever falls back to
+an older compilation, a historical PDF or the source ResumeCandidate.
+Publication means the content passed fact QA and the PDF passed visual QA —
+not that a cover letter or answers exist, that Gate A passed, or that
+submission is authorized.
+
+P2b1 turns that publication into a plan-scoped manifest. It is a new
+contract, kept deliberately separate from the legacy job-directory
+`MaterialManifest`, whose behaviour is unchanged. Assembly revalidates the
+plan and the published material's full provenance, re-reads and re-hashes
+the managed PDF, and then references that artifact rather than copying or
+regenerating it. Completeness is explicit rather than a single flag: the
+manifest records which roles it contains and reports a prepared resume
+separately from a complete application, which stays false while cover
+letters and answers remain later Slices. Gate A is not represented here at
+all, missing materials produce no placeholder or fake entry, and an
+unresolvable prepared resume defers this job rather than falling back to a
+legacy directory or the source resume.
+
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 
 ## Application Execution

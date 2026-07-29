@@ -42,6 +42,8 @@ This document is the authority for component contracts and implementation eviden
 | `compile_resume_latex()` / `LatexCompilerPort` | Implemented P2a7 shell-free sandboxed compilation with deterministic PDF validation and managed artifacts |
 | `review_resume_visual_qa()` / `ResumeVisualQAResult` | Implemented P2a8a report-only visual QA with deterministic checks before any render or Agent call |
 | `revise_resume_layout()` / `ResumeLayoutRevisionRun` | Implemented P2a8b bounded typography-only revision composing the P2a7 and P2a8a entry points |
+| `publish_prepared_resume()` / `PreparedResumeMaterial` | Implemented P2a9 immutable publication of one approved compiled PDF per ApplicationPlan |
+| `assemble_plan_material_manifest()` / `PlanMaterialManifest` | Implemented P2b1 plan-scoped manifest carrying the published resume, separate from the legacy `MaterialManifest` |
 | `LatexBuildProvenance` | Implemented P2a8b shared protocol letting construction and revision records both describe one managed build |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
@@ -976,6 +978,94 @@ a lookup to the right store by record-ID prefix.
 `state/preparation/resume-layout-revisions/runs/<subject-key>/` and
 provenance records below the sibling `records/<subject-key>/`.
 
+#### `publish_prepared_resume()`
+
+```text
+publish_prepared_resume(
+    PublishPreparedResumeCommand(
+        subject_id,
+        application_plan_id,
+        explicit now,
+        resume_visual_qa_result_id | resume_layout_revision_run_id,
+    ),
+    application_plan_repository,
+    draft_repository,
+    fact_qa_repository,
+    latex_version_repository,
+    compilation_repository,
+    visual_qa_repository,
+    layout_revision_repository,
+    material_repository,
+    home,
+) -> PublishPreparedResumeResult
+```
+
+Exactly one source identifier is accepted; both is
+`SOURCE_SELECTION_AMBIGUOUS` and neither is `SOURCE_SELECTION_MISSING`. The
+revision path resolves the run's own `final_visual_qa_result_id`,
+`final_latex_version_id` and `final_compilation_record_id`, and requires
+`final_status` to be the successful status with a passing last attempt.
+
+The result carries two separate diagnosis fields.
+`PreparedResumeMaterialNotReadyReason` explains a `NOT_READY` outcome —
+`VISUAL_QA_NOT_PASSED`, `REVISION_RUN_NOT_SUCCESSFUL`,
+`FACT_QA_NOT_PASSED`, or a `*_BINDING_MISMATCH`.
+`PreparedResumeMaterialFailureReason` explains a `FAILED` outcome, including
+`PDF_UNREADABLE`, `PDF_HASH_DRIFT` and `PDF_INVALID`. Only `CREATED` and
+`UNCHANGED` carry a material.
+
+`PreparedResumeMaterial` records `material_role=RESUME`, the plan and job
+revision, Draft, passed fact QA, final LaTeX version, compilation binding,
+the existing `pdf_reference` with its SHA-256, byte size and page count, the
+final passed Visual QA and any successful revision run.
+`find_current_for_plan()` orders by stored `published_at` then material ID,
+so resolution never depends on directory traversal or mtime. Materials
+persist below `state/preparation/prepared-resume-materials/<subject-key>/`;
+reads and writes re-verify the referenced PDF, so artifact drift turns the
+record into `INTEGRITY_FAILURE`.
+
+#### `assemble_plan_material_manifest()`
+
+```text
+assemble_plan_material_manifest(
+    AssemblePlanMaterialManifestCommand(
+        subject_id,
+        application_plan_id,
+        prepared_resume_material_id,
+        explicit now,
+    ),
+    application_plan_repository,
+    prepared_resume_repository,
+    manifest_repository,
+    home,
+) -> AssemblePlanMaterialManifestResult
+```
+
+`PlanMaterialManifest` is distinct from the legacy `MaterialManifest` in
+`core/materials.py`: different name, module, contract version and storage
+location, with no change to `load_material_manifest()` or
+`build_tier_materials()`. A test asserts the two types and their symbols stay
+separate.
+
+Each `PlanMaterialEntry` carries a content-derived `entry_id`, the material
+role, the prepared material ID, the managed artifact reference and SHA-256,
+the media type, the page count, and a `provenance_type` of
+`PREPARED_RESUME_MATERIAL` with the source record ID and a hash of that
+record's own content, computed here by `prepared_material_content_hash()`
+without altering P2a9.
+
+Completeness is deliberately three separate things, never one boolean:
+`included_roles` lists what is present, `assembly_state` is `RESUME_ONLY`,
+and `resume_prepared` is exposed separately from
+`complete_application_material_prepared`, which stays False until cover
+letters and answers exist. Gate A has no representation in this contract.
+`PlanMaterialManifestNotReadyReason` explains a `NOT_READY` outcome, while
+`PlanMaterialManifestFailureReason` explains a `FAILED` one, including
+`ARTIFACT_UNREADABLE`, `ARTIFACT_HASH_DRIFT` and `ARTIFACT_INVALID`.
+Manifests persist below
+`state/preparation/plan-material-manifests/<subject-key>/`; reads and writes
+re-verify every referenced artifact.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -1176,6 +1266,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Plan-scoped Material Manifest Assembly | Implemented P2b1 | 19 synthetic cases for typed assembly, exactly one RESUME entry, entry provenance binding, refusal to claim completeness or Gate A, no placeholder entries, plan and subject mismatch, unknown prepared material, PDF drift, removal and page-count drift, artifact immutability, no legacy-directory fallback, replay, changed material, deterministic current-manifest resolution, conflicts, restart reads, subject isolation and separation from the legacy manifest |
+| Prepared Resume Material Publication | Implemented P2a9 | 25 synthetic cases for the direct and revision publication paths, distinct provenance per path, unapproved visual QA, unsuccessful and exhausted revision runs, blocked fact QA, draft and compilation binding mismatch, PDF drift, removal and page-count drift, never copying or regenerating the artifact, subject isolation, replay, changed chains, current-material resolution by publication time rather than mtime, conflicts, restart reads and zero-compiler/renderer/Agent boundaries |
 | Bounded Resume Layout Revision | Implemented P2a8b | 24 cases with fake Revision Agents, fake renderers, scripted compilers and the real P2a7/P2a8a entry points for not-required passes, single-attempt success, child lineage, byte-identical content region, restricted Agent context, eight rejected unsafe revisions, untyped output, bounded serial attempts, compilation stop, renderer failure, Agent unavailability, replay with zero extra work, changed policy, conflicts, restart and content-preservation boundaries |
 | Resume Visual QA | Implemented P2a8a | 32 cases with fake renderers and fake visual Agents for binding fail-closure before any render, PDF hash and page-count drift, page-policy violation leaving both documents byte-identical, blank pages, clipped characters, undersized type and missing Draft content found deterministically, renderer unavailability and out-of-order pages, restricted Agent context, blocking versus advisory severity derived from finding type, unknown pages and out-of-page boxes, uncertain verdicts, replay with zero re-render, changed policy and Agent versions, conflicts, restart and subject isolation, plus real pypdfium2 rendering of a genuine multi-page PDF |
 | Sandboxed LaTeX Compilation | Implemented P2a7 | 29 cases with fake compilers and controlled fake executables for binding fail-closure before any run, source re-hash and capability rescan, compiler unavailability, unmanaged dependencies, bounded de-pathed error diagnostics, timeout, invalid or missing PDF, multi-page recording, managed-artifact isolation, replay with zero extra runs, changed compiler version, artifact drift and record corruption, restart and subject isolation, real-subprocess env/cwd/shell isolation, plus an optional real-`pdflatex` end-to-end case that skips when no engine is installed |

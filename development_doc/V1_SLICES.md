@@ -95,6 +95,10 @@ P2a7 Sandboxed LaTeX Compilation                       [完成]
 P2a8a Resume Visual QA                                 [完成]
   ↓
 P2a8b Bounded Resume Layout Revision                   [完成]
+  ↓
+P2a9 Prepared Resume Material Publication              [完成]
+  ↓
+P2b1 Plan-scoped Material Manifest Assembly            [完成]
 
 C3
   ↓
@@ -1095,6 +1099,106 @@ Agent/prompt/model versions, excluding time; replay returns `UNCHANGED` with
 zero Agent, render, compile and QA calls. This Slice never solves a page
 overflow by shortening or rewriting content — when typography alone cannot
 satisfy the policy, it defers.
+
+## P2a9 — Prepared Resume Material Publication `[完成]`
+
+```text
+ApplicationPlan + final PASSED Visual QA
+→ validated managed PDF
+→ PreparedResumeMaterial
+```
+
+`publish_prepared_resume(PublishPreparedResumeCommand, ...)` declares which
+compiled PDF is the prepared resume for one ApplicationPlan. It records an
+already managed artifact; it never copies, regenerates, recompiles, renders
+or modifies anything upstream, and it calls no Agent.
+
+Exactly one source must be supplied. The direct path takes a Visual QA
+result ID. The revision path takes a P2a8b run ID, requires that run to have
+ended in a passing visual QA, and resolves the run's own final Visual QA,
+compilation and LaTeX version — the run's final lineage must agree with that
+QA result or the item is not ready.
+
+The whole chain is then revalidated: plan subject ownership, the QA verdict,
+the compilation binding and PDF hash against the QA result, the LaTeX
+version's source hash and Draft binding, the Draft against the plan's job
+revision and content hash, and the fact-QA result named by that exact LaTeX
+version, which must cover this precise Draft and carry verdict `PASSED`.
+
+Two distinct outcomes keep a stalled resume from ever being published.
+`NOT_READY` covers work that is simply not finished or not approved — visual
+QA not passed, an unsuccessful or exhausted revision run, fact QA not
+passed, and any cross-chain binding mismatch. `FAILED` covers structural
+problems — a missing or corrupt record, a subject mismatch, or a managed PDF
+that is unreadable, hash-drifted, wrongly sized or of a different page count
+than its compilation record. Neither ever writes a material, and neither
+falls back to an older compilation, a historical PDF or the source
+ResumeCandidate.
+
+Before publishing, the managed PDF is re-read from its subject-isolated
+location, re-hashed against the compilation record, checked for a valid
+signature and exact byte size, and its page count re-parsed. The published
+record points at that same artifact reference.
+
+Publication identity binds the plan and job revision, the Draft, the passed
+fact QA, the final LaTeX version and source hash, the compilation and its
+PDF hash, the final passed Visual QA, and the optional successful revision
+run, excluding time. Replay returns `UNCHANGED` with the original
+`published_at` and no duplicate record or artifact; any changed link in the
+chain creates a new immutable material. `find_current_for_plan()` resolves
+by stored publication time with a stable material-ID tie-break, never by
+directory order or mtime.
+
+A published resume means the content passed fact QA, the compiled PDF passed
+visual QA, and the artifact is ready for downstream material assembly. It
+does not mean a cover letter or answers exist, that Approval Gate A passed,
+or that submission or ATS execution is authorized.
+
+## P2b1 — Plan-scoped Material Manifest Assembly `[完成]`
+
+```text
+ApplicationPlan + PreparedResumeMaterial
+→ Plan-scoped Material Manifest (RESUME entry)
+```
+
+`assemble_plan_material_manifest(AssemblePlanMaterialManifestCommand, ...)`
+declares one published resume as a plan's formal RESUME material. It
+assembles finished work only: it generates nothing, calls no Agent, and
+re-runs no tailoring, fact QA, compilation or visual QA.
+
+This is a new contract, deliberately separate from the legacy
+`MaterialManifest` in `core/materials.py`. That one is tier and
+job-directory centric and keeps its behaviour untouched; `PlanMaterialManifest`
+is bound to an immutable ApplicationPlan and references only records the
+preparation chain already published. The two names, modules and stores never
+overlap, and this Slice changes no legacy execution semantics.
+
+Assembly validates plan subject ownership, then the published material's
+subject, plan, job ID, revision and content hash, its RESUME role, and the
+presence of its complete draft, fact-QA, LaTeX, compilation and visual-QA
+provenance. The managed PDF is then re-read and re-verified — existence, no
+symlink, SHA-256, `%PDF-` signature, exact byte size and re-parsed page
+count. The manifest references that artifact; it never copies, moves,
+regenerates or modifies it, and never falls back to a legacy job directory,
+a historical PDF or the source ResumeCandidate.
+
+Completeness is modelled explicitly rather than as one ambiguous flag. The
+manifest stores `included_roles` and an `assembly_state` of `RESUME_ONLY`,
+and exposes `resume_prepared` separately from
+`complete_application_material_prepared`, which is False while cover letters
+and application answers remain later Slices. Approval Gate A is not
+represented by this contract at all. Missing materials are simply absent: no
+placeholder file and no fake entry is ever created, and each material role
+may appear at most once, in deterministic entry order.
+
+Manifest identity binds the plan and its job revision and content hash, the
+prepared material ID and a hash of its own content, the PDF artifact hash,
+the ordered entry hashes and the contract version, excluding time. Replay
+returns `UNCHANGED` with the original `assembled_at`; any changed plan,
+material, artifact or contract version creates a new immutable manifest.
+`find_current_for_plan()` resolves by stored assembly time with a stable
+manifest-ID tie-break, never by directory order or mtime. An unresolvable or
+mismatched prepared resume returns `NOT_READY` and pauses only this job.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 

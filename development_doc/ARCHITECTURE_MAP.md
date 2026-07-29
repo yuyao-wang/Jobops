@@ -510,8 +510,30 @@ Application Preparation                                [部分]
 │   ├── deterministic PDF validation, page count recorded
 │   ├── managed PDF artifact hashed from stored bytes
 │   └── immutable record + pre-compile UNCHANGED replay
-├── Cover Letter                                       [计划]
-├── Application Answers                               [计划]
+├── Prepared Resume Material Publication               [完成 P2a9]
+│   ├── direct PASSED Visual QA or successful P2a8b run
+│   ├── exactly one source, never both
+│   ├── full plan/draft/factQA/version/compilation recheck
+│   ├── managed PDF re-read, re-hashed, page count re-parsed
+│   ├── records the existing artifact, never copies it
+│   ├── NOT_READY for unapproved or mismatched chains
+│   ├── FAILED for missing, corrupt or drifted artifacts
+│   ├── never falls back to an older or unreviewed PDF
+│   ├── immutable material + UNCHANGED replay
+│   └── find_current_for_plan by publication time, not mtime
+├── Plan-scoped Material Manifest                      [完成 P2b1]
+│   ├── separate from the legacy MaterialManifest
+│   ├── RESUME entry from PreparedResumeMaterial only
+│   ├── full plan/job/provenance binding recheck
+│   ├── managed PDF re-read, re-hashed, page count checked
+│   ├── references the artifact, never copies it
+│   ├── one entry per role, deterministic order
+│   ├── explicit included_roles + assembly_state
+│   ├── never claims completeness or Gate A
+│   ├── no placeholder or fake entries
+│   └── immutable manifest + UNCHANGED replay
+├── Cover Letter                                       [计划 P2b2]
+├── Application Answers                               [计划 P2b3]
 ├── Resume Visual QA                                   [完成 P2a8a]
 │   ├── full compilation/version/draft binding re-check
 │   ├── PDF re-read, re-hashed, page count re-verified
