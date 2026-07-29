@@ -504,6 +504,33 @@ def _construction_binding(
     )
 
 
+@runtime_checkable
+class LatexBuildProvenance(Protocol):
+    """What produced one managed LaTeX version.
+
+    Compilation and visual QA only need to know which version a build
+    produced and what it was bound to, so a layout revision record is equally
+    valid provenance. Construction records satisfy this protocol unchanged.
+    """
+
+    record_id: str
+    subject_id: str
+    latex_version_id: str
+    latex_source_sha256: str
+    root_family_id: str
+    parent_version_id: str | None
+    template_id: str | None
+    template_sha256: str | None
+    tailored_resume_draft_id: str
+    tailored_resume_draft_hash: str
+    fact_qa_result_id: str
+    fact_qa_result_hash: str
+
+    @property
+    def build_provenance_binding(self) -> str:
+        """The immutable binding identifying this build."""
+
+
 @dataclass(frozen=True, slots=True)
 class ResumeLatexConstructionRecord:
     """Construction provenance owned by this Slice, not by the registry."""
@@ -613,6 +640,10 @@ class ResumeLatexConstructionRecord:
         object.__setattr__(self, "template_id", template_id)
         _require_aware("constructed_at", self.constructed_at)
 
+    @property
+    def build_provenance_binding(self) -> str:
+        return self.construction_binding
+
     def content_dict(self) -> dict[str, Any]:
         return {
             "record_id": self.record_id,
@@ -671,7 +702,7 @@ class ResumeLatexConstructionWriteResult:
             ResumeLatexConstructionWriteStatus.UNCHANGED,
         }:
             if (
-                not isinstance(self.record, ResumeLatexConstructionRecord)
+                not isinstance(self.record, LatexBuildProvenance)
                 or self.reason_code is not None
                 or self.retryable
             ):
@@ -697,7 +728,7 @@ class ResumeLatexConstructionReadResult:
             )
         if status is ResumeLatexConstructionReadStatus.FOUND:
             if (
-                not isinstance(self.record, ResumeLatexConstructionRecord)
+                not isinstance(self.record, LatexBuildProvenance)
                 or self.reason_code is not None
             ):
                 raise ValueError("found construction read is invalid")

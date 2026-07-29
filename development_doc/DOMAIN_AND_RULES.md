@@ -430,6 +430,100 @@ version without rewriting its content or historical decisions.
   is not a new fact check, a layout judgment, a one-page guarantee, evidence
   of no overflow, Gate A approval, or submission authority.
 
+### Resume visual QA
+
+- P2a8a inspects and reports only. It never modifies LaTeX, the PDF, the
+  Draft, the fact-QA result or the compilation record, and never recompiles.
+- The compilation, LaTeX version, construction record and Draft binding are
+  revalidated, and the managed PDF is re-read with its hash, signature and
+  page count re-verified against the record, before anything else runs.
+- Page expectations come from the versioned `ResumeVisualQAPolicy` and are
+  never guessed from free text. This Slice defines the minimal safe default
+  of one page because no typed layout policy existed; typed parsing of a
+  user's natural-language layout request is a later concern.
+- Deterministic checks run first: page count against policy, blank or
+  near-empty pages, page dimensions, characters outside the page boundary,
+  minimum glyph size, and whether every retained Draft section title and
+  bullet is recognisable in the PDF text projection.
+- A blocking deterministic finding ends the review immediately with
+  `REVISION_REQUIRED`, with zero renders and zero Agent calls.
+- Pages are rendered through a port at a fixed DPI, one image format and
+  stable page order. A renderer that cannot describe itself, cannot render,
+  or returns pages out of order defers as `DEFERRED_RENDERER_UNAVAILABLE`
+  without calling the Agent and without touching any document.
+- The bounded Agent runs at most once and receives only page images with
+  their pixel dimensions, the deterministic findings, the policy and a static
+  Agent policy. It never receives a repository, a path, PDF bytes, LaTeX or
+  any credential.
+- The Agent may judge only what code cannot measure reliably: visual
+  overlap, unreadably small type, crowding, unexplained blank regions,
+  inconsistent alignment, glyph corruption and broken visual hierarchy. It
+  returns findings and a verdict, never LaTeX, a patch or a recompile.
+- Every Agent finding must name a supplied page, and a bounding box must lie
+  inside that page's pixel bounds.
+- Severity is derived from the finding type by ordinary code, so an Agent
+  cannot mark a real defect advisory. Advisory findings alone never prevent
+  `PASSED`.
+- `PASSED` requires no blocking finding from either source, a satisfied page
+  policy, and every page rendered and checked.
+- `REVISION_REQUIRED` means the later automatic layout revision may try a
+  fix. It is not an immediate request for a human.
+- An unknown page, an out-of-page box, an illegal structure or an uncertain
+  verdict returns `DEFERRED_NEEDS_HUMAN` without auto-retry and pauses only
+  the current job.
+- The binding covers compilation record and binding, PDF hash, LaTeX version
+  and source hash, Draft ID and hash, renderer name, version and DPI, the
+  whole policy, and the Agent/prompt/model versions, excluding time. A
+  completed binding replays `UNCHANGED` with no re-render and no Agent call.
+- `PASSED` states only that this PDF looks visually sound. It is not Gate A
+  approval, ATS acceptance or submission authority.
+
+### Bounded layout revision
+
+- P2a8b changes typography only. It never modifies the TailoredResumeDraft,
+  CandidateEvidence or the fact-QA result, and never rewrites, shortens,
+  reorders or deletes any resume content.
+- A `PASSED` initial verdict returns `NOT_REQUIRED` with no Agent, render or
+  compile. A `DEFERRED` verdict returns `DEFERRED_NEEDS_HUMAN`. Only
+  `REVISION_REQUIRED` starts the loop.
+- Attempts are serial and bounded by a versioned policy whose V1 maximum is
+  three. There is no unbounded retry and no unbounded Agent use.
+- Each attempt reads the current managed source, renders the current PDF,
+  calls the Revision Agent at most once, validates the output, registers an
+  immutable child version, invokes P2a7 once and P2a8a once, and stops the
+  moment visual QA passes.
+- The Agent receives the current LaTeX source, the current page images, the
+  current findings, the visual QA and layout policies, and the plan's
+  verbatim user instructions. Nothing else.
+- It may change margins, section, bullet and line spacing, font size within
+  range, header spacing, alignment and existing safe macros.
+- Deterministic validation proves the controlled content region is
+  byte-identical, marker set, IDs and order are unchanged, the capability
+  scan passes, no new file dependency appeared, font sizes and margins stay
+  inside policy, and no hiding trick was introduced — white text,
+  transparency, clipping, phantom content, off-page shifting, zero-size
+  boxes or a below-minimum size macro.
+- An illegal revision defers for a human. Safety thresholds are never
+  relaxed automatically to make an attempt succeed.
+- Every accepted revision creates an `AI_REVISED` child whose parent is the
+  previous attempt's version, inheriting the same root family, plus a typed
+  revision record.
+- P2a7 and P2a8a are reached only through their public entry points; their
+  logic is never duplicated. Both accept a revision record as build
+  provenance through the shared `LatexBuildProvenance` protocol, which
+  leaves construction records unchanged.
+- A compilation defer or failure stops the run rather than revising blindly
+  again. A visual QA defer returns `DEFERRED_NEEDS_HUMAN`.
+- Exhausting the attempt budget returns `DEFERRED_ATTEMPTS_EXHAUSTED` with
+  every attempt preserved, requires no synchronous user response, and lets
+  other jobs continue.
+- Run identity binds the initial visual QA ID and hash, the initial version
+  and source hash, the Draft, both policies, renderer metadata and the
+  Agent/prompt/model versions, excluding time. Replay returns `UNCHANGED`
+  with zero Agent, render, compile and QA calls.
+- A page overflow is never solved by shortening or rewriting content. When
+  typography alone cannot satisfy the policy, the item defers.
+
 ### `MaterialPackage`
 
 ```text

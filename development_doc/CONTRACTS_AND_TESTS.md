@@ -40,6 +40,9 @@ This document is the authority for component contracts and implementation eviden
 | `select_base_latex_version()` / `BaseLatexSelectionDecision` | Implemented P2a6b metadata-only base-version selection gated on a PASSED fact-QA result |
 | `construct_resume_latex_version()` / `ResumeLatexConstructionRecord` | Implemented P2a6c controlled-marker LaTeX construction with deterministic fidelity and stale-content validation |
 | `compile_resume_latex()` / `LatexCompilerPort` | Implemented P2a7 shell-free sandboxed compilation with deterministic PDF validation and managed artifacts |
+| `review_resume_visual_qa()` / `ResumeVisualQAResult` | Implemented P2a8a report-only visual QA with deterministic checks before any render or Agent call |
+| `revise_resume_layout()` / `ResumeLayoutRevisionRun` | Implemented P2a8b bounded typography-only revision composing the P2a7 and P2a8a entry points |
+| `LatexBuildProvenance` | Implemented P2a8b shared protocol letting construction and revision records both describe one managed build |
 | Semantic Mapper HTTP API | Proposed transport only; no HTTP service is implemented |
 
 Machine-readable contracts:
@@ -877,6 +880,102 @@ exactly one `.tex` per version. Records live below
 `state/preparation/resume-compilations/<subject-key>/` and validated PDFs
 below `state/preparation/compiled-resumes/<subject-key>/<pdf-sha256>.pdf`.
 
+#### `review_resume_visual_qa()`
+
+```text
+review_resume_visual_qa(
+    ReviewResumeVisualQACommand(
+        subject_id,
+        resume_compilation_record_id,
+        explicit now,
+    ),
+    compilation_repository,
+    latex_version_repository,
+    construction_repository,
+    draft_repository,
+    renderer: PdfPageRendererPort,
+    agent: ResumeVisualQAAgentPort,
+    metadata: ResumeVisualQAAgentMetadata,
+    visual_qa_repository,
+    policy: ResumeVisualQAPolicy | None,
+    home,
+) -> ReviewResumeVisualQAResult
+```
+
+`ResumeVisualQAPolicy` is versioned as `resume-visual-qa-policy-v1` and
+carries `max_pages` (default 1), `min_font_size_pt`,
+`page_margin_tolerance_pt` and `min_text_characters_per_page`. It is the
+only source of page expectations; nothing is inferred from prose.
+
+`PdfPageRendererPort` splits a cheap `describe()`, returning
+`PdfRendererDescription` (name, version, DPI, image format) for the binding,
+from `render()`, which returns `RenderedPage` values in stable page order.
+`PdfiumPageRenderer` is the local adapter, built on the pypdfium2 dependency
+pdfplumber already installs, at 150 DPI producing PNG.
+
+`ResumeVisualQAFindingType` covers `PAGE_COUNT_MISMATCH`,
+`UNEXPECTED_PAGE_COUNT`, `BLANK_PAGE`, `CONTENT_MISSING`, `CONTENT_CLIPPED`,
+`ELEMENT_OVERLAP`, `TEXT_TOO_SMALL`, `EXCESSIVE_DENSITY`,
+`EXCESSIVE_WHITESPACE`, `BROKEN_GLYPH`, `INCONSISTENT_ALIGNMENT`,
+`UNREADABLE_LAYOUT` and `AGENT_OUTPUT_UNRELIABLE`. `AGENT_FINDING_TYPES`
+restricts what an Agent may report; `ADVISORY_FINDING_TYPES` (density,
+whitespace, alignment) is the only non-blocking set, and severity is derived
+from the type rather than supplied, so an Agent cannot downgrade a defect.
+Results persist below
+`state/preparation/resume-visual-qa/<subject-key>/`.
+
+#### `revise_resume_layout()`
+
+```text
+revise_resume_layout(
+    ReviseResumeLayoutCommand(
+        subject_id,
+        resume_visual_qa_result_id,
+        explicit now,
+    ),
+    visual_qa_repository,
+    compilation_repository,
+    latex_version_repository,
+    provenance_repository,
+    revision_record_repository,
+    application_plan_repository,
+    draft_repository,
+    renderer: PdfPageRendererPort,
+    agent: ResumeLayoutRevisionAgentPort,
+    metadata: ResumeLayoutRevisionAgentMetadata,
+    compile_step: LayoutRevisionCompileStep,
+    review_step: LayoutRevisionReviewStep,
+    revision_repository,
+    policy: ResumeLayoutRevisionPolicy | None,
+    home,
+) -> ReviseResumeLayoutResult
+```
+
+`LayoutRevisionCompileStep` and `LayoutRevisionReviewStep` are the only way
+this Slice reaches compilation and visual QA. Callers bind them to
+`compile_resume_latex()` and `review_resume_visual_qa()` with their own
+compiler, renderer, QA Agent and repositories, so the orchestrator holds no
+copy of that logic.
+
+`LatexBuildProvenance` is the minimal backward-compatible extension that
+makes this possible: a runtime-checkable protocol exposing the version,
+lineage, template and Draft/fact-QA bindings a build produced, plus
+`build_provenance_binding`. `ResumeLatexConstructionRecord` satisfies it
+unchanged through a property alias, and `ResumeLayoutRevisionRecord`
+satisfies it too, so P2a7 and P2a8a accept either without knowing which
+Slice produced the version. `CompositeLatexBuildProvenanceRepository` routes
+a lookup to the right store by record-ID prefix.
+
+`ResumeLayoutRevisionPolicy` is versioned as
+`resume-layout-revision-policy-v1` with `max_attempts=3`,
+`min_font_size_pt`, `max_font_size_pt` and `min_margin_inches`.
+`validate_revised_layout()` is the deterministic gate; attempt outcomes are
+`PASSED`, `REVISION_REQUIRED`, `AGENT_OUTPUT_REJECTED`,
+`RENDER_UNAVAILABLE`, `VERSION_REGISTRATION_FAILED`, `COMPILATION_STOPPED`,
+`VISUAL_QA_DEFERRED` and `VISUAL_QA_FAILED`. Runs persist below
+`state/preparation/resume-layout-revisions/runs/<subject-key>/` and
+provenance records below the sibling `records/<subject-key>/`.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -1077,6 +1176,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
+| Bounded Resume Layout Revision | Implemented P2a8b | 24 cases with fake Revision Agents, fake renderers, scripted compilers and the real P2a7/P2a8a entry points for not-required passes, single-attempt success, child lineage, byte-identical content region, restricted Agent context, eight rejected unsafe revisions, untyped output, bounded serial attempts, compilation stop, renderer failure, Agent unavailability, replay with zero extra work, changed policy, conflicts, restart and content-preservation boundaries |
+| Resume Visual QA | Implemented P2a8a | 32 cases with fake renderers and fake visual Agents for binding fail-closure before any render, PDF hash and page-count drift, page-policy violation leaving both documents byte-identical, blank pages, clipped characters, undersized type and missing Draft content found deterministically, renderer unavailability and out-of-order pages, restricted Agent context, blocking versus advisory severity derived from finding type, unknown pages and out-of-page boxes, uncertain verdicts, replay with zero re-render, changed policy and Agent versions, conflicts, restart and subject isolation, plus real pypdfium2 rendering of a genuine multi-page PDF |
 | Sandboxed LaTeX Compilation | Implemented P2a7 | 29 cases with fake compilers and controlled fake executables for binding fail-closure before any run, source re-hash and capability rescan, compiler unavailability, unmanaged dependencies, bounded de-pathed error diagnostics, timeout, invalid or missing PDF, multi-page recording, managed-artifact isolation, replay with zero extra runs, changed compiler version, artifact drift and record corruption, restart and subject isolation, real-subprocess env/cwd/shell isolation, plus an optional real-`pdflatex` end-to-end case that skips when no engine is installed |
 | TailoredDraft to LaTeX Construction | Implemented P2a6c | 25 synthetic fake-Agent cases for deterministic template render, marked-base region replacement, unmarked-base single Agent call, restricted Agent context, exactly-once section/bullet fidelity, omitted-bullet removal, eight unsafe-output deferrals, non-PASSED fact QA, base-selection drift, unreadable base without substitution, replay, changed template binding, restart lineage reads, corrupt records and zero-compilation/execution boundaries |
 | Automatic Base LaTeX Version Selection | Implemented P2a6b | 23 synthetic fake-Agent cases for managed-template fallback, single-candidate and source-resume determinism, one bounded Agent call, metadata-only Agent context, unusable Agent answers, explicit version requirements and unsatisfiable deferral, non-PASSED and drift-bound fact QA, candidate provenance verification, subject isolation, replay, candidate-set change, conflicts, restart reads and zero-compilation/Visual-QA/execution boundaries |

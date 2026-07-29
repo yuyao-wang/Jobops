@@ -512,8 +512,31 @@ Application Preparation                                [部分]
 │   └── immutable record + pre-compile UNCHANGED replay
 ├── Cover Letter                                       [计划]
 ├── Application Answers                               [计划]
-├── Resume Visual QA                                   [计划 P2a8]
-├── Bounded Layout Revision                            [计划 P2a8]
+├── Resume Visual QA                                   [完成 P2a8a]
+│   ├── full compilation/version/draft binding re-check
+│   ├── PDF re-read, re-hashed, page count re-verified
+│   ├── versioned page policy, never inferred from prose
+│   ├── deterministic checks first, zero render on block
+│   ├── fixed-DPI rendering in stable page order
+│   ├── renderer unavailable → DEFERRED_RENDERER_UNAVAILABLE
+│   ├── bounded Agent once, images + findings + policy only
+│   ├── severity derived from type, not from the Agent
+│   ├── advisory alone never blocks PASSED
+│   ├── blocking → REVISION_REQUIRED, nothing modified
+│   └── immutable result + pre-render UNCHANGED replay
+├── Bounded Layout Revision                            [完成 P2a8b]
+│   ├── PASSED → NOT_REQUIRED, zero side effects
+│   ├── DEFERRED → DEFERRED_NEEDS_HUMAN
+│   ├── bounded serial attempts, V1 maximum three
+│   ├── one Revision Agent call per attempt
+│   ├── source + pages + findings + policies + instructions
+│   ├── content region byte-identical, markers unchanged
+│   ├── font/margin floors, no hiding tricks
+│   ├── P2a7 and P2a8a via public entry points only
+│   ├── compile stop or QA defer halts the run
+│   ├── AI_REVISED child per attempt, same root family
+│   ├── exhausted → DEFERRED_ATTEMPTS_EXHAUSTED with lineage
+│   └── immutable run + pre-work UNCHANGED replay
 ├── Human Attention Queue                              [计划]
 │   └── item-scoped defer-and-continue
 ├── Material manifest                                  [完成]

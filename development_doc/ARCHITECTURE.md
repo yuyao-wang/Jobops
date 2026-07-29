@@ -607,7 +607,7 @@ inherits that parent's root family, so lineage is explicit and history is
 never overwritten. Identity binds source, kind, lineage, optional template,
 draft and fact-QA bindings, labels and contract version, and excludes time,
 so replay is stable and listing order never depends on the filesystem.
-Visual QA remains a later Slice.
+Layout revision closes the loop.
 
 P2a6b chooses which registered version a fact-QA-passed draft should build
 on. It admits only a `PASSED` fact-QA result bound to that exact draft by ID
@@ -660,6 +660,42 @@ managed storage and hashed from the stored bytes; scratch files never leave
 the sandbox. Page count is recorded, never enforced—one-page fitting is
 P2a8's. A successful compile means a structurally valid PDF exists, nothing
 more.
+
+P2a8a supplies that missing judgment, and it only reports. It edits no
+LaTeX, no PDF and no Draft, never recompiles, and never lets an Agent
+propose a patch. After revalidating the compilation, version, construction
+and Draft binding and re-verifying the stored PDF's hash and page count, it
+measures everything ordinary code can: page count against a versioned
+policy, blank pages, dimensions, characters outside the page, the smallest
+glyph, and whether every retained Draft section and bullet is recognisable
+in the PDF text. A blocking deterministic finding ends the review with
+`REVISION_REQUIRED` before a single page is rendered. Only a clean
+deterministic pass reaches the renderer, at fixed DPI in stable page order,
+and then the bounded Agent, once, with page images, the deterministic
+findings and the policy alone. Severity is derived from the finding type by
+ordinary code, so an Agent cannot downgrade a defect, and advisory findings
+never block on their own. Since no typed layout policy existed, this Slice
+defines the minimal versioned default of one page; parsing natural-language
+layout requests stays out of scope. `REVISION_REQUIRED` invites the later
+automatic revision Slice rather than a human, and an unreliable Agent output
+defers only the current job.
+
+P2a8b is that revision Slice, and it changes typography only. A passing
+verdict needs no work; a deferred one goes straight to a human; only
+`REVISION_REQUIRED` starts a bounded serial loop of at most three attempts.
+Each attempt renders the current PDF, calls the Revision Agent once over the
+current source, page images, findings, both policies and the plan's user
+instructions, then proves deterministically that the controlled content
+region is byte-identical, the markers are unchanged, no new dependency or
+hiding trick appeared, and font sizes and margins stay inside policy. A
+rejected output defers rather than relaxing a rule. Accepted revisions
+become immutable `AI_REVISED` children of the previous attempt, and
+compilation and visual QA run only through the P2a7 and P2a8a public entry
+points, joined by a shared build-provenance protocol so no sandbox or QA
+logic is duplicated. A compile that stops, a QA that defers, or an exhausted
+attempt budget all end the run with the full lineage preserved and the job
+paused rather than the résumé shortened: this Slice never solves a page
+overflow by rewriting content.
 
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 

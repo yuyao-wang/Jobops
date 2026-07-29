@@ -91,6 +91,10 @@ P2a6b Automatic Base LaTeX Version Selection           [完成]
 P2a6c TailoredDraft → LaTeX Version Construction       [完成]
   ↓
 P2a7 Sandboxed LaTeX Compilation                       [完成]
+  ↓
+P2a8a Resume Visual QA                                 [完成]
+  ↓
+P2a8b Bounded Resume Layout Revision                   [完成]
 
 C3
   ↓
@@ -974,6 +978,123 @@ as `UNCHANGED` with zero compiler runs, no duplicate PDF and the original
 compile proves only that a structurally valid PDF exists — not that the
 content was re-checked, the layout is sound, it fits one page, or that
 anything may be approved or submitted.
+
+## P2a8a — Resume Visual QA `[完成]`
+
+```text
+ResumeCompilationRecord + managed PDF
+→ deterministic PDF checks
+→ bounded page rendering
+→ bounded ResumeVisualQAAgentPort
+→ ResumeVisualQAResult
+```
+
+`review_resume_visual_qa(ReviewResumeVisualQACommand, ...)` inspects one
+compiled PDF and reports. It never edits LaTeX, the PDF or the Draft, never
+recompiles, and never asks an Agent for a patch. It first revalidates the
+Compilation, LaTeX version, Construction record and Draft binding, then
+re-reads the managed PDF and re-verifies its hash, signature and page count
+against the compilation record.
+
+Page expectations come from the versioned `ResumeVisualQAPolicy`, never from
+free text. No typed layout policy existed before this Slice, so it defines
+the minimal safe default — `resume-visual-qa-policy-v1` with `max_pages=1`,
+a minimum font size, a margin tolerance and a minimum text length per page.
+Typed parsing of natural-language layout requests is out of scope.
+
+Deterministic checks run first, over the pdfplumber projection the earlier
+Slices already rely on: page count against policy, blank or near-empty
+pages, page dimensions, characters whose boxes fall outside the page, the
+smallest glyph size, and whether every retained Draft section title and
+bullet is recognisable in the PDF text. A blocking deterministic finding
+returns `REVISION_REQUIRED` immediately, with zero renders and zero Agent
+calls.
+
+Only when those checks are clean are pages rendered, through
+`PdfPageRendererPort` at a fixed DPI in stable page order; the local adapter
+uses the pypdfium2 dependency pdfplumber already brings in. A renderer that
+cannot describe itself, cannot render, or returns pages out of order defers
+as `DEFERRED_RENDERER_UNAVAILABLE` without calling the Agent. `describe()`
+is cheap and feeds the binding, so a replay renders nothing.
+
+The bounded Agent is called at most once and receives only page images with
+their pixel dimensions, the deterministic findings, the policy and a static
+Agent policy — no repository, path, PDF bytes, LaTeX or credential. It may
+judge only overlap, unreadably small type, crowding, unexplained whitespace,
+inconsistent alignment, glyph corruption and broken hierarchy. It returns
+findings and a verdict; severity is derived from the finding type by
+ordinary code, so an Agent cannot downgrade a defect. Every finding must
+name a supplied page, and a bounding box must lie inside that page.
+
+`PASSED` requires no blocking finding from either source, a satisfied page
+policy and every page checked; advisory findings alone never block.
+`REVISION_REQUIRED` says P2a8b may attempt an automatic fix — it is not an
+immediate request for a human. An unknown page, an out-of-page box, an
+illegal structure or an uncertain verdict returns `DEFERRED_NEEDS_HUMAN`
+without auto-retry, pausing only this job.
+
+The binding covers compilation record and binding, PDF hash, LaTeX version
+and source hash, Draft ID and hash, renderer name/version/DPI, the whole
+policy and the Agent/prompt/model versions, excluding time. A completed
+binding replays as `UNCHANGED` with no re-render and no Agent call; any
+change creates a new immutable result. `PASSED` states only that this PDF
+looks sound — not that Gate A, an ATS or submission is authorized.
+
+## P2a8b — Bounded Resume Layout Revision Orchestrator `[完成]`
+
+```text
+VisualQA REVISION_REQUIRED
+→ bounded layout revision
+→ P2a7 compile
+→ P2a8a review
+→ PASSED or defer
+```
+
+`revise_resume_layout(ReviseResumeLayoutCommand, ...)` fixes typography, and
+only typography. It never touches the Draft, the evidence, the fact-QA
+result, or a single word of resume text.
+
+The initial verdict decides everything. `PASSED` returns `NOT_REQUIRED` with
+no Agent, render or compile. `DEFERRED` returns `DEFERRED_NEEDS_HUMAN`. Only
+`REVISION_REQUIRED` starts the loop, after the whole
+VisualQA/Compilation/Version/Provenance/Draft/Plan binding is revalidated.
+
+Attempts are serial and bounded by `ResumeLayoutRevisionPolicy`, whose V1
+maximum is three. Each attempt reads the current managed source, renders the
+current PDF, calls the Revision Agent at most once, validates the output,
+registers an immutable `AI_REVISED` child, invokes P2a7 once and P2a8a once,
+and stops the moment visual QA passes.
+
+The Agent sees the current LaTeX source, the current page images, the
+current findings, both policies and the plan's verbatim user instructions —
+nothing else. It may adjust margins, spacing, leading, font size within
+range, header spacing, alignment and existing safe macros. Deterministic
+validation then proves the controlled content region is byte-identical, the
+markers and their IDs and order are unchanged, the capability scan still
+passes, no new file dependency appeared, font sizes and margins stay inside
+policy, and no hiding trick — white text, transparency, clipping, phantom
+content, off-page shifting, zero-size boxes or `\tiny` — was introduced. A
+rejected output defers for a human; safety rules are never relaxed to make
+an attempt succeed.
+
+Compilation and visual QA are reached only through injected steps bound to
+the P2a7 and P2a8a public entry points, so no sandbox or QA logic is
+duplicated. P2a7 deferring or failing stops the run rather than blindly
+revising again. P2a8a deferring returns `DEFERRED_NEEDS_HUMAN`. Exhausting
+the attempt budget returns `DEFERRED_ATTEMPTS_EXHAUSTED` with the full
+attempt lineage preserved, pausing only this job.
+
+Every revision creates a new immutable version whose parent is the previous
+attempt's version, inheriting the same root family, plus a
+`ResumeLayoutRevisionRecord` that P2a7 and P2a8a accept as build provenance
+through the shared `LatexBuildProvenance` protocol — a minimal,
+backward-compatible extension that leaves construction records unchanged.
+Run identity binds the initial visual QA ID and hash, the initial version
+and source hash, the Draft, both policies, renderer metadata and the
+Agent/prompt/model versions, excluding time; replay returns `UNCHANGED` with
+zero Agent, render, compile and QA calls. This Slice never solves a page
+overflow by shortening or rewriting content — when typography alone cannot
+satisfy the policy, it defers.
 
 ## F1 — Bounded Agent Extraction Fallback `[实验 / blocked]`
 

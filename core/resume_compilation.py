@@ -30,8 +30,8 @@ from .latex_compiler import (
 )
 from .private_home import PrivateHome, PrivateHomeError
 from .resume_latex_construction import (
+    LatexBuildProvenance,
     ResumeLatexConstructionReadStatus,
-    ResumeLatexConstructionRecord,
     ResumeLatexConstructionRecordRepository,
 )
 from .resume_latex_versions import (
@@ -202,7 +202,7 @@ def unmanaged_file_dependencies(source: str) -> tuple[str, ...]:
 
 def compilation_binding(
     *,
-    construction_record: ResumeLatexConstructionRecord,
+    construction_record: LatexBuildProvenance,
     version: ResumeLatexVersion,
     description: LatexCompilerDescription,
 ) -> str:
@@ -212,7 +212,7 @@ def compilation_binding(
             "compiler_engine": description.engine,
             "compiler_version": description.compiler_version,
             "construction_binding": (
-                construction_record.construction_binding
+                construction_record.build_provenance_binding
             ),
             "construction_record_id": construction_record.record_id,
             "latex_source_sha256": version.source_sha256,
@@ -766,9 +766,7 @@ def compile_resume_latex(
     if (
         construction_read.status
         is not ResumeLatexConstructionReadStatus.FOUND
-        or not isinstance(
-            construction_read.record, ResumeLatexConstructionRecord
-        )
+        or not isinstance(construction_read.record, LatexBuildProvenance)
     ):
         return _failure(
             command,
@@ -1062,7 +1060,7 @@ def compile_resume_latex(
             compilation_binding=binding,
             subject_id=subject_id,
             construction_record_id=construction.record_id,
-            construction_binding=construction.construction_binding,
+            construction_binding=construction.build_provenance_binding,
             latex_version_id=version.latex_version_id,
             latex_source_sha256=version.source_sha256,
             compiler_engine=description.engine,
