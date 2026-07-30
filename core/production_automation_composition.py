@@ -32,8 +32,16 @@ from core.current_application_execution_queue import (
     build_current_application_execution_queue,
 )
 from core.current_priority_queue import build_current_priority_queue
+from core.dashboard_read_models import (
+    DashboardApplicationsReader,
+    DashboardCandidateProfileReader,
+    DashboardJobsReader,
+    DashboardOverviewReader,
+)
 from core.fact_qa_findings import RepositoryFactQABlockingFindingProvider
 from core.human_attention_queue import build_current_human_attention_queue
+from core.subject_job_discovery import build_subject_job_discovery
+from core.subject_job_library import SubjectScopedJobPostingReader
 from core.job_discovery import build_production_job_discovery
 from core.job_library_refresh import (
     ConfiguredSearchProfileExecutor,
@@ -86,7 +94,14 @@ from dashboard.authentication import (
     make_authenticated_subject_dependency,
 )
 from dashboard.automation_cycle import ContinueAutomationUIController
+from dashboard.human_attention_inbox import HumanAttentionInboxUIController
 from dashboard.job_library_refresh import RefreshJobLibraryUIController
+from dashboard.read_models import (
+    DashboardApplicationsController,
+    DashboardJobsController,
+    DashboardOverviewController,
+    DashboardProfileController,
+)
 from source_connectors.greenhouse_board import (
     HttpxBoundedJobSearchHttpClient,
 )
@@ -98,7 +113,7 @@ from source_connectors.public_reader import read_public_job
 
 
 PRODUCTION_AUTOMATION_COMPOSITION_CONTRACT_VERSION = (
-    "production-automation-composition-v1"
+    "production-automation-composition-v2"
 )
 
 
@@ -134,6 +149,11 @@ class ProductionAutomationCompositionError(RuntimeError):
 class ProductionAutomationComposition:
     refresh_job_library_controller: RefreshJobLibraryUIController
     continue_automatic_application_controller: ContinueAutomationUIController
+    human_attention_controller: HumanAttentionInboxUIController
+    dashboard_profile_controller: DashboardProfileController
+    dashboard_jobs_controller: DashboardJobsController
+    dashboard_applications_controller: DashboardApplicationsController
+    dashboard_overview_controller: DashboardOverviewController
     authenticated_subject_dependency: AuthenticatedSubjectDependency
     production_job_search_ports: ProductionJobSearchPorts
     production_priority_agent: StructuredBackendPriorityAgentAdapter
@@ -177,6 +197,21 @@ class ProductionAutomationComposition:
         )
         if not all(callable(item) for item in mandatory):
             raise ValueError("composition contains a missing callable")
+        controllers = (
+            (self.human_attention_controller, HumanAttentionInboxUIController),
+            (self.dashboard_profile_controller, DashboardProfileController),
+            (self.dashboard_jobs_controller, DashboardJobsController),
+            (
+                self.dashboard_applications_controller,
+                DashboardApplicationsController,
+            ),
+            (self.dashboard_overview_controller, DashboardOverviewController),
+        )
+        if any(
+            not isinstance(controller, expected)
+            for controller, expected in controllers
+        ):
+            raise ValueError("composition contains an invalid read controller")
 
     def install_dashboard(self, application: Any) -> None:
         """Atomically inject both production controllers and lifecycle."""
@@ -190,6 +225,13 @@ class ProductionAutomationComposition:
             authenticated_subject=self.authenticated_subject_dependency,
             owned_resources=self.owned_resources,
             composition_diagnostics=self.safe_diagnostics,
+            human_attention_controller=self.human_attention_controller,
+            dashboard_profile_controller=self.dashboard_profile_controller,
+            dashboard_jobs_controller=self.dashboard_jobs_controller,
+            dashboard_applications_controller=(
+                self.dashboard_applications_controller
+            ),
+            dashboard_overview_controller=self.dashboard_overview_controller,
         )
 
 
@@ -231,6 +273,13 @@ def build_production_automation_composition(
 
     plan_repository = _repo(bootstrap, "application_plans")
     job_repository = _repo(bootstrap, "job_postings")
+    membership_repository = _repo(
+        bootstrap, "subject_job_library_memberships"
+    )
+    subject_job_reader = SubjectScopedJobPostingReader(
+        membership_repository=membership_repository,
+        job_posting_reader=job_repository,
+    )
     policy_repository = _repo(bootstrap, "prioritization_policies")
     priority_decision_repository = _repo(bootstrap, "priority_decisions")
     priority_orchestration_repository = _repo(
@@ -275,7 +324,7 @@ def build_production_automation_composition(
     async def priority_queue(command: Any) -> Any:
         return await build_current_priority_queue(
             command,
-            job_repository=job_repository,
+            subject_job_reader=subject_job_reader,
             policy_provider=policy_repository,
             candidate_summary_provider=candidate_summary_provider,
             orchestration_repository=priority_orchestration_repository,
@@ -302,8 +351,13 @@ def build_production_automation_composition(
             single_job_orchestrator=single_job_priority,
         )
 
-    discovery = build_production_job_discovery(
+    global_discovery = build_production_job_discovery(
         private_home=bootstrap.private_home
+    )
+    discovery = build_subject_job_discovery(
+        discovery=global_discovery,
+        job_reader=job_repository,
+        membership_repository=membership_repository,
     )
     manual_refresh = partial(
         refresh_job_library,
@@ -613,6 +667,46 @@ def build_production_automation_composition(
             clock=active_clock,
             budgets=bootstrap.automation_runtime_policy,
         )
+        human_attention_controller = HumanAttentionInboxUIController(
+            queue_reader=attention_queue,
+            clock=active_clock,
+        )
+        profile_reader = DashboardCandidateProfileReader(
+            fact_repository=_repo(bootstrap, "candidate_identity_facts"),
+            source_provider=_repo(
+                bootstrap, "candidate_information_sources"
+            ),
+            search_profile_provider=_repo(bootstrap, "search_profiles"),
+        )
+        jobs_reader = DashboardJobsReader(
+            runnable_queue_reader=runnable_queue,
+            application_plan_repository=plan_repository,
+        )
+        applications_reader = DashboardApplicationsReader(
+            application_plan_repository=plan_repository,
+            preparation_run_repository=preparation_run_repository,
+            human_attention_reader=attention_queue,
+            execution_queue_reader=execution_queue,
+            job_posting_reader=job_repository,
+        )
+        overview_reader = DashboardOverviewReader(
+            profile_reader=profile_reader,
+            jobs_reader=jobs_reader,
+            applications_reader=applications_reader,
+            human_attention_reader=attention_queue,
+        )
+        profile_controller = DashboardProfileController(
+            reader=profile_reader, clock=active_clock
+        )
+        jobs_controller = DashboardJobsController(
+            reader=jobs_reader, clock=active_clock
+        )
+        applications_controller = DashboardApplicationsController(
+            reader=applications_reader, clock=active_clock
+        )
+        overview_controller = DashboardOverviewController(
+            reader=overview_reader, clock=active_clock
+        )
     except Exception:
         raise ProductionAutomationCompositionError(
             ProductionAutomationCompositionFailure.CONTROLLER_UNAVAILABLE
@@ -626,6 +720,11 @@ def build_production_automation_composition(
             "enabled_controller_ids": (
                 "job-library-refresh",
                 "automation-cycle",
+                "human-attention",
+                "dashboard-profile",
+                "dashboard-jobs",
+                "dashboard-applications",
+                "dashboard-overview",
             ),
             "search_provider_ids": tuple(
                 capability.provider_id
@@ -658,6 +757,11 @@ def build_production_automation_composition(
     return ProductionAutomationComposition(
         refresh_job_library_controller=refresh_controller,
         continue_automatic_application_controller=automation_controller,
+        human_attention_controller=human_attention_controller,
+        dashboard_profile_controller=profile_controller,
+        dashboard_jobs_controller=jobs_controller,
+        dashboard_applications_controller=applications_controller,
+        dashboard_overview_controller=overview_controller,
         authenticated_subject_dependency=authenticated_subject,
         production_job_search_ports=search_ports,
         production_priority_agent=priority_agent,

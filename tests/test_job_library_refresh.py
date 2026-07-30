@@ -16,6 +16,7 @@ from core.job_discovery import (
 )
 from core.job_library_refresh import (
     CandidateDiscoveryStatus,
+    CandidateMembershipStatus,
     JobLibraryRefreshStatus,
     ManualJobLibraryRefreshCommand,
     PrivateHomeJobLibraryRefreshRunRepository,
@@ -39,6 +40,14 @@ from core.selective_reprioritization import (
     SelectiveBatchOverallStatus,
     SelectiveBatchReprioritizationResult,
     SelectiveBatchSummary,
+)
+from core.subject_job_discovery import (
+    SubjectJobDiscoveryResult,
+    SubjectJobDiscoveryStatus,
+)
+from core.subject_job_library import (
+    RegisterSubjectJobMembershipStatus,
+    SubjectJobLibraryMembership,
 )
 from source_connectors.contract import (
     AtsType,
@@ -191,20 +200,44 @@ class _Discovery:
 
     def __call__(self, request):
         self.calls.append(request)
-        url = request.proposal.resolved_candidate.source_url
+        url = request.request.proposal.resolved_candidate.source_url
         if url in self.failed_urls:
-            return JobDiscoveryResponse(
+            response = JobDiscoveryResponse(
                 disposition=DiscoveryDisposition.REJECTED,
                 original_intent=JobIntakeIntent.ADD_JOB,
                 reason_code=DiscoveryReason.PROPOSAL_UNSUPPORTED,
             )
-        return JobDiscoveryResponse(
-            disposition=DiscoveryDisposition.ACCEPTED,
-            original_intent=JobIntakeIntent.ADD_JOB,
-            reason_code=DiscoveryReason.JOB_CREATED,
-            run_id=f"discovery-{len(self.calls)}",
-            job_id=f"job-{len(self.calls)}",
+            return SubjectJobDiscoveryResult(
+                SubjectJobDiscoveryStatus.NOT_ACCEPTED,
+                response,
+                None,
+                None,
+            )
+        response = JobDiscoveryResponse(
+                disposition=DiscoveryDisposition.ACCEPTED,
+                original_intent=JobIntakeIntent.ADD_JOB,
+                reason_code=DiscoveryReason.JOB_CREATED,
+                run_id=f"discovery-{len(self.calls)}",
+                job_id=f"job-{len(self.calls)}",
             change=DiscoveryChange.CREATED,
+        )
+        membership = SubjectJobLibraryMembership.create(
+            subject_id=request.subject_id,
+            job_id=response.job_id,
+            first_discovery_run_id=response.run_id,
+            first_discovery_run_hash="a" * 64,
+            first_job_revision_id=f"{response.job_id}:revision:1",
+            first_job_revision_hash="b" * 64,
+            source_kind=request.source_kind,
+            source_ref=request.source_ref,
+            created_at=request.now,
+            invocation_id=request.invocation_id,
+        )
+        return SubjectJobDiscoveryResult(
+            SubjectJobDiscoveryStatus.ACCEPTED,
+            response,
+            membership,
+            RegisterSubjectJobMembershipStatus.CREATED,
         )
 
 
@@ -248,6 +281,7 @@ async def test_profiles_search_once_and_duplicate_url_reads_discovers_once(
     reader = _Reader()
     discovery = _Discovery()
     priority = _Priority()
+    repository = PrivateHomeJobLibraryRefreshRunRepository(home)
 
     result = await refresh_job_library(
         _command(),
@@ -258,20 +292,34 @@ async def test_profiles_search_once_and_duplicate_url_reads_discovers_once(
         public_job_reader=reader,
         discovery=discovery,
         priority_refresh=priority,
-        repository=PrivateHomeJobLibraryRefreshRunRepository(home),
+        repository=repository,
     )
 
     assert result.status is JobLibraryRefreshStatus.COMPLETED
     assert len(executor.calls) == 2
     assert reader.calls == [url]
     assert len(discovery.calls) == 1
-    assert discovery.calls[0].trigger is (
+    assert discovery.calls[0].subject_id == SUBJECT
+    assert discovery.calls[0].request.trigger is (
         DiscoveryTrigger.MANUAL_LIBRARY_REFRESH
     )
-    assert discovery.calls[0].proposal.intent is JobIntakeIntent.ADD_JOB
+    assert (
+        discovery.calls[0].request.proposal.intent
+        is JobIntakeIntent.ADD_JOB
+    )
     assert result.run.candidate_results[0].source_profile_ids == (
         first.profile_id,
         second.profile_id,
+    )
+    assert (
+        result.run.candidate_results[0].membership_status
+        is CandidateMembershipStatus.CREATED
+    )
+    assert result.run.candidate_results[0].membership_id is not None
+    persisted = repository.get_by_invocation(SUBJECT, "refresh-001")
+    assert (
+        persisted.run.candidate_results[0].membership_id
+        == result.run.candidate_results[0].membership_id
     )
     assert len(priority.calls) == 1
     assert priority.calls[0].subject_id == SUBJECT

@@ -40,6 +40,12 @@ from core.job_discovery import (
     JobIntakeIntent,
     ProposalResolution,
 )
+from core.subject_job_discovery import (
+    SubjectJobDiscoveryCommand,
+    SubjectJobDiscoveryResult,
+    SubjectJobDiscoveryStatus,
+)
+from core.subject_job_library import RegisterSubjectJobMembershipStatus
 from source_connectors import (
     AtsType,
     FieldProvenance,
@@ -72,12 +78,12 @@ class FakeJobDiscoveryPort:
         self.change = change
         self.disposition = disposition
         self.error = error
-        self.calls: list[JobDiscoveryRequest] = []
+        self.calls: list[SubjectJobDiscoveryCommand] = []
 
     def __call__(
         self,
-        request: JobDiscoveryRequest,
-    ) -> JobDiscoveryResponse:
+        request: SubjectJobDiscoveryCommand,
+    ) -> SubjectJobDiscoveryResult:
         self.calls.append(request)
         if self.error is not None:
             raise self.error
@@ -87,9 +93,9 @@ class FakeJobDiscoveryPort:
             DiscoveryChange.UPDATED: DiscoveryReason.JOB_UPDATED,
             DiscoveryChange.UNCHANGED: DiscoveryReason.JOB_UNCHANGED,
         }
-        return JobDiscoveryResponse(
+        response = JobDiscoveryResponse(
             disposition=self.disposition,
-            original_intent=request.proposal.intent,
+            original_intent=request.request.proposal.intent,
             reason_code=(
                 reasons[self.change]
                 if accepted
@@ -98,6 +104,20 @@ class FakeJobDiscoveryPort:
             run_id="discovery-run-synthetic-123",
             job_id="job-synthetic-123" if accepted else None,
             change=self.change if accepted else None,
+        )
+        return SubjectJobDiscoveryResult(
+            (
+                SubjectJobDiscoveryStatus.ACCEPTED
+                if accepted
+                else SubjectJobDiscoveryStatus.NOT_ACCEPTED
+            ),
+            response,
+            object() if accepted else None,
+            (
+                RegisterSubjectJobMembershipStatus.CREATED
+                if accepted
+                else None
+            ),
         )
 
 
@@ -548,7 +568,9 @@ def test_resolve_action_builds_one_typed_discovery_request(
     assert intents.calls[0].subject_id == "subject-synthetic"
     assert intents.calls[0].intent is expected_intent
 
-    request = discovery.calls[0]
+    subject_command = discovery.calls[0]
+    assert subject_command.subject_id == "subject-synthetic"
+    request = subject_command.request
     assert request.request_id == "intake-pending-synthetic-123"
     assert request.trigger is DiscoveryTrigger.CONVERSATIONAL
     assert request.proposal.proposal_id == (
@@ -807,12 +829,12 @@ def test_concurrent_duplicate_cannot_make_a_second_discovery_call() -> None:
     intents = FakeAcceptedJobIntentRepository()
     entered = Event()
     release = Event()
-    calls: list[JobDiscoveryRequest] = []
+    calls: list[SubjectJobDiscoveryCommand] = []
     first_result = []
 
     def blocking_discovery(
-        request: JobDiscoveryRequest,
-    ) -> JobDiscoveryResponse:
+        request: SubjectJobDiscoveryCommand,
+    ) -> SubjectJobDiscoveryResult:
         calls.append(request)
         entered.set()
         assert release.wait(timeout=2)

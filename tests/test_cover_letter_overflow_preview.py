@@ -461,5 +461,16 @@ async def test_authenticated_route_returns_only_opaque_png_preview(
     template = (
         Path(__file__).parents[1] / "dashboard" / "templates" / "index.html"
     ).read_text(encoding="utf-8")
-    assert "查看当前 Cover Letter" in template
-    assert "预览不代表溢出已解决" in template
+    assert "specialized correction or replacement capability" in (
+        Path(__file__).parents[1]
+        / "dashboard"
+        / "static"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+    assert "Review required action" in template
+    assert "will not fake or bypass that workflow" in (
+        Path(__file__).parents[1]
+        / "dashboard"
+        / "static"
+        / "app.js"
+    ).read_text(encoding="utf-8")

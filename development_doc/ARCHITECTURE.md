@@ -232,7 +232,11 @@ JobDiscoveryPort
   ↓
 run_discovery(JobDiscoveryRequest)
   ↓
-JobPosting Repository / DiscoveryRun
+global canonical JobPosting / DiscoveryRun
+  ↓ accepted subject-aware Discovery only
+immutable SubjectJobLibraryMembership
+  ↓
+membership-first SubjectScopedJobPostingReader
 ```
 
 `PublicJobReader` is the only public URL-reading boundary. Business callers
@@ -276,6 +280,21 @@ then calls the public job reader and formal Discovery once per unique URL.
 Discovery receives a resolved `ADD_JOB` proposal with
 `MANUAL_LIBRARY_REFRESH`; it remains the only JobPosting writer.
 
+S4a0a keeps that `JobPosting` globally canonical and adds the subject ownership
+boundary separately. Every accepted subject-aware Discovery registers one
+immutable `SubjectJobLibraryMembership` after the exact JobPosting revision is
+durable. Membership identity binds subject, canonical job identity and contract
+version; its first Discovery run and first revision remain immutable lineage.
+`ADD_JOB_ONLY` and `REQUEST_APPLICATION` both create membership, while intent,
+Priority and application state remain separate records.
+
+The production subject Job Library reader lists only one subject partition,
+then performs exact `JobPostingReadRepository.get(job_id)` calls. It never
+loads the global current collection and filters it in memory. Missing or
+corrupt exact jobs fail closed, global-only historical jobs remain unassigned,
+and read operations never backfill, touch or repair records. P1d2 consumes
+this projection and binds its queue snapshot to the membership snapshot hash.
+
 S3c adds a separate, subject/profile-scoped intent-policy boundary. Missing or
 disabled policy is deterministically `ADD_JOB_ONLY`. Only an explicitly saved,
 enabled `AUTO_REQUEST_APPLICATION` policy can cause S3b, after successful
@@ -287,8 +306,11 @@ intent history.
 
 After all profiles and candidates, S3b calls P1d3 once with the shared subject,
 timestamp and explicit bound. Profile, read and Discovery failures are
-isolated and do not suppress that Priority refresh. A subject/invocation-bound
-immutable `JobLibraryRefreshRun` provides audit and zero-call UI replay.
+isolated and do not suppress that Priority refresh, but a membership failure
+prevents that candidate from entering the subject queue or intent flow. The
+v3 subject/invocation-bound immutable `JobLibraryRefreshRun` records the exact
+membership receipt status and provides zero-call UI replay; v2 runs remain
+readable but do not prove new membership.
 S3b contains no concrete connector, application planning, preparation,
 execution, scheduling or missing-result lifecycle mutation. Intent policy
 evaluation does not trigger P1d4 or a second Priority refresh.
@@ -2165,7 +2187,7 @@ the server can expose half-configured permanent-503 routes.
 
 ## P2c10c Production automation composition
 
-`production-automation-composition-v1` is the single authoritative production
+`production-automation-composition-v2` is the single authoritative production
 root for both Job Library Refresh and the five-stage Automation Cycle. It
 constructs S3b1 typed Job Search, the P1b3 provider-neutral Priority Agent,
 P1d1/P1d3 priority services, the complete P2b4g 18-stage async Preparation
@@ -2186,3 +2208,28 @@ Dashboard installation is atomic: Refresh, Automation, authenticated subject
 resolution, lifecycle resources, and redacted diagnostics are installed
 together. Server budgets remain authoritative and request values cannot
 expand them.
+
+## S4a0 Authenticated Dashboard read layer
+
+The production composition also installs four subject-scoped, zero-write read
+controllers for Profile, Jobs, Applications, and Home Overview. Profile reads
+only the closed Candidate Identity Fact registry, Candidate Source metadata,
+and enabled Search Profiles. Jobs reuse the membership-first P1d2/P1d4
+projection, so a canonical global JobPosting is visible only through the
+authenticated subject's immutable Job Library membership. Neither path reads
+`profile.yaml`, `get_all_jobs()`, legacy SQLite/CSV state, or file mtimes.
+
+Applications combine each subject-owned ApplicationPlan with the repository's
+formal current PreparationRun, one Human Attention snapshot, one Current
+Execution Queue snapshot, and exact JobPosting reads. The projection exposes
+five user progress steps without changing the underlying 18-stage Preparation
+contract. Terminal submission states take precedence over attention and
+non-terminal preparation states.
+
+Overview composes the four already-built snapshots without rereading
+repositories or rescoring jobs. Its next-step policy fails system/integrity
+problems visibly, then considers profile completion, enabled preferences, user
+attention, an empty library, runnable application work, and finally completed
+application history. Public JSON omits internal record and snapshot hashes;
+server-side hashes remain deterministic bindings over record identities,
+versions, hashes, typed states, and mapping contract versions.

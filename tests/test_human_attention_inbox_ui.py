@@ -271,20 +271,20 @@ async def test_route_and_ui_are_read_only_with_one_post_cycle_refresh() -> None:
     )
     assert ".save(" not in source
     javascript = (root / "dashboard/static/app.js").read_text()
-    init_block = javascript[
-        javascript.index("async init()"):
-        javascript.index("// SETUP WIZARD")
+    load_block = javascript[
+        javascript.index("async function loadDashboard()"):
+        javascript.index("function setHeader")
     ]
     automation_block = javascript[
-        javascript.index("async continueAutomaticApplication"):
-        javascript.index("retryAutomationCycleRequest")
+        javascript.index("async function runAutomation()"):
+        javascript.index("function updateRunningButtons")
     ]
-    assert init_block.count("this.fetchHumanAttentionInbox()") == 1
-    assert automation_block.count("this.fetchHumanAttentionInbox()") == 1
-    assert "setInterval(() => this.fetchHumanAttentionInbox" not in javascript
+    assert load_block.count('getJson("/api/human-attention-inbox")') == 1
+    assert automation_block.count("await loadDashboard()") == 1
+    assert "setInterval(" not in javascript
     template = (root / "dashboard/templates/index.html").read_text()
-    assert "需要你处理" in template
-    assert "系统需要处理" in template
+    assert "Needs your attention" in template
+    assert "Items waiting for you" in template
     # S3f's reader remains read-only; S3g1 owns the separate typed write path.
     assert "resolveHumanAttention" not in source
-    assert "/api/human-attention-inbox/" in javascript
+    assert 'data-attention-id=' in javascript

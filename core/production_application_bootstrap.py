@@ -544,6 +544,10 @@ _REPOSITORY_SPECS: Mapping[str, tuple[str, str]] = MappingProxyType(
             "core.job_library_refresh",
             "PrivateHomeJobLibraryRefreshRunRepository",
         ),
+        "subject_job_library_memberships": (
+            "core.subject_job_library",
+            "PrivateHomeSubjectJobLibraryMembershipRepository",
+        ),
         "prioritization_policies": (
             "core.prioritization_policy",
             "PrivateHomePrioritizationPolicyRepository",
@@ -575,6 +579,10 @@ _REPOSITORY_SPECS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "candidate_identity_facts": (
             "core.candidate_identity_facts",
             "PrivateHomeCandidateIdentityFactRepository",
+        ),
+        "candidate_information_sources": (
+            "core.candidate_information_sources",
+            "PrivateHomeCandidateInformationSourceRepository",
         ),
         "cover_letter_drafts": (
             "core.cover_letter_draft",

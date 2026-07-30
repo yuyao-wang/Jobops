@@ -337,7 +337,8 @@ async def test_replay_is_unchanged_without_queue_parser_write_or_rerun(
     server_source = (root / "dashboard/server.py").read_text()
     javascript = (root / "dashboard/static/app.js").read_text()
     assert "application_answer_resolution_controller" in server_source
-    assert "resolveHumanAttention" in javascript
+    assert "submitAttentionResponse" in javascript
+    assert '"resolve"' in javascript
     for forbidden in (
         "PermitService",
         "Browser",

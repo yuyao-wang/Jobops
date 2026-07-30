@@ -503,7 +503,8 @@ async def test_ambiguous_unsupported_failure_and_replay_preserve_history(
     server_source = (root / "dashboard/server.py").read_text()
     javascript = (root / "dashboard/static/app.js").read_text()
     assert "version_choice_resolution_controller" in server_source
-    assert "resolveVersionChoice" in javascript
+    assert "submitAttentionResponse" in javascript
+    assert "resolve-version-choice" in javascript
     for forbidden in (
         "Browser",
         "ApplicationEngine",

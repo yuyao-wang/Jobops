@@ -72,11 +72,23 @@ from core.single_job_priority import (
     build_single_job_priority_binding,
     orchestrate_single_job_priority,
 )
+from core.subject_job_library import (
+    SubjectJobPostingItem,
+    SubjectJobPostingListResult,
+    SubjectJobPostingReadStatus,
+)
 from core.job_prioritization import PrivateHomePriorityDecisionRepository
 
 
 NOW = datetime(2026, 7, 27, 18, 0, tzinfo=timezone.utc)
 SUBJECT = "synthetic-subject-queue"
+
+
+def _raw(cls, **values):
+    instance = object.__new__(cls)
+    for name, value in values.items():
+        object.__setattr__(instance, name, value)
+    return instance
 
 
 class FakeJobRepository:
@@ -95,6 +107,33 @@ class FakeJobRepository:
     def list_current(self) -> tuple[JobPosting, ...]:
         self.list_calls += 1
         return tuple(self.jobs)
+
+
+class FakeSubjectJobReader:
+    def __init__(self, repository: FakeJobRepository) -> None:
+        self.repository = repository
+        self.calls: list[str] = []
+
+    def list_current(self, *, subject_id: str, now: datetime):
+        self.calls.append(subject_id)
+        items = tuple(
+            _raw(
+                SubjectJobPostingItem,
+                membership=None,
+                job_posting=job,
+                current_job_revision_ref=f"{job.job_id}:{job.revision}",
+                item_hash=job.content_hash,
+            )
+            for job in self.repository.jobs
+        )
+        return SubjectJobPostingListResult(
+            SubjectJobPostingReadStatus.READY,
+            subject_id,
+            "a" * 64,
+            "b" * 64,
+            items,
+            now,
+        )
 
 
 class FakePolicyProvider:
@@ -439,7 +478,9 @@ async def _build(
         )
     result = await build_current_priority_queue(
         CurrentPriorityQueueCommand(subject_id=subject_id, now=now),
-        job_repository=services["job_repository"],
+        subject_job_reader=FakeSubjectJobReader(
+            services["job_repository"]
+        ),
         policy_provider=services["policy_provider"],
         candidate_summary_provider=services[
             "candidate_summary_provider"

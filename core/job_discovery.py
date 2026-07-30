@@ -238,12 +238,14 @@ class JobDiscoveryResponse:
     change: DiscoveryChange | None = None
     missing_fields: tuple[str, ...] = field(default_factory=tuple)
     alternatives: tuple[str, ...] = field(default_factory=tuple)
+    run_hash: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "disposition": self.disposition.value,
             "original_intent": self.original_intent.value,
             "run_id": self.run_id,
+            "run_hash": self.run_hash,
             "job_id": self.job_id,
             "change": self.change.value if self.change else None,
             "missing_fields": list(self.missing_fields),
@@ -533,11 +535,13 @@ def _formal_response(
         recorded_at=_utc_now(),
     )
     _persist_run(home, run)
+    run_hash = _content_hash(run.to_dict())
     return JobDiscoveryResponse(
         disposition=disposition,
         original_intent=request.proposal.intent,
         reason_code=reason,
         run_id=run.run_id,
+        run_hash=run_hash,
         job_id=job_id,
         change=change,
         missing_fields=missing_fields,

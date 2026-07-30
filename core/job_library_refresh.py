@@ -67,9 +67,19 @@ from .selective_reprioritization import (
     SelectiveBatchReprioritizationCommand,
     SelectiveBatchReprioritizationResult,
 )
+from .subject_job_discovery import (
+    SubjectJobDiscoveryCommand,
+    SubjectJobDiscoveryResult,
+    SubjectJobDiscoveryStatus,
+)
+from .subject_job_library import (
+    SubjectJobLibraryMembership,
+    SubjectJobMembershipSourceKind,
+)
 
 
-JOB_LIBRARY_REFRESH_CONTRACT_VERSION = "manual-job-library-refresh-v2"
+LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION = "manual-job-library-refresh-v2"
+JOB_LIBRARY_REFRESH_CONTRACT_VERSION = "manual-job-library-refresh-v3"
 _RUN_ID_RE = re.compile(r"job-library-refresh-[0-9a-f]{64}")
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -119,10 +129,15 @@ def _subject_key(subject_id: str) -> str:
     return hashlib.sha256(subject_id.encode("utf-8")).hexdigest()
 
 
-def _run_id(subject_id: str, invocation_id: str) -> str:
+def _run_id(
+    subject_id: str,
+    invocation_id: str,
+    *,
+    contract_version: str = JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+) -> str:
     digest = _hash(
         {
-            "contract_version": JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+            "contract_version": contract_version,
             "invocation_id": invocation_id,
             "subject_id": subject_id,
         }
@@ -167,11 +182,19 @@ class CandidateRefreshReason(StrEnum):
     DISCOVERY_FAILED = "DISCOVERY_FAILED"
     DISCOVERY_RESULT_INVALID = "DISCOVERY_RESULT_INVALID"
     DISCOVERY_EXCEPTION = "DISCOVERY_EXCEPTION"
+    MEMBERSHIP_FAILED = "MEMBERSHIP_FAILED"
 
 
 class CandidateIntentStatus(StrEnum):
     NOT_APPLICABLE = "NOT_APPLICABLE"
     ADD_JOB_ONLY = "ADD_JOB_ONLY"
+    CREATED = "CREATED"
+    UNCHANGED = "UNCHANGED"
+    FAILED = "FAILED"
+
+
+class CandidateMembershipStatus(StrEnum):
+    NOT_APPLICABLE = "NOT_APPLICABLE"
     CREATED = "CREATED"
     UNCHANGED = "UNCHANGED"
     FAILED = "FAILED"
@@ -301,6 +324,8 @@ class JobCandidateRefreshResult:
     job_id: str | None
     reason: CandidateRefreshReason | None
     source_reason: str | None
+    membership_status: CandidateMembershipStatus
+    membership_id: str | None
     intent_status: CandidateIntentStatus
     intent_reason: CandidateIntentReason | None
     accepted_job_intent_id: str | None
@@ -334,6 +359,13 @@ class JobCandidateRefreshResult:
         if self.source_reason is not None:
             _clean("source_reason", self.source_reason)
         object.__setattr__(
+            self,
+            "membership_status",
+            CandidateMembershipStatus(self.membership_status),
+        )
+        if self.membership_id is not None:
+            _clean("membership_id", self.membership_id, 160)
+        object.__setattr__(
             self, "intent_status", CandidateIntentStatus(self.intent_status)
         )
         if self.intent_reason is not None:
@@ -346,6 +378,11 @@ class JobCandidateRefreshResult:
                 self.accepted_job_intent_id,
                 160,
             )
+        legacy_hash = (
+            self.membership_status is CandidateMembershipStatus.NOT_APPLICABLE
+            and self.membership_id is None
+            and self.result_hash == _hash(self.legacy_identity_dict())
+        )
         if self.discovery_status in {
             CandidateDiscoveryStatus.CREATED,
             CandidateDiscoveryStatus.UPDATED,
@@ -354,11 +391,60 @@ class JobCandidateRefreshResult:
             if (
                 self.reader_status != ReadJobStatus.SUCCEEDED.value
                 or self.job_id is None
-                or self.reason is not None
+                or (legacy_hash and self.reason is not None)
+                or (
+                    not legacy_hash
+                    and self.membership_status
+                    not in {
+                        CandidateMembershipStatus.CREATED,
+                        CandidateMembershipStatus.UNCHANGED,
+                        CandidateMembershipStatus.FAILED,
+                    }
+                )
+                or (
+                    not legacy_hash
+                    and (
+                        (
+                            self.membership_status
+                            in {
+                                CandidateMembershipStatus.CREATED,
+                                CandidateMembershipStatus.UNCHANGED,
+                            }
+                            and (
+                                self.membership_id is None
+                                or self.reason is not None
+                            )
+                        )
+                        or (
+                            self.membership_status
+                            is CandidateMembershipStatus.FAILED
+                            and (
+                                self.membership_id is not None
+                                or self.reason
+                                is not CandidateRefreshReason.MEMBERSHIP_FAILED
+                            )
+                        )
+                    )
+                )
             ):
                 raise ValueError("successful candidate refresh is malformed")
         elif self.reason is None or self.job_id is not None:
             raise ValueError("stopped candidate refresh is malformed")
+        if self.discovery_status not in {
+            CandidateDiscoveryStatus.CREATED,
+            CandidateDiscoveryStatus.UPDATED,
+            CandidateDiscoveryStatus.UNCHANGED,
+        }:
+            expected_membership = (
+                CandidateMembershipStatus.FAILED
+                if self.reason is CandidateRefreshReason.MEMBERSHIP_FAILED
+                else CandidateMembershipStatus.NOT_APPLICABLE
+            )
+            if (
+                self.membership_status is not expected_membership
+                or self.membership_id is not None
+            ):
+                raise ValueError("stopped membership result is malformed")
         if self.intent_status in {
             CandidateIntentStatus.CREATED,
             CandidateIntentStatus.UNCHANGED,
@@ -371,6 +457,11 @@ class JobCandidateRefreshResult:
                     CandidateDiscoveryStatus.CREATED,
                     CandidateDiscoveryStatus.UPDATED,
                     CandidateDiscoveryStatus.UNCHANGED,
+                }
+                or self.membership_status
+                not in {
+                    CandidateMembershipStatus.CREATED,
+                    CandidateMembershipStatus.UNCHANGED,
                 }
             ):
                 raise ValueError("successful candidate intent is malformed")
@@ -387,7 +478,11 @@ class JobCandidateRefreshResult:
             raise ValueError("non-writing candidate intent is malformed")
         if (
             _HASH_RE.fullmatch(self.result_hash) is None
-            or self.result_hash != _hash(self.identity_dict())
+            or self.result_hash
+            not in {
+                _hash(self.identity_dict()),
+                *({_hash(self.legacy_identity_dict())} if legacy_hash else set()),
+            }
         ):
             raise ValueError("candidate refresh hash is invalid")
 
@@ -397,6 +492,8 @@ class JobCandidateRefreshResult:
             "candidate_url": self.candidate_url,
             "discovery_status": self.discovery_status.value,
             "job_id": self.job_id,
+            "membership_id": self.membership_id,
+            "membership_status": self.membership_status.value,
             "accepted_job_intent_id": self.accepted_job_intent_id,
             "intent_reason": (
                 self.intent_reason.value if self.intent_reason else None
@@ -408,6 +505,12 @@ class JobCandidateRefreshResult:
             "source_reason": self.source_reason,
         }
 
+    def legacy_identity_dict(self) -> dict[str, Any]:
+        value = self.identity_dict()
+        value.pop("membership_id")
+        value.pop("membership_status")
+        return value
+
     @classmethod
     def create(cls, **values: Any) -> "JobCandidateRefreshResult":
         payload = {
@@ -415,6 +518,8 @@ class JobCandidateRefreshResult:
             "candidate_url": values["candidate_url"],
             "discovery_status": values["discovery_status"].value,
             "job_id": values["job_id"],
+            "membership_id": values["membership_id"],
+            "membership_status": values["membership_status"].value,
             "accepted_job_intent_id": values["accepted_job_intent_id"],
             "intent_reason": (
                 values["intent_reason"].value
@@ -501,11 +606,18 @@ class JobLibraryRefreshRun:
     def __post_init__(self) -> None:
         if _RUN_ID_RE.fullmatch(self.run_id) is None:
             raise ValueError("refresh run_id is invalid")
-        if self.contract_version != JOB_LIBRARY_REFRESH_CONTRACT_VERSION:
+        if self.contract_version not in {
+            LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+            JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+        }:
             raise ValueError("refresh contract version is unsupported")
         subject_id = _clean("subject_id", self.subject_id, 160)
         invocation_id = _clean("invocation_id", self.invocation_id)
-        if self.run_id != _run_id(subject_id, invocation_id):
+        if self.run_id != _run_id(
+            subject_id,
+            invocation_id,
+            contract_version=self.contract_version,
+        ):
             raise ValueError("refresh run identity is invalid")
         if _HASH_RE.fullmatch(self.profile_snapshot_hash) is None:
             raise ValueError("profile_snapshot_hash is invalid")
@@ -541,7 +653,15 @@ class JobLibraryRefreshRun:
     def content_dict(self, *, include_hash: bool = True) -> dict[str, Any]:
         value = {
             "candidate_results": [
-                {**item.identity_dict(), "result_hash": item.result_hash}
+                {
+                    **(
+                        item.legacy_identity_dict()
+                        if self.contract_version
+                        == LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION
+                        else item.identity_dict()
+                    ),
+                    "result_hash": item.result_hash,
+                }
                 for item in self.candidate_results
             ],
             "completed_at": _time(self.completed_at),
@@ -715,8 +835,8 @@ class PublicJobReaderCallable(Protocol):
 
 class JobDiscoveryCallable(Protocol):
     def __call__(
-        self, request: JobDiscoveryRequest
-    ) -> JobDiscoveryResponse | Awaitable[JobDiscoveryResponse]: ...
+        self, command: SubjectJobDiscoveryCommand
+    ) -> SubjectJobDiscoveryResult | Awaitable[SubjectJobDiscoveryResult]: ...
 
 
 class PriorityRefreshCallable(Protocol):
@@ -826,17 +946,17 @@ def _overall(
     if profiles and search_successes == 0:
         return JobLibraryRefreshStatus.FAILED
     candidate_successes = sum(
-        item.discovery_status
+        item.membership_status
         in {
-            CandidateDiscoveryStatus.CREATED,
-            CandidateDiscoveryStatus.UPDATED,
-            CandidateDiscoveryStatus.UNCHANGED,
+            CandidateMembershipStatus.CREATED,
+            CandidateMembershipStatus.UNCHANGED,
         }
         for item in candidates
     )
     candidate_failures = sum(
         item.discovery_status
         in {CandidateDiscoveryStatus.SKIPPED, CandidateDiscoveryStatus.FAILED}
+        or item.membership_status is CandidateMembershipStatus.FAILED
         for item in candidates
     )
     intent_failures = sum(
@@ -876,6 +996,8 @@ def _with_intent(
         job_id=candidate.job_id,
         reason=candidate.reason,
         source_reason=candidate.source_reason,
+        membership_status=candidate.membership_status,
+        membership_id=candidate.membership_id,
         intent_status=status,
         intent_reason=reason,
         accepted_job_intent_id=accepted_job_intent_id,
@@ -1097,6 +1219,9 @@ def _stopped_candidate(
     discovery_status: CandidateDiscoveryStatus,
     reason: CandidateRefreshReason,
     source_reason: str,
+    membership_status: CandidateMembershipStatus = (
+        CandidateMembershipStatus.NOT_APPLICABLE
+    ),
 ) -> JobCandidateRefreshResult:
     return JobCandidateRefreshResult.create(
         source_profile_ids=profile_ids,
@@ -1107,6 +1232,8 @@ def _stopped_candidate(
         job_id=None,
         reason=reason,
         source_reason=source_reason,
+        membership_status=membership_status,
+        membership_id=None,
         intent_status=CandidateIntentStatus.NOT_APPLICABLE,
         intent_reason=None,
         accepted_job_intent_id=None,
@@ -1119,6 +1246,8 @@ def _candidate_from_discovery(
     candidate: SearchCandidate,
     candidate_url: str,
     response: Any,
+    membership_status: CandidateMembershipStatus,
+    membership_id: str,
 ) -> JobCandidateRefreshResult:
     if not isinstance(response, JobDiscoveryResponse):
         return _stopped_candidate(
@@ -1129,6 +1258,7 @@ def _candidate_from_discovery(
             discovery_status=CandidateDiscoveryStatus.FAILED,
             reason=CandidateRefreshReason.DISCOVERY_RESULT_INVALID,
             source_reason="DISCOVERY_RESULT_INVALID",
+            membership_status=CandidateMembershipStatus.FAILED,
         )
     if (
         response.disposition is DiscoveryDisposition.ACCEPTED
@@ -1146,6 +1276,8 @@ def _candidate_from_discovery(
             job_id=response.job_id,
             reason=None,
             source_reason=None,
+            membership_status=membership_status,
+            membership_id=membership_id,
             intent_status=CandidateIntentStatus.ADD_JOB_ONLY,
             intent_reason=None,
             accepted_job_intent_id=None,
@@ -1158,6 +1290,45 @@ def _candidate_from_discovery(
         discovery_status=CandidateDiscoveryStatus.FAILED,
         reason=CandidateRefreshReason.DISCOVERY_FAILED,
         source_reason=response.reason_code.value,
+    )
+
+
+def _candidate_with_membership_failure(
+    *,
+    profile_ids: tuple[str, ...],
+    candidate: SearchCandidate,
+    candidate_url: str,
+    response: JobDiscoveryResponse,
+) -> JobCandidateRefreshResult:
+    if (
+        response.disposition is not DiscoveryDisposition.ACCEPTED
+        or response.change is None
+        or response.job_id is None
+    ):
+        return _stopped_candidate(
+            profile_ids=profile_ids,
+            candidate=candidate,
+            candidate_url=candidate_url,
+            reader_status=ReadJobStatus.SUCCEEDED.value,
+            discovery_status=CandidateDiscoveryStatus.FAILED,
+            reason=CandidateRefreshReason.MEMBERSHIP_FAILED,
+            source_reason="SUBJECT_MEMBERSHIP_NOT_COMMITTED",
+            membership_status=CandidateMembershipStatus.FAILED,
+        )
+    return JobCandidateRefreshResult.create(
+        source_profile_ids=profile_ids,
+        candidate_id=candidate.candidate_id,
+        candidate_url=candidate_url,
+        reader_status=ReadJobStatus.SUCCEEDED.value,
+        discovery_status=CandidateDiscoveryStatus(response.change.value),
+        job_id=response.job_id,
+        reason=CandidateRefreshReason.MEMBERSHIP_FAILED,
+        source_reason="SUBJECT_MEMBERSHIP_NOT_COMMITTED",
+        membership_status=CandidateMembershipStatus.FAILED,
+        membership_id=None,
+        intent_status=CandidateIntentStatus.NOT_APPLICABLE,
+        intent_reason=None,
+        accepted_job_intent_id=None,
     )
 
 
@@ -1177,18 +1348,14 @@ def _profile_result_from_dict(value: Any) -> SearchProfileRefreshResult:
             else None
         ),
         source_reason=value["source_reason"],
-        intent_status=CandidateIntentStatus(value["intent_status"]),
-        intent_reason=(
-            CandidateIntentReason(value["intent_reason"])
-            if value["intent_reason"]
-            else None
-        ),
-        accepted_job_intent_id=value["accepted_job_intent_id"],
         result_hash=value["result_hash"],
     )
 
 
-def _candidate_result_from_dict(value: Any) -> JobCandidateRefreshResult:
+def _candidate_result_from_dict(
+    value: Any, *, contract_version: str
+) -> JobCandidateRefreshResult:
+    legacy = contract_version == LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION
     return JobCandidateRefreshResult(
         source_profile_ids=tuple(value["source_profile_ids"]),
         candidate_id=value["candidate_id"],
@@ -1202,6 +1369,21 @@ def _candidate_result_from_dict(value: Any) -> JobCandidateRefreshResult:
             else None
         ),
         source_reason=value["source_reason"],
+        membership_status=CandidateMembershipStatus(
+            (
+                CandidateMembershipStatus.NOT_APPLICABLE.value
+                if legacy
+                else value["membership_status"]
+            )
+        ),
+        membership_id=None if legacy else value["membership_id"],
+        intent_status=CandidateIntentStatus(value["intent_status"]),
+        intent_reason=(
+            CandidateIntentReason(value["intent_reason"])
+            if value["intent_reason"]
+            else None
+        ),
+        accepted_job_intent_id=value["accepted_job_intent_id"],
         result_hash=value["result_hash"],
     )
 
@@ -1236,7 +1418,9 @@ def _run_from_dict(value: Any) -> JobLibraryRefreshRun:
             for item in value["profile_results"]
         ),
         candidate_results=tuple(
-            _candidate_result_from_dict(item)
+            _candidate_result_from_dict(
+                item, contract_version=value["contract_version"]
+            )
             for item in value["candidate_results"]
         ),
         discovery_summary=DiscoveryRefreshSummary(
@@ -1269,20 +1453,44 @@ class PrivateHomeJobLibraryRefreshRunRepository:
             / _subject_key(subject)
         )
 
-    def _path(self, subject_id: str, invocation_id: str) -> Path:
+    def _path(
+        self,
+        subject_id: str,
+        invocation_id: str,
+        *,
+        contract_version: str = JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+    ) -> Path:
+        run_id = _run_id(
+            subject_id,
+            invocation_id,
+            contract_version=contract_version,
+        )
         return self._directory(subject_id) / (
-            f"{_run_id(subject_id, invocation_id)}.json"
+            f"{run_id}.json"
         )
 
     def get_by_invocation(
         self, subject_id: str, invocation_id: str
     ) -> JobLibraryRefreshReadResult:
-        path = self._path(subject_id, invocation_id)
+        paths = (
+            self._path(subject_id, invocation_id),
+            self._path(
+                subject_id,
+                invocation_id,
+                contract_version=LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
+            ),
+        )
         with self._lock:
-            if not path.exists():
+            existing_paths = tuple(path for path in paths if path.exists())
+            if not existing_paths:
                 return JobLibraryRefreshReadResult(
                     JobLibraryRefreshReadStatus.NOT_FOUND, None
                 )
+            if len(existing_paths) > 1:
+                return JobLibraryRefreshReadResult(
+                    JobLibraryRefreshReadStatus.INTEGRITY_FAILURE, None
+                )
+            path = existing_paths[0]
             if path.is_symlink() or not path.is_file():
                 return JobLibraryRefreshReadResult(
                     JobLibraryRefreshReadStatus.INTEGRITY_FAILURE, None
@@ -1587,7 +1795,23 @@ async def refresh_job_library(
             observation=read_result.observation,
         )
         try:
-            response = await _resolve(discovery(request))
+            subject_result = await _resolve(
+                discovery(
+                    SubjectJobDiscoveryCommand(
+                        subject_id=command.subject_id,
+                        request=request,
+                        source_kind=(
+                            SubjectJobMembershipSourceKind.MANUAL_REFRESH
+                        ),
+                        source_ref=command.invocation_id,
+                        invocation_id=(
+                            f"{command.invocation_id}:membership:"
+                            f"{request.proposal.proposal_id}"
+                        ),
+                        now=command.now,
+                    )
+                )
+            )
         except (OSError, RuntimeError, TypeError, ValueError):
             candidate_results.append(
                 _stopped_candidate(
@@ -1601,11 +1825,60 @@ async def refresh_job_library(
                 )
             )
             continue
+        if not isinstance(subject_result, SubjectJobDiscoveryResult):
+            candidate_results.append(
+                _stopped_candidate(
+                    profile_ids=profile_ids,
+                    candidate=candidate,
+                    candidate_url=canonical_url,
+                    reader_status=ReadJobStatus.SUCCEEDED.value,
+                    discovery_status=CandidateDiscoveryStatus.FAILED,
+                    reason=CandidateRefreshReason.DISCOVERY_RESULT_INVALID,
+                    source_reason="DISCOVERY_RESULT_INVALID",
+                )
+            )
+            continue
+        if subject_result.status is SubjectJobDiscoveryStatus.NOT_ACCEPTED:
+            candidate_results.append(
+                _stopped_candidate(
+                    profile_ids=profile_ids,
+                    candidate=candidate,
+                    candidate_url=canonical_url,
+                    reader_status=ReadJobStatus.SUCCEEDED.value,
+                    discovery_status=CandidateDiscoveryStatus.FAILED,
+                    reason=CandidateRefreshReason.DISCOVERY_FAILED,
+                    source_reason=(
+                        subject_result.discovery_response.reason_code.value
+                    ),
+                )
+            )
+            continue
+        if (
+            subject_result.status is not SubjectJobDiscoveryStatus.ACCEPTED
+            or not isinstance(
+                subject_result.membership, SubjectJobLibraryMembership
+            )
+            or subject_result.membership_status is None
+        ):
+            candidate_results.append(
+                _candidate_with_membership_failure(
+                    profile_ids=profile_ids,
+                    candidate=candidate,
+                    candidate_url=canonical_url,
+                    response=subject_result.discovery_response,
+                )
+            )
+            continue
+        response = subject_result.discovery_response
         candidate_result = _candidate_from_discovery(
             profile_ids=profile_ids,
             candidate=candidate,
             candidate_url=canonical_url,
             response=response,
+            membership_status=CandidateMembershipStatus(
+                subject_result.membership_status.value
+            ),
+            membership_id=subject_result.membership.membership_id,
         )
         if (
             isinstance(response, JobDiscoveryResponse)
@@ -1671,9 +1944,11 @@ async def refresh_job_library(
 
 __all__ = [
     "JOB_LIBRARY_REFRESH_CONTRACT_VERSION",
+    "LEGACY_JOB_LIBRARY_REFRESH_CONTRACT_VERSION",
     "CandidateDiscoveryStatus",
     "CandidateIntentReason",
     "CandidateIntentStatus",
+    "CandidateMembershipStatus",
     "CandidateRefreshReason",
     "ConfiguredSearchProfileExecutor",
     "DiscoveryRefreshSummary",

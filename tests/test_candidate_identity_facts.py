@@ -399,7 +399,9 @@ def test_legacy_vault_unchanged_private_index_and_safe_diagnostics(
         and entry.conflict_state is CandidateIdentityFactConflictState.NONE
         for entry in index.entries
     )
-    assert repository.path.stat().st_mode & 0o777 == 0o600
+    # Empty reads are strictly zero-write; the first fact write owns
+    # repository initialization and its private permissions.
+    assert not repository.path.exists()
     rendered = f"{missing.failure_code or ''}{index.index_hash}"
     for forbidden in (
         "Legacy",

@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 import pytest
@@ -69,6 +70,7 @@ from core.single_job_priority import (
     build_single_job_priority_binding,
     orchestrate_single_job_priority,
 )
+from core.subject_job_library import SubjectJobPostingReadStatus
 
 
 NOW = datetime(2026, 7, 27, 18, 0, tzinfo=timezone.utc)
@@ -370,9 +372,20 @@ async def _real_queue(
     services: dict[str, Any],
     command: CurrentPriorityQueueCommand,
 ) -> CurrentPriorityQueueResult:
+    class SubjectReader:
+        def list_current(self, *, subject_id: str, now: datetime):
+            return SimpleNamespace(
+                status=SubjectJobPostingReadStatus.READY,
+                membership_snapshot_hash="a" * 64,
+                ordered_items=tuple(
+                    SimpleNamespace(job_posting=job)
+                    for job in services["job_repository"].jobs.values()
+                ),
+            )
+
     return await build_current_priority_queue(
         command,
-        job_repository=services["job_repository"],
+        subject_job_reader=SubjectReader(),
         policy_provider=services["policy_provider"],
         candidate_summary_provider=services[
             "candidate_summary_provider"

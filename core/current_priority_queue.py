@@ -7,11 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from .job_discovery import (
-    JobPosting,
-    JobPostingReadRepository,
-    JobPostingRepositoryError,
-)
+from .job_discovery import JobPosting
 from .job_prioritization import (
     CandidateSummary,
     PriorityAgentMetadata,
@@ -39,6 +35,10 @@ from .single_job_priority import (
     StoredSingleJobPriority,
     build_single_job_priority_binding,
     completed_priority_bindings_match,
+)
+from .subject_job_library import (
+    SubjectJobPostingReadStatus,
+    SubjectScopedJobPostingReadPort,
 )
 
 
@@ -174,6 +174,7 @@ class CurrentPriorityQueueResult:
     policy_snapshot: PrioritizationPolicy | None
     items: tuple[CurrentPriorityQueueItem, ...]
     message: str
+    membership_snapshot_hash: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -219,10 +220,15 @@ class CurrentPriorityQueueResult:
                 for item in self.items
             ):
                 raise ValueError("priority queue result items are invalid")
+            if self.membership_snapshot_hash and len(
+                self.membership_snapshot_hash
+            ) != 64:
+                raise ValueError("membership snapshot hash is invalid")
         elif (
             self.reason_code is None
             or self.policy_snapshot is not None
             or self.items
+            or self.membership_snapshot_hash
         ):
             raise ValueError("failed priority queue result is invalid")
 
@@ -308,6 +314,7 @@ def _failure(
         subject_id=subject_id,
         policy_snapshot=None,
         items=(),
+        membership_snapshot_hash="",
         message=message,
     )
 
@@ -399,7 +406,7 @@ def _load_completed_decision(
 async def build_current_priority_queue(
     command: CurrentPriorityQueueCommand,
     *,
-    job_repository: JobPostingReadRepository,
+    subject_job_reader: SubjectScopedJobPostingReadPort,
     policy_provider: ActivePrioritizationPolicyProvider,
     candidate_summary_provider: CandidateSummaryProvider,
     orchestration_repository: PrivateHomeSingleJobPriorityRepository,
@@ -421,22 +428,26 @@ async def build_current_priority_queue(
         )
 
     try:
-        jobs = job_repository.list_current()
-    except (JobPostingRepositoryError, OSError, RuntimeError):
+        subject_jobs = subject_job_reader.list_current(
+            subject_id=subject_id, now=command.now
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
         return _failure(
             command,
             CurrentPriorityQueueReason.JOB_REPOSITORY_FAILED,
             "The current typed JobPosting collection could not be read.",
             retryable=True,
         )
-    if not isinstance(jobs, tuple) or not all(
-        isinstance(job, JobPosting) for job in jobs
-    ):
+    if subject_jobs.status not in {
+        SubjectJobPostingReadStatus.READY,
+        SubjectJobPostingReadStatus.EMPTY,
+    }:
         return _failure(
             command,
             CurrentPriorityQueueReason.JOB_REPOSITORY_FAILED,
-            "The current JobPosting repository returned invalid data.",
+            "The subject Job Library could not be read safely.",
         )
+    jobs = tuple(item.job_posting for item in subject_jobs.ordered_items)
 
     try:
         policy = policy_provider.get_active_policy(subject_id)
@@ -647,6 +658,7 @@ async def build_current_priority_queue(
         subject_id=subject_id,
         policy_snapshot=policy,
         items=ordered,
+        membership_snapshot_hash=subject_jobs.membership_snapshot_hash,
         message="The current priority queue read model was built.",
     )
 

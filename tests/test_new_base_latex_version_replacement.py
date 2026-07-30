@@ -263,9 +263,9 @@ async def test_unsafe_invalid_or_wrong_target_never_delegates(
     assert "register-and-replace-base-latex" in Path(
         "dashboard/server.py"
     ).read_text(encoding="utf-8")
-    assert "registerAndReplaceBaseLatex" in Path(
-        "dashboard/static/app.js"
-    ).read_text(encoding="utf-8")
+    javascript = Path("dashboard/static/app.js").read_text(encoding="utf-8")
+    assert "specialized correction or replacement capability" in javascript
+    assert "register-and-replace-base-latex" not in javascript
 
 
 @pytest.mark.asyncio

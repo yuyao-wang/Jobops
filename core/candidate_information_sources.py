@@ -1337,6 +1337,11 @@ class PrivateHomeCandidateInformationSourceRepository:
     ) -> CandidateInformationSourceListResult:
         try:
             subject = _clean_id("subject_id", subject_id)
+            if not self.path.exists():
+                return CandidateInformationSourceListResult(
+                    CandidateInformationSourceListStatus.SUCCEEDED,
+                    sources=(),
+                )
             with closing(self._connect()) as connection:
                 connection.execute("BEGIN")
                 rows = connection.execute(

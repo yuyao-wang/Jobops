@@ -257,13 +257,14 @@ async def test_route_replay_reuses_invocation_and_ui_has_no_business_calls(
     )
     template = (root / "dashboard/templates/index.html").read_text()
     javascript = (root / "dashboard/static/app.js").read_text()
-    assert "刷新职位库" in template
-    assert "扫描所有已启用的职位来源并更新优先级" in template
-    assert ":disabled=\"jobLibraryRefresh.status === 'RUNNING'\"" in template
+    assert "Refresh job library" in template
+    assert "Jobs matched to your preferences" in template
+    assert 'id="refresh-jobs"' in template
     assert "JobOps" in template
     assert "MR.Jobs" not in template
     assert app.title == "JobOps"
-    assert 'x-data="jobops()"' in template
-    assert "function jobops()" in javascript
-    assert "/api/job-library/refresh" in javascript
-    assert "reuseInvocation: true" in javascript
+    assert "x-data=" not in template
+    assert javascript.count(
+        'postJson("/api/job-library/refresh"'
+    ) == 1
+    assert "if (state.refreshing) return" in javascript

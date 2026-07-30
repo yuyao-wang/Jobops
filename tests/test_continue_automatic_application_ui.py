@@ -333,12 +333,17 @@ async def test_route_replay_uses_same_id_and_ui_is_p2c10a_only() -> None:
     }
     javascript = (root / "dashboard/static/app.js").read_text()
     template = (root / "dashboard/templates/index.html").read_text()
-    assert javascript.count('fetch("/api/automation-cycle/run"') == 1
-    assert javascript.count('fetch("/api/job-library/refresh"') == 1
-    assert "reuseInvocation: true" in javascript
-    assert "继续自动申请" in template
-    assert (
-        "处理已进入职位库且符合当前策略的岗位；"
-        "可能准备材料并提交已获授权的申请。"
-    ) in template
-    assert "SUBMISSION_UNCERTAIN 不会自动重试。" in template
+    assert javascript.count(
+        'postJson("/api/automation-cycle/run"'
+    ) == 1
+    assert javascript.count(
+        'postJson("/api/job-library/refresh"'
+    ) == 1
+    assert "if (state.automating) return" in javascript
+    assert "Continue automatic applications" in template
+    assert "Submission uncertain" in template
+    automation_block = javascript[
+        javascript.index("async function runAutomation()"):
+        javascript.index("function updateRunningButtons")
+    ]
+    assert "/api/job-library/refresh" not in automation_block

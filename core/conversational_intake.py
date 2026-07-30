@@ -32,8 +32,13 @@ from core.job_discovery import (
     JobIntakeProposal,
     ProposalResolution,
     ResolvedJobCandidate,
-    run_discovery,
 )
+from core.subject_job_discovery import (
+    SubjectJobDiscoveryCommand,
+    SubjectJobDiscoveryResult,
+    SubjectJobDiscoveryStatus,
+)
+from core.subject_job_library import SubjectJobMembershipSourceKind
 from core.job_search import (
     CandidateSet,
     JobSearchPort,
@@ -1136,7 +1141,9 @@ class InMemoryCandidateSelectionStore:
 
 
 PublicJobReader = Callable[[ReadJobRequest], Awaitable[ReadJobResult]]
-_JobDiscoveryPort = Callable[[JobDiscoveryRequest], JobDiscoveryResponse]
+_JobDiscoveryPort = Callable[
+    [SubjectJobDiscoveryCommand], SubjectJobDiscoveryResult
+]
 
 
 def _utc_now() -> datetime:
@@ -2024,7 +2031,7 @@ def resolve_pending_intake(
     *,
     pending_store: InMemoryPendingIntakeStore,
     accepted_intent_repository: AcceptedJobIntentRepository,
-    discovery_port: _JobDiscoveryPort = run_discovery,
+    discovery_port: _JobDiscoveryPort,
     clock: Callable[[], datetime] = _utc_now,
 ) -> ResolvePendingIntakeResponse:
     """Resolve one I1 choice through the typed Job Discovery boundary."""
@@ -2130,11 +2137,34 @@ def resolve_pending_intake(
         proposal=proposal,
     )
     try:
-        discovery_response = discovery_port(discovery_request)
-        if not isinstance(discovery_response, JobDiscoveryResponse):
-            raise TypeError(
-                "discovery_port must return a JobDiscoveryResponse"
+        subject_result = discovery_port(
+            SubjectJobDiscoveryCommand(
+                subject_id=request.subject_id,
+                request=discovery_request,
+                source_kind=(
+                    SubjectJobMembershipSourceKind.CONVERSATIONAL_APPLY
+                    if action is IntakeAction.REQUEST_APPLICATION
+                    else SubjectJobMembershipSourceKind.CONVERSATIONAL_ADD
+                ),
+                source_ref=request.pending_intake_id,
+                invocation_id=(
+                    f"{request.pending_intake_id}:membership:{action.value}"
+                ),
+                now=now,
             )
+        )
+        if (
+            not isinstance(subject_result, SubjectJobDiscoveryResult)
+            or subject_result.status
+            not in {
+                SubjectJobDiscoveryStatus.ACCEPTED,
+                SubjectJobDiscoveryStatus.NOT_ACCEPTED,
+            }
+        ):
+            raise TypeError(
+                "subject discovery must commit membership"
+            )
+        discovery_response = subject_result.discovery_response
     except Exception:
         pending_store.release(
             pending_intake_id=claim.pending.pending_intake_id,

@@ -1009,6 +1009,10 @@ class PrivateHomeCandidateIdentityFactRepository:
         try:
             subject_id = _clean_id("subject_id", command.subject_id)
             field_key = ApplicationExecutionIdentityFieldKey(command.field_key)
+            if not self.path.exists():
+                return GetCurrentCandidateIdentityFactResult(
+                    GetCurrentCandidateIdentityFactStatus.MISSING
+                )
             with closing(self._connect()) as connection:
                 current = self._read_current_tx(
                     connection, subject_id=subject_id, field_key=field_key
@@ -1044,6 +1048,37 @@ class PrivateHomeCandidateIdentityFactRepository:
     def get_index(self, subject_id: str) -> CandidateIdentityFactIndex:
         subject = _clean_id("subject_id", subject_id)
         entries: list[CandidateIdentityFactIndexEntry] = []
+        if not self.path.exists():
+            entries = [
+                CandidateIdentityFactIndexEntry(
+                    field_key=key,
+                    current_fact_id=None,
+                    current_fact_version=None,
+                    current_fact_hash=None,
+                    verification_status=None,
+                    conflict_state=CandidateIdentityFactConflictState.NONE,
+                    source_refs=(),
+                )
+                for key in sorted(
+                    ApplicationExecutionIdentityFieldKey,
+                    key=lambda item: item.value,
+                )
+            ]
+            return CandidateIdentityFactIndex(
+                subject_id=subject,
+                entries=tuple(entries),
+                index_hash=_hash(
+                    {
+                        "entries": tuple(
+                            item.identity_dict() for item in entries
+                        ),
+                        "index_contract_version": (
+                            CANDIDATE_IDENTITY_FACT_INDEX_CONTRACT_VERSION
+                        ),
+                        "subject_id": subject,
+                    }
+                ),
+            )
         with closing(self._connect()) as connection:
             connection.execute("BEGIN")
             for key in sorted(

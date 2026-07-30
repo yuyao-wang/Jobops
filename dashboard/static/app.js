@@ -1,2733 +1,478 @@
-/**
- * JobOps — Job Intelligence Dashboard
- *
- * Alpine.js application with:
- * - Real-time WebSocket event feed
- * - Profile/preferences inline editing
- * - Scheduler countdown timers
- * - Dark-themed Chart.js visualizations
- * - Full job CRUD with expandable detail rows
- */
-
-function jobops() {
-  return {
-    // ----- Core State -----
-    jobs: [],
-    totalJobs: 0,
-    stats: {},
-    allStatuses: [],
-    allCompanies: [],
-    expandedJob: null,
-    jobNotes: {},
-    discovering: false,
-    scoring: false,
-    loading: false,
-    notification: "",
-    notificationType: "success",
-
-    // ----- Authenticated Manual Job Library Refresh (S3d) -----
-    jobLibraryRefresh: {
-      status: "IDLE",
-      invocationId: null,
-      maxReprioritizations: 50,
-      summary: null,
-      sourceFailures: [],
-      refreshRunId: null,
-      lastCompletedRefreshTime: null,
-      message: null,
-      replayed: false,
-    },
-
-    // ----- Authenticated Automation Cycle (S3e) -----
-    automationCycle: {
-      status: "IDLE",
-      invocationId: null,
-      stages: [],
-      summary: null,
-      stageFailures: [],
-      cycleRunId: null,
-      startedAt: null,
-      completedAt: null,
-      message: null,
-    },
-
-    // ----- Read-only Human Attention Inbox (S3f) -----
-    humanAttentionInbox: {
-      status: "LOADING",
-      userItems: [],
-      operatorItems: [],
-      itemCount: 0,
-      affectedPlanCount: 0,
-      refreshedAt: null,
-      message: null,
-    },
-    _humanAttentionInboxRequest: null,
-    attentionReplies: {},
-    correctionInstructions: {},
-    replacementSelections: {},
-    replacementUploads: {},
-    replacementUploadNames: {},
-    replacementUploadNotes: {},
-    layoutIssueSelections: {},
-    resolvingAttentionItemId: null,
-
-    // ----- Authenticated Candidate Fact Review (C1d) -----
-    candidateFactReview: {
-      status: "LOADING",
-      items: [],
-      queueSnapshotHash: null,
-      counts: { pending: 0, conflicts: 0, missing_required: 0, resolved: 0 },
-      message: null,
-    },
-    candidateFactReviewValues: {},
-    resolvingCandidateFactReviewId: null,
-
-    // ----- WebSocket -----
-    ws: null,
-    wsConnected: false,
-    _pingTimer: null,
-    _wsReconnectDelay: 1000,
-    _wsReconnecting: false,
-
-    // ----- Activity Feed -----
-    activityFeed: [],
-    maxFeedItems: 50,
-
-    // ----- Scheduler -----
-    schedulerData: { running: false, jobs: [], last_results: {} },
-    _schedulerTimer: null,
-    _countdownTimer: null,
-
-    // ----- Profile Editing -----
-    _sidebarSaveTimer: null,
-    sidebarSaving: false,
-    sidebarSaved: false,
-    profileDirty: false,
-    profileEdit: {
-      roles: [],
-      locations: [],
-      min_score: 65,
-      primarySkills: [],
-      secondarySkills: [],
-      favoriteCompanies: [],
-      searchQueries: [],
-    },
-    newRole: "",
-    newLocation: "",
-    newKeyword: "",
-    newPrimarySkill: "",
-    newSecondarySkill: "",
-    newFavCompany: "",
-    newSearchQuery: "",
-
-    // ----- View Routing -----
-    currentView: "dashboard", // 'dashboard' | 'profile'
-
-    // ----- Apply State -----
-    applyState: {
-      running: false,
-      job_id: null,
-      progress: [],
-      total: 0,
-    },
-
-    // ----- Follow-ups -----
-    followUps: { overdue: [], ghosts: [] },
-
-    // ----- YOLO Mode -----
-    yoloState: {
-      running: false,
-      phase: null,
-      cycle: 0,
-      continuous: false,
-    },
-    yoloLog: [],
-    showYoloLog: false,
-
-    // ----- Full Profile (for profile editor page) -----
-    fullProfile: {},
-    profileSaving: false,
-    profileSaveTimer: null,
-    lastSaveTime: null,
-
-    // ----- Resume Management -----
-    resumes: [],
-    resumeUploading: false,
-    newResumeName: "",
-    resumeDragActive: false,
-
-    // ----- Profile AI Analysis -----
-    profileScoring: false,
-    profileInsights: null,
-
-    // ----- Resume Tailoring -----
-    tailorData: {},
-    tailoring: {},
-
-    // ----- Cover Letter Templates -----
-    coverLetterTemplates: [],
-    newTemplateName: "",
-    newTemplateBody: "",
-
-    // ----- Section Collapse State -----
-    profileSections: {
-      identity: true,
-      workAuth: false,
-      resumes: true,
-      coverLetters: false,
-      jobPrefs: true,
-      skills: false,
-      targets: false,
-      searchConfig: false,
-      commonAnswers: false,
-      schedule: false,
-    },
-
-    // ----- Selection & Purge -----
-    selectedJobs: [],
-
-    // ----- Charts -----
-    scoreChart: null,
-    timelineChart: null,
-    _radarChart: null,
-
-    // ----- Setup Wizard -----
-    needsSetup: false,
-    wizardStep: 1,
-    wizardData: {
-      personal: {
-        first_name: "",
-        last_name: "",
-        email: "",
-        phone: "",
-        location: "",
-      },
-      preferences: { roles: [], min_match_score: 65, locations: ["Remote"] },
-      skills: { primary: [] },
-      search: { enabled: true, queries: [] },
-    },
-    wizardNewRole: "",
-    wizardNewLocation: "",
-    wizardNewSkill: "",
-    wizardNewQuery: "",
-
-    // ----- Filters -----
-    filters: {
-      status: "",
-      company: "",
-      min_score: null,
-      search: "",
-      sort_by: "discovered_at",
-      sort_order: "desc",
-      limit: 50,
-      offset: 0,
-    },
-
-    // ===================================================================
-    // COMPUTED
-    // ===================================================================
-
-    get metricCards() {
-      const s = this.stats;
-      const total = Object.values(s).reduce(
-        (sum, v) => sum + (typeof v === "number" ? v : 0),
-        0,
-      );
-      return [
-        { label: "Total Jobs", value: total, color: "#e2e8f0" },
-        { label: "Matched", value: s.matched || 0, color: "#10b981" },
-        { label: "Applied", value: s.applied || 0, color: "#3b82f6" },
-        { label: "Today", value: s.today || 0, color: "#8b5cf6" },
-        { label: "Avg Score", value: s.avg_match_score || 0, color: "#f59e0b" },
-        { label: "Discovered", value: s.discovered || 0, color: "#22d3ee" },
-      ];
-    },
-
-    get connectionStatus() {
-      return this.wsConnected ? "LIVE" : "OFFLINE";
-    },
-
-    // ===================================================================
-    // LIFECYCLE
-    // ===================================================================
-
-    async init() {
-      // Check if first-run setup is needed
-      try {
-        const res = await fetch("/api/profile");
-        const data = await res.json();
-        if (data.needs_setup) {
-          this.needsSetup = true;
-          return; // Don't load dashboard data yet
-        }
-      } catch (e) {
-        // Server might not be ready yet
-      }
-
-      await Promise.all([
-        this.fetchJobs(),
-        this.fetchStats(),
-        this.fetchCompanies(),
-        this.fetchStatuses(),
-        this.fetchProfile(),
-        this.fetchSchedulerStatus(),
-        this.fetchFollowUps(),
-        this.fetchHumanAttentionInbox(),
-        this.fetchCandidateFactReview(),
-      ]);
-      this.connectWebSocket();
-      this.$nextTick(() => this.initCharts());
-
-      // Refresh scheduler status every 15s
-      this._schedulerTimer = setInterval(
-        () => this.fetchSchedulerStatus(),
-        15000,
-      );
-      // Update countdown display every second
-      this._countdownTimer = setInterval(() => this.updateCountdowns(), 1000);
-
-      this.addFeedItem("System initialized. All stations nominal.", "#22d3ee");
-    },
-
-    // ===================================================================
-    // SETUP WIZARD
-    // ===================================================================
-
-    wizardNext() {
-      if (this.wizardStep < 4) this.wizardStep++;
-    },
-
-    wizardBack() {
-      if (this.wizardStep > 1) this.wizardStep--;
-    },
-
-    wizardAddRole() {
-      const val = this.wizardNewRole?.trim();
-      if (val && !this.wizardData.preferences.roles.includes(val)) {
-        this.wizardData.preferences.roles.push(val);
-      }
-      this.wizardNewRole = "";
-    },
-
-    wizardRemoveRole(i) {
-      this.wizardData.preferences.roles.splice(i, 1);
-    },
-
-    wizardAddLocation() {
-      const val = this.wizardNewLocation?.trim();
-      if (val && !this.wizardData.preferences.locations.includes(val)) {
-        this.wizardData.preferences.locations.push(val);
-      }
-      this.wizardNewLocation = "";
-    },
-
-    wizardRemoveLocation(i) {
-      this.wizardData.preferences.locations.splice(i, 1);
-    },
-
-    wizardAddSkill() {
-      const val = this.wizardNewSkill?.trim();
-      if (val && !this.wizardData.skills.primary.includes(val)) {
-        this.wizardData.skills.primary.push(val);
-      }
-      this.wizardNewSkill = "";
-    },
-
-    wizardRemoveSkill(i) {
-      this.wizardData.skills.primary.splice(i, 1);
-    },
-
-    wizardAddQuery() {
-      const val = this.wizardNewQuery?.trim();
-      if (val && !this.wizardData.search.queries.includes(val)) {
-        this.wizardData.search.queries.push(val);
-      }
-      this.wizardNewQuery = "";
-    },
-
-    wizardRemoveQuery(i) {
-      this.wizardData.search.queries.splice(i, 1);
-    },
-
-    async wizardSubmit() {
-      try {
-        const res = await fetch("/api/setup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(this.wizardData),
-        });
-        if (!res.ok) throw new Error("Setup failed");
-        this.needsSetup = false;
-        // Re-initialize the dashboard
-        await this.init();
-      } catch (err) {
-        alert("Setup failed: " + err.message);
-      }
-    },
-
-    // ===================================================================
-    // DATA FETCHING
-    // ===================================================================
-
-    async fetchJobs() {
-      this.loading = true;
-      try {
-        const params = new URLSearchParams();
-        if (this.filters.status) params.set("status", this.filters.status);
-        if (this.filters.company) params.set("company", this.filters.company);
-        if (this.filters.min_score)
-          params.set("min_score", this.filters.min_score);
-        if (this.filters.search) params.set("search", this.filters.search);
-        params.set("sort_by", this.filters.sort_by);
-        params.set("sort_order", this.filters.sort_order);
-        params.set("limit", this.filters.limit);
-        params.set("offset", this.filters.offset);
-
-        const res = await fetch(`/api/jobs?${params}`);
-        const data = await res.json();
-        this.jobs = data.jobs;
-        this.totalJobs = data.total;
-
-        for (const job of this.jobs) {
-          if (!(job.id in this.jobNotes)) {
-            this.jobNotes[job.id] = job.notes || "";
-          }
-        }
-      } catch (err) {
-        this.notify(`Telemetry fetch failed: ${err.message}`, "error");
-      } finally {
-        this.loading = false;
-      }
-    },
-
-    async fetchStats() {
-      try {
-        const res = await fetch("/api/stats");
-        this.stats = await res.json();
-      } catch (_) {}
-    },
-
-    async fetchHumanAttentionInbox() {
-      if (this.humanAttentionInbox.status === "LOADING") {
-        // The initial load is allowed; only share an already active request.
-        if (this._humanAttentionInboxRequest) {
-          return this._humanAttentionInboxRequest;
-        }
-      }
-      const load = async () => {
-        this.humanAttentionInbox.status = "LOADING";
-        this.humanAttentionInbox.message = null;
-        try {
-          const response = await fetch("/api/human-attention-inbox");
-          if (!response.ok) {
-            const safeMessages = {
-              401: "需要登录后才能查看待处理事项。",
-              503: "待处理事项服务暂时不可用。",
-            };
-            this.humanAttentionInbox.status = "FAILED";
-            this.humanAttentionInbox.message =
-              safeMessages[response.status] || "无法读取待处理事项。";
-            return;
-          }
-          const data = await response.json();
-          if (data.status === "FAILED") {
-            this.humanAttentionInbox.status = "FAILED";
-            this.humanAttentionInbox.message =
-              data.message || "无法读取待处理事项。";
-            this.humanAttentionInbox.refreshedAt = data.refreshed_at;
-            return;
-          }
-          this.humanAttentionInbox = {
-            status: data.status,
-            userItems: data.user_items || [],
-            operatorItems: data.operator_items || [],
-            itemCount: data.item_count,
-            affectedPlanCount: data.affected_plan_count,
-            refreshedAt: data.refreshed_at,
-            message: data.message,
-          };
-          await Promise.all(
-            this.humanAttentionInbox.userItems
-              .filter(
-                (item) => item.correction_target_id,
-              )
-              .map((item) => this.fetchUnsupportedClaimTarget(item)),
-          );
-          await Promise.all(
-            this.humanAttentionInbox.userItems
-              .filter((item) => item.replacement_target_id)
-              .map((item) => this.fetchInputReplacementTarget(item)),
-          );
-        } catch (_) {
-          this.humanAttentionInbox.status = "FAILED";
-          this.humanAttentionInbox.message =
-            "待处理事项服务暂时不可用。";
-        }
-      };
-      this._humanAttentionInboxRequest = load();
-      try {
-        return await this._humanAttentionInboxRequest;
-      } finally {
-        this._humanAttentionInboxRequest = null;
-      }
-    },
-
-    async fetchCandidateFactReview() {
-      this.candidateFactReview.status = "LOADING";
-      try {
-        const response = await fetch("/api/candidate-facts/review");
-        if (!response.ok) {
-          this.candidateFactReview.status = "FAILED";
-          this.candidateFactReview.message =
-            response.status === 401
-              ? "Sign in to review candidate facts."
-              : "Candidate fact review is temporarily unavailable.";
-          return;
-        }
-        const data = await response.json();
-        this.candidateFactReview = {
-          status: data.status,
-          items: data.items || [],
-          queueSnapshotHash: data.queue_snapshot_hash,
-          counts: data.counts || {
-            pending: 0,
-            conflicts: 0,
-            missing_required: 0,
-            resolved: 0,
-          },
-          message: data.message,
-        };
-      } catch (_) {
-        this.candidateFactReview.status = "FAILED";
-        this.candidateFactReview.message =
-          "Candidate fact review is temporarily unavailable.";
-      }
-    },
-
-    async resolveCandidateFactReview(item, action) {
-      if (
-        this.resolvingCandidateFactReviewId ||
-        !item.available_actions.includes(action)
-      ) {
-        return;
-      }
-      const needsValue = [
-        "ACCEPT_WITH_EDIT",
-        "PROVIDE_MISSING_VALUE",
-      ].includes(action);
-      const value = needsValue
-        ? (this.candidateFactReviewValues[item.review_item_id] || "").trim()
-        : null;
-      if (needsValue && !value) {
-        this.notify("Enter an explicit value before confirming.", "warning");
-        return;
-      }
-      this.resolvingCandidateFactReviewId = item.review_item_id;
-      const invocationKey = `${item.review_item_id}:${action}:${value || ""}`;
-      if (!this.candidateFactReviewValues[`${invocationKey}:invocation`]) {
-        this.candidateFactReviewValues[`${invocationKey}:invocation`] =
-          `candidate-review-ui-${crypto.randomUUID()}`;
-      }
-      try {
-        const response = await fetch(
-          `/api/candidate-facts/review/${encodeURIComponent(item.review_item_id)}/resolve`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action,
-              invocation_id:
-                this.candidateFactReviewValues[`${invocationKey}:invocation`],
-              queue_snapshot_hash:
-                this.candidateFactReview.queueSnapshotHash,
-              value,
-            }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("Candidate fact review failed.");
-        }
-        this.notify(
-          data.message || "Candidate fact review saved.",
-          ["COMPLETED", "UNCHANGED"].includes(data.status)
-            ? "success"
-            : "warning",
-        );
-        await this.fetchCandidateFactReview();
-      } catch (_) {
-        this.notify(
-          "Candidate fact review could not be saved safely.",
-          "error",
-        );
-      } finally {
-        this.resolvingCandidateFactReviewId = null;
-      }
-    },
-
-    async resolveHumanAttention(item) {
-      if (
-        this.resolvingAttentionItemId ||
-        item.source_stage !== "APPLICATION_ANSWERS"
-      ) {
-        return;
-      }
-      const message = (this.attentionReplies[item.item_id] || "").trim();
-      if (!message) {
-        this.notify("请先输入明确回复。", "warning");
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/resolve`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("回答暂时无法安全保存。");
-        }
-        this.notify(data.message || "回答已处理。", data.status === "FAILED" ? "error" : "success");
-        if (!["DEFERRED_AMBIGUOUS_INPUT", "FAILED"].includes(data.status)) {
-          delete this.attentionReplies[item.item_id];
-        }
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("回答暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async resolveVersionChoice(item) {
-      if (
-        this.resolvingAttentionItemId ||
-        !["BASE_RESUME_SELECTION", "BASE_LATEX_SELECTION"].includes(
-          item.source_stage,
-        )
-      ) {
-        return;
-      }
-      const message = (this.attentionReplies[item.item_id] || "").trim();
-      if (!message) {
-        this.notify("请明确输入一个简历或 LaTeX 版本。", "warning");
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/resolve-version-choice`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("选择暂时无法安全保存。");
-        }
-        this.notify(
-          data.message || "选择已处理。",
-          data.status === "FAILED" ? "error" : "success",
-        );
-        if (
-          ![
-            "DEFERRED_AMBIGUOUS_INPUT",
-            "OPTION_NOT_SELECTABLE",
-            "FAILED",
-          ].includes(data.status)
-        ) {
-          delete this.attentionReplies[item.item_id];
-        }
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("选择暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async correctUnsupportedClaim(item, action) {
-      if (
-        this.resolvingAttentionItemId ||
-        item.resolution_capability !== "CORRECT_MATERIAL" ||
-        !item.correction_target_id
-      ) {
-        return;
-      }
-      const instruction =
-        (this.correctionInstructions[item.item_id] || "").trim() || null;
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-unsupported-claim`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action, instruction }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("材料修正要求暂时无法安全保存。");
-        }
-        this.notify(
-          data.message || "材料修正要求已处理。",
-          ["FAILED", "INVALID_CORRECTION"].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        if (!["FAILED", "TARGET_STALE", "TARGET_UNAVAILABLE"].includes(data.status)) {
-          delete this.correctionInstructions[item.item_id];
-        }
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("材料修正要求暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async fetchUnsupportedClaimTarget(item) {
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correction-target`,
-        );
-        if (!response.ok) {
-          item.correctionTarget = {
-            status: "FAILED",
-            message: "暂时无法安全读取需要修正的陈述。",
-            target: null,
-          };
-          return;
-        }
-        item.correctionTarget = await response.json();
-        if (
-          item.correctionTarget?.target?.target_kind ===
-          "RESUME_VISUAL_LAYOUT"
-        ) {
-          await this.fetchResumeLayoutPreview(item);
-        } else if (
-          item.correctionTarget?.target?.target_kind ===
-          "COVER_LETTER_LAYOUT"
-        ) {
-          await this.fetchCoverLetterOverflowPreview(item);
-        }
-      } catch (_) {
-        item.correctionTarget = {
-          status: "FAILED",
-          message: "暂时无法安全读取需要修正的陈述。",
-          target: null,
-        };
-      }
-    },
-
-    async fetchInputReplacementTarget(item) {
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replacement-target`,
-        );
-        if (!response.ok) {
-          throw new Error("replacement target unavailable");
-        }
-        item.replacementTarget = await response.json();
-        if (item.replacementTarget.status === "AVAILABLE") {
-          const optionsResponse = await fetch(
-            `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replacement-options`,
-          );
-          item.replacementOptions = optionsResponse.ok
-            ? await optionsResponse.json()
-            : { status: "FAILED", options: [] };
-        }
-      } catch (_) {
-        item.replacementTarget = {
-          status: "FAILED",
-          message: "暂时无法安全读取需要替换的输入。",
-          target: null,
-        };
-      }
-    },
-
-    async replaceExistingInput(item) {
-      const replacementOptionId =
-        this.replacementSelections[item.item_id] || "";
-      if (!replacementOptionId || this.resolvingAttentionItemId) {
-        this.notify("请选择一个已注册的替代输入。", "warning");
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replace-input`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "SELECT_EXISTING_REPLACEMENT",
-              replacement_option_id: replacementOptionId,
-            }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) throw new Error("replacement failed");
-        this.notify(
-          data.message || "替代输入已处理。",
-          data.status.endsWith("FAILED") ? "error" : "success",
-        );
-        if (!["OPTION_NOT_SELECTABLE", "SAME_INPUT_SELECTED", "FAILED"].includes(data.status)) {
-          delete this.replacementSelections[item.item_id];
-        }
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("替代输入暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async registerAndReplaceResume(item) {
-      const file = this.replacementUploads[item.item_id];
-      const displayName = (
-        this.replacementUploadNames[item.item_id] || ""
-      ).trim();
-      if (!file || !displayName || this.resolvingAttentionItemId) {
-        this.notify("请选择简历文件并填写安全显示名称。", "warning");
-        return;
-      }
-      const invocationId =
-        "resume-upload-" +
-        (globalThis.crypto?.randomUUID?.() ||
-          `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-      const form = new FormData();
-      form.append("file", file);
-      form.append("display_name", displayName);
-      form.append("invocation_id", invocationId);
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/register-and-replace-resume`,
-          { method: "POST", body: form },
-        );
-        const data = await response.json();
-        if (!response.ok) throw new Error("upload replacement failed");
-        this.notify(
-          data.message || "新简历已处理。",
-          ["FAILED", "UPLOAD_REJECTED", "UNSUPPORTED_MEDIA_TYPE", "REGISTRATION_FAILED"].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("新简历暂时无法安全注册。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async registerAndReplaceBaseLatex(item) {
-      const file = this.replacementUploads[item.item_id];
-      const displayLabel = (
-        this.replacementUploadNames[item.item_id] || ""
-      ).trim();
-      const versionNote = (
-        this.replacementUploadNotes[item.item_id] || ""
-      ).trim();
-      if (!file || !displayLabel || this.resolvingAttentionItemId) {
-        this.notify("请选择单个 .tex 文件并填写安全显示名称。", "warning");
-        return;
-      }
-      const invocationId =
-        "base-latex-upload-" +
-        (globalThis.crypto?.randomUUID?.() ||
-          `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-      const form = new FormData();
-      form.append("file", file);
-      form.append("display_label", displayLabel);
-      form.append("version_note", versionNote);
-      form.append("invocation_id", invocationId);
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/register-and-replace-base-latex`,
-          { method: "POST", body: form },
-        );
-        const data = await response.json();
-        if (!response.ok) throw new Error("LaTeX upload replacement failed");
-        this.notify(
-          data.message || "新 Base LaTeX Version 已处理。",
-          [
-            "FAILED",
-            "UPLOAD_REJECTED",
-            "INVALID_LATEX_SOURCE",
-            "UNSAFE_LATEX_SOURCE",
-            "UNSUPPORTED_UPLOAD_TYPE",
-            "REGISTRATION_FAILED",
-            "VERSION_NOT_SELECTABLE",
-          ].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("新 Base LaTeX Version 暂时无法安全注册。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async fetchResumeLayoutPreview(item) {
-      const targetId = item.correctionTarget?.target?.target_id;
-      if (!targetId) return;
-      try {
-        const response = await fetch(
-          `/api/resume-layout-correction-previews/targets/${encodeURIComponent(targetId)}`,
-        );
-        item.layoutPreview = response.ok
-          ? await response.json()
-          : {
-              status: "FAILED",
-              message: "当前 Resume 预览暂时不可用。",
-              preview: null,
-            };
-      } catch (_) {
-        item.layoutPreview = {
-          status: "FAILED",
-          message: "当前 Resume 预览暂时不可用。",
-          preview: null,
-        };
-      }
-    },
-
-    resumeLayoutPreviewPageUrl(item, pageNumber) {
-      const reference = item.layoutPreview?.preview?.preview_reference;
-      if (!reference) return "";
-      return `/api/resume-layout-correction-previews/${encodeURIComponent(reference)}/pages/${pageNumber}`;
-    },
-
-    async fetchCoverLetterOverflowPreview(item) {
-      const targetId = item.correctionTarget?.target?.target_id;
-      if (!targetId) return;
-      try {
-        const response = await fetch(
-          `/api/cover-letter-overflow-previews/targets/${encodeURIComponent(targetId)}`,
-        );
-        item.coverLetterOverflowPreview = response.ok
-          ? await response.json()
-          : {
-              status: "FAILED",
-              message: "当前 Cover Letter 预览暂时不可用。",
-              preview: null,
-            };
-      } catch (_) {
-        item.coverLetterOverflowPreview = {
-          status: "FAILED",
-          message: "当前 Cover Letter 预览暂时不可用。",
-          preview: null,
-        };
-      }
-    },
-
-    coverLetterOverflowPreviewPageUrl(item, pageNumber) {
-      const reference =
-        item.coverLetterOverflowPreview?.preview?.preview_reference;
-      if (!reference) return "";
-      return `/api/cover-letter-overflow-previews/${encodeURIComponent(reference)}/pages/${pageNumber}`;
-    },
-
-    async correctCoverLetterOverflow(item) {
-      if (
-        this.resolvingAttentionItemId ||
-        !["AVAILABLE", "UNCHANGED"].includes(
-          item.coverLetterOverflowPreview?.status,
-        ) ||
-        !item.coverLetterPreviewViewed
-      ) {
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-cover-letter-overflow`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "REFORMAT_AND_RETRY" }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("Cover Letter 格式修正暂时无法安全保存。");
-        }
-        this.notify(
-          data.message || "Cover Letter 格式修正已处理。",
-          ["FAILED", "CONTENT_PRESERVATION_FAILED"].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("Cover Letter 格式修正暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    toggleLayoutIssue(item, issue) {
-      const selected = new Set(
-        this.layoutIssueSelections[item.item_id] || [],
-      );
-      selected.has(issue) ? selected.delete(issue) : selected.add(issue);
-      this.layoutIssueSelections[item.item_id] = [...selected].sort();
-    },
-
-    async correctResumeLayout(item) {
-      if (
-        this.resolvingAttentionItemId ||
-        !["AVAILABLE", "UNCHANGED"].includes(item.layoutPreview?.status)
-      ) {
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-resume-layout`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "REVISE_LAYOUT_AND_RETRY",
-              visual_issues:
-                this.layoutIssueSelections[item.item_id] || [],
-            }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("Resume 排版修正暂时无法安全启动。");
-        }
-        this.notify(
-          data.message || "Resume 排版修正已处理。",
-          ["FAILED", "INVALID_ACTION", "PREVIEW_STALE"].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("Resume 排版修正暂时无法安全启动。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async correctLatexCompilation(item) {
-      if (
-        this.resolvingAttentionItemId ||
-        !item.latex_compilation_correction_supported ||
-        item.correctionTarget?.status !== "AVAILABLE"
-      ) {
-        return;
-      }
-      this.resolvingAttentionItemId = item.item_id;
-      try {
-        const response = await fetch(
-          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-latex-compilation`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "REGENERATE_AND_RETRY" }),
-          },
-        );
-        const data = await response.json();
-        if (!response.ok) {
-          throw new Error("LaTeX 修复请求暂时无法安全保存。");
-        }
-        this.notify(
-          data.message || "LaTeX 修复请求已处理。",
-          ["FAILED", "INVALID_ACTION"].includes(data.status)
-            ? "error"
-            : "success",
-        );
-        await this.fetchHumanAttentionInbox();
-      } catch (_) {
-        this.notify("LaTeX 修复请求暂时无法安全保存。", "error");
-      } finally {
-        this.resolvingAttentionItemId = null;
-      }
-    },
-
-    async fetchCompanies() {
-      try {
-        const res = await fetch("/api/companies");
-        this.allCompanies = await res.json();
-      } catch (_) {}
-    },
-
-    async fetchStatuses() {
-      try {
-        const res = await fetch("/api/statuses");
-        this.allStatuses = await res.json();
-      } catch (_) {}
-    },
-
-    async fetchProfile() {
-      try {
-        const res = await fetch("/api/profile");
-        const profile = await res.json();
-
-        this.profileEdit.roles = profile.preferences?.roles || [];
-        this.profileEdit.locations =
-          profile.preferences?.locations || profile.search?.locations || [];
-        this.profileEdit.min_score = profile.preferences?.min_match_score || 65;
-        this.profileEdit.primarySkills = profile.skills?.primary || [];
-        this.profileEdit.secondarySkills = profile.skills?.secondary || [];
-        this.profileEdit.favoriteCompanies = profile.favorite_companies || [];
-        this.profileEdit.searchQueries = profile.search?.queries || [];
-        this.profileDirty = false;
-      } catch (err) {
-        console.warn("Profile fetch failed:", err);
-      }
-    },
-
-    async fetchSchedulerStatus() {
-      try {
-        const res = await fetch("/api/scheduler/status");
-        const data = await res.json();
-        // Preserve countdown info
-        for (const job of data.jobs || []) {
-          job._nextRunMs = job.next_run
-            ? new Date(job.next_run).getTime()
-            : null;
-          job.countdown = this._formatCountdown(job._nextRunMs);
-        }
-        this.schedulerData = data;
-      } catch (_) {}
-    },
-
-    // ===================================================================
-    // PROFILE EDITING
-    // ===================================================================
-
-    addItem(field, inputField) {
-      const val = this[inputField]?.trim();
-      if (!val) return;
-      if (!this.profileEdit[field].includes(val)) {
-        this.profileEdit[field].push(val);
-        this.profileDirty = true;
-        this.debouncedSaveProfile();
-      }
-      this[inputField] = "";
-    },
-
-    removeItem(field, index) {
-      this.profileEdit[field].splice(index, 1);
-      this.profileDirty = true;
-      this.debouncedSaveProfile();
-    },
-
-    debouncedSaveProfile() {
-      if (this._sidebarSaveTimer) clearTimeout(this._sidebarSaveTimer);
-      this._sidebarSaveTimer = setTimeout(() => this.saveProfile(), 1500);
-    },
-
-    async saveProfile() {
-      this.sidebarSaving = true;
-      this.sidebarSaved = false;
-      try {
-        const body = {
-          preferences: {
-            roles: this.profileEdit.roles,
-            locations: this.profileEdit.locations,
-            min_match_score: this.profileEdit.min_score,
-          },
-          skills: {
-            primary: this.profileEdit.primarySkills,
-            secondary: this.profileEdit.secondarySkills,
-          },
-          favorite_companies: this.profileEdit.favoriteCompanies,
-          search: {
-            queries: this.profileEdit.searchQueries,
-          },
-        };
-
-        await fetch("/api/profile", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-
-        this.profileDirty = false;
-        this.sidebarSaved = true;
-        this.addFeedItem("Profile configuration saved.", "#10b981");
-        // Clear "Saved" indicator after 3s
-        setTimeout(() => {
-          this.sidebarSaved = false;
-        }, 3000);
-      } catch (err) {
-        this.notify(`Profile save failed: ${err.message}`, "error");
-      } finally {
-        this.sidebarSaving = false;
-      }
-    },
-
-    // ===================================================================
-    // ACTIONS
-    // ===================================================================
-
-    async refreshJobLibrary({ reuseInvocation = false } = {}) {
-      if (this.jobLibraryRefresh.status === "RUNNING") return;
-      const invocationId =
-        reuseInvocation && this.jobLibraryRefresh.invocationId
-          ? this.jobLibraryRefresh.invocationId
-          : globalThis.crypto?.randomUUID?.() ||
-            `refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      this.jobLibraryRefresh = {
-        ...this.jobLibraryRefresh,
-        status: "RUNNING",
-        invocationId,
-        message: null,
-        sourceFailures: [],
-      };
-      try {
-        const response = await fetch("/api/job-library/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            invocation_id: invocationId,
-            max_reprioritizations:
-              this.jobLibraryRefresh.maxReprioritizations,
-          }),
-        });
-        if (!response.ok) {
-          const safeMessages = {
-            401: "需要登录后才能刷新职位库。",
-            422: "刷新请求无效。",
-            503: "刷新服务暂时不可用。",
-          };
-          this.jobLibraryRefresh.message =
-            safeMessages[response.status] || "刷新职位库失败。";
-          throw new Error("safe refresh failure");
-        }
-        const data = await response.json();
-        this.jobLibraryRefresh = {
-          ...this.jobLibraryRefresh,
-          status: data.status,
-          invocationId: data.invocation_id,
-          summary: data.summary,
-          sourceFailures: data.source_failures || [],
-          refreshRunId: data.refresh_run_id,
-          lastCompletedRefreshTime: data.last_completed_refresh_time,
-          message: data.message,
-          replayed: Boolean(data.replayed),
-        };
-        if (["COMPLETED", "PARTIAL_FAILURE", "NOOP"].includes(data.status)) {
-          await Promise.all([this.fetchJobs(), this.fetchStats()]);
-        }
-      } catch (_) {
-        this.jobLibraryRefresh = {
-          ...this.jobLibraryRefresh,
-          status: "FAILED",
-          message:
-            this.jobLibraryRefresh.message || "刷新职位库失败，请重试。",
-        };
-      }
-    },
-
-    retryJobLibraryRefresh() {
-      return this.refreshJobLibrary({ reuseInvocation: true });
-    },
-
-    async continueAutomaticApplication({ reuseInvocation = false } = {}) {
-      if (this.automationCycle.status === "RUNNING") return;
-      const invocationId =
-        reuseInvocation && this.automationCycle.invocationId
-          ? this.automationCycle.invocationId
-          : globalThis.crypto?.randomUUID?.() ||
-            `automation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      this.automationCycle = {
-        ...this.automationCycle,
-        status: "RUNNING",
-        invocationId,
-        stages: [],
-        stageFailures: [],
-        message: null,
-      };
-      try {
-        const response = await fetch("/api/automation-cycle/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invocation_id: invocationId }),
-        });
-        if (!response.ok) {
-          const safeMessages = {
-            401: "需要登录后才能继续自动申请。",
-            422: "自动处理请求无效。",
-            503: "自动处理服务暂时不可用。",
-          };
-          this.automationCycle.message =
-            safeMessages[response.status] || "自动处理失败。";
-          throw new Error("safe automation failure");
-        }
-        const data = await response.json();
-        this.automationCycle = {
-          ...this.automationCycle,
-          status: data.status,
-          invocationId: data.invocation_id,
-          stages: data.stages || [],
-          summary: data.summary,
-          stageFailures: data.stage_failures || [],
-          cycleRunId: data.cycle_run_id,
-          startedAt: data.started_at,
-          completedAt: data.completed_at,
-          message: data.message,
-        };
-        if (
-          ["COMPLETED", "PARTIAL_FAILURE", "NOOP", "UNCHANGED"].includes(
-            data.status,
-          )
-        ) {
-          await Promise.all([
-            this.fetchJobs(),
-            this.fetchStats(),
-            this.fetchHumanAttentionInbox(),
-          ]);
-        }
-      } catch (_) {
-        this.automationCycle = {
-          ...this.automationCycle,
-          status: "FAILED",
-          message:
-            this.automationCycle.message || "自动处理失败，请安全重试。",
-        };
-      }
-    },
-
-    retryAutomationCycleRequest() {
-      return this.continueAutomaticApplication({ reuseInvocation: true });
-    },
-
-    automationStageLabel(stage) {
-      return {
-        PRIORITY_REFRESH: "优先级刷新",
-        APPLICATION_PLAN_CREATION: "申请计划",
-        APPLICATION_PREPARATION: "材料准备",
-        APPLICATION_EXECUTION: "申请执行",
-      }[stage] || "自动处理阶段";
-    },
-
-    async discover() {
-      this.discovering = true;
-      setTimeout(() => {
-        this.discovering = false;
-      }, 120000);
-      this.notify("Discovery scan initiated...", "info");
-      this.addFeedItem(
-        "Discovery scan initiated. Searching all sources...",
-        "#22d3ee",
-      );
-      try {
-        await fetch("/api/discover", { method: "POST" });
-      } catch (err) {
-        this.discovering = false;
-        this.notify(`Scan launch failed: ${err.message}`, "error");
-      }
-    },
-
-    async scoreAll() {
-      this.scoring = true;
-      setTimeout(() => {
-        this.scoring = false;
-      }, 120000);
-      this.notify("Scoring all unscored targets...", "info");
-      this.addFeedItem("AI scoring initiated for unscored jobs.", "#8b5cf6");
-      try {
-        const res = await fetch("/api/score-all", { method: "POST" });
-        const data = await res.json();
-        if (data.count === 0) {
-          this.scoring = false;
-          this.notify("No unscored targets found.", "info");
-        }
-      } catch (err) {
-        this.scoring = false;
-        this.notify(`Scoring failed: ${err.message}`, "error");
-      }
-    },
-
-    async changeStatus(jobId, status) {
-      try {
-        await fetch(`/api/jobs/${jobId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
-        });
-        const job = this.jobs.find((j) => j.id === jobId);
-        if (job) job.status = status;
-        this.fetchStats();
-      } catch (err) {
-        this.notify(`Status update failed: ${err.message}`, "error");
-      }
-    },
-
-    // ===================================================================
-    // FOLLOW-UPS & GHOST DETECTION
-    // ===================================================================
-
-    async fetchFollowUps() {
-      try {
-        const res = await fetch("/api/follow-ups");
-        this.followUps = await res.json();
-      } catch (_) {}
-    },
-
-    async markFollowUpDone(jobId, nextDays = 7) {
-      try {
-        await fetch(`/api/jobs/${jobId}/follow-up`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ next_days: nextDays }),
-        });
-        this.notify("Follow-up marked done, next scheduled.", "success");
-        this.fetchFollowUps();
-        this.fetchJobs();
-      } catch (err) {
-        this.notify(`Follow-up error: ${err.message}`, "error");
-      }
-    },
-
-    async dismissFollowUp(jobId) {
-      try {
-        await fetch(`/api/jobs/${jobId}/dismiss-follow-up`, { method: "POST" });
-        this.notify("Follow-up dismissed.", "info");
-        this.fetchFollowUps();
-        this.fetchJobs();
-      } catch (err) {
-        this.notify(`Dismiss error: ${err.message}`, "error");
-      }
-    },
-
-    isOverdue(job) {
-      return this.followUps.overdue?.some((f) => f.id === job.id);
-    },
-
-    isGhost(job) {
-      return this.followUps.ghosts?.some((f) => f.id === job.id);
-    },
-
-    async saveNotes(jobId) {
-      try {
-        await fetch(`/api/jobs/${jobId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ notes: this.jobNotes[jobId] || "" }),
-        });
-      } catch (err) {
-        this.notify(`Notes save failed: ${err.message}`, "error");
-      }
-    },
-
-    async rescoreJob(jobId) {
-      this.notify("Re-scoring target...", "info");
-      this.addFeedItem(`Re-scoring job ${jobId.substring(0, 8)}...`, "#8b5cf6");
-      try {
-        await fetch(`/api/rescore/${jobId}`, { method: "POST" });
-      } catch (err) {
-        this.notify(`Rescore failed: ${err.message}`, "error");
-      }
-    },
-
-    async confirmDeleteJob(jobId) {
-      if (!confirm("Permanently remove this target from tracking?")) return;
-      try {
-        await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
-        this.jobs = this.jobs.filter((j) => j.id !== jobId);
-        this.totalJobs = Math.max(0, this.totalJobs - 1);
-        if (this.expandedJob === jobId) this.expandedJob = null;
-        this.fetchStats();
-      } catch (err) {
-        this.notify(`Delete failed: ${err.message}`, "error");
-      }
-    },
-
-    async copyCoverLetter(text) {
-      try {
-        await navigator.clipboard.writeText(text);
-        this.notify("Cover letter copied.", "success");
-      } catch (_) {
-        this.notify("Clipboard copy failed.", "warning");
-      }
-    },
-
-    async tailorJob(jobId) {
-      this.tailoring[jobId] = true;
-      this.notify("Generating tailored resume content...", "info");
-      try {
-        await fetch(`/api/jobs/${jobId}/tailor`, { method: "POST" });
-      } catch (err) {
-        this.tailoring[jobId] = false;
-        this.notify(`Tailoring failed: ${err.message}`, "error");
-      }
-    },
-
-    async fetchTailorData(jobId) {
-      try {
-        const res = await fetch(`/api/jobs/${jobId}/tailor`);
-        const data = await res.json();
-        if (data && (data.tailored_summary || data.tailored_bullets?.length)) {
-          this.tailorData[jobId] = data;
-        }
-      } catch (_) {}
-    },
-
-    // ===================================================================
-    // SELECTION, IGNORE & PURGE
-    // ===================================================================
-
-    toggleSelectJob(jobId) {
-      const idx = this.selectedJobs.indexOf(jobId);
-      if (idx >= 0) {
-        this.selectedJobs.splice(idx, 1);
-      } else {
-        this.selectedJobs.push(jobId);
-      }
-    },
-
-    toggleSelectAll(event) {
-      if (event.target.checked) {
-        this.selectedJobs = this.jobs.map((j) => j.id);
-      } else {
-        this.selectedJobs = [];
-      }
-    },
-
-    async ignoreSelected() {
-      const count = this.selectedJobs.length;
-      if (!count) return;
-      if (
-        !confirm(
-          `Mark ${count} job(s) as IGNORED?\n\nThey will be excluded from future discovery runs.`,
-        )
-      )
-        return;
-      try {
-        const res = await fetch("/api/jobs/ignore", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ job_ids: this.selectedJobs }),
-        });
-        const data = await res.json();
-        this.notify(
-          `${data.ignored} job(s) ignored. They won't reappear.`,
-          "success",
-        );
-        this.selectedJobs = [];
-        this.fetchJobs();
-        this.fetchStats();
-      } catch (err) {
-        this.notify(`Ignore failed: ${err.message}`, "error");
-      }
-    },
-
-    async confirmPurge() {
-      const choice = prompt(
-        "PURGE ALL DISCOVERY DATA\n\n" +
-          "Type 'purge' to delete all jobs (keep ignore list)\n" +
-          "Type 'nuke' to delete everything including ignore list\n" +
-          "Press Cancel to abort",
-      );
-      if (!choice) return;
-      const keepIgnores = choice.trim().toLowerCase() !== "nuke";
-      if (
-        choice.trim().toLowerCase() !== "purge" &&
-        choice.trim().toLowerCase() !== "nuke"
-      ) {
-        this.notify("Aborted — type 'purge' or 'nuke' to confirm.", "warning");
-        return;
-      }
-      try {
-        const res = await fetch("/api/purge", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keep_ignore_list: keepIgnores }),
-        });
-        const data = await res.json();
-        this.notify(
-          `Purged ${data.jobs_deleted} jobs.` +
-            (data.ignores_cleared
-              ? ` Cleared ${data.ignores_cleared} ignore entries.`
-              : " Ignore list preserved."),
-          "success",
-        );
-        this.selectedJobs = [];
-        this.fetchJobs();
-        this.fetchStats();
-        this.initCharts();
-      } catch (err) {
-        this.notify(`Purge failed: ${err.message}`, "error");
-      }
-    },
-
-    // ===================================================================
-    // APPLY
-    // ===================================================================
-
-    async applyToJob(jobId) {
-      const job = this.jobs.find((j) => j.id === jobId);
-      const label = job ? `${job.title} @ ${job.company}` : jobId;
-      const mode = confirm(
-        `Apply to: ${label}\n\nClick OK for DRY RUN (fill form, don't submit)\nClick Cancel to abort.`,
-      );
-      // OK = dry run, we don't do live from single-click for safety
-      if (mode === false) return;
-
-      try {
-        const res = await fetch(`/api/apply/${jobId}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ dry_run: true }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          this.applyState.running = true;
-          this.applyState.job_id = jobId;
-          this.notify(`Applying to ${label} (dry run)...`, "success");
-          this.addFeedItem(`APPLY started: ${label} [DRY RUN]`, "#10b981");
-        } else {
-          this.notify(data.detail || "Apply failed", "error");
-        }
-      } catch (err) {
-        this.notify(`Apply error: ${err.message}`, "error");
-      }
-    },
-
-    async batchApply(dryRun) {
-      const mode = dryRun ? "DRY RUN" : "LIVE";
-      const msg = dryRun
-        ? "Start DRY RUN?\n\nThis will fill forms for all matched jobs but NOT submit them. Browser will open so you can watch."
-        : "Start LIVE APPLY?\n\nThis will ACTUALLY SUBMIT applications for all matched jobs. Are you sure?";
-
-      if (!confirm(msg)) return;
-
-      // Double-confirm for live mode
-      if (
-        !dryRun &&
-        !confirm(
-          "FINAL CONFIRMATION: Real applications will be sent. Continue?",
-        )
-      )
-        return;
-
-      try {
-        const res = await fetch("/api/apply-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ dry_run: dryRun, max_count: 10 }),
-        });
-        const data = await res.json();
-
-        if (data.status === "no_eligible_jobs") {
-          this.notify("No eligible matched jobs to apply to.", "warning");
-          return;
-        }
-        if (data.status === "daily_limit_reached") {
-          this.notify(
-            `Daily limit reached (${data.today}/${data.max}).`,
-            "warning",
-          );
-          return;
-        }
-        if (res.ok && data.status === "started") {
-          this.applyState.running = true;
-          this.applyState.total = data.count;
-          this.applyState.progress = [];
-          this.notify(
-            `Batch ${mode}: ${data.count} jobs, ${data.daily_remaining} remaining today`,
-            "success",
-          );
-          this.addFeedItem(
-            `BATCH APPLY started: ${data.count} jobs [${mode}]`,
-            "#10b981",
-          );
-        } else {
-          this.notify(data.detail || "Batch apply failed", "error");
-        }
-      } catch (err) {
-        this.notify(`Batch apply error: ${err.message}`, "error");
-      }
-    },
-
-    async cancelApply() {
-      try {
-        await fetch("/api/apply/cancel", { method: "POST" });
-        this.notify("Cancel requested — finishing current job...", "warning");
-        this.addFeedItem("APPLY CANCEL requested", "#f59e0b");
-      } catch (err) {
-        this.notify(`Cancel error: ${err.message}`, "error");
-      }
-    },
-
-    // ===================================================================
-    // YOLO MODE
-    // ===================================================================
-
-    async startYolo() {
-      const choice = prompt(
-        "YOLO MODE — Fully autonomous pipeline\n\n" +
-          "Choose mode:\n" +
-          "  1 = Single cycle, DRY RUN (safe — fills forms, doesn't submit)\n" +
-          "  2 = Single cycle, LIVE (submits real applications)\n" +
-          "  3 = Continuous DRY RUN (loops every 6 hours)\n" +
-          "  4 = Continuous LIVE (loops + submits — true YOLO)\n\n" +
-          "Enter 1, 2, 3, or 4:",
-      );
-      if (!choice || !["1", "2", "3", "4"].includes(choice.trim())) return;
-
-      const mode = parseInt(choice.trim());
-      const dryRun = mode === 1 || mode === 3;
-      const continuous = mode === 3 || mode === 4;
-
-      if (!dryRun) {
-        if (
-          !confirm(
-            "LIVE MODE: Real applications will be submitted.\nAre you absolutely sure?",
-          )
-        )
-          return;
-      }
-
-      try {
-        const res = await fetch("/api/yolo", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dry_run: dryRun,
-            continuous: continuous,
-            max_apply: 10,
-          }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          this.yoloState.running = true;
-          this.yoloState.cycle = 0;
-          this.yoloLog = [];
-          const label = `${continuous ? "CONTINUOUS" : "SINGLE"} ${dryRun ? "DRY RUN" : "LIVE"}`;
-          this.notify(`YOLO activated: ${label}`, "success");
-          this.addFeedItem(`YOLO MODE: ${label}`, "#fbbf24");
-        } else {
-          this.notify(data.detail || "YOLO start failed", "error");
-        }
-      } catch (err) {
-        this.notify(`YOLO error: ${err.message}`, "error");
-      }
-    },
-
-    async cancelYolo() {
-      if (!confirm("Abort YOLO mode? Current action will finish first."))
-        return;
-      try {
-        await fetch("/api/yolo/cancel", { method: "POST" });
-        this.notify("YOLO abort requested...", "warning");
-        this.addFeedItem("YOLO ABORT requested", "#f43f5e");
-      } catch (err) {
-        this.notify(`Cancel error: ${err.message}`, "error");
-      }
-    },
-
-    async fetchYoloLog() {
-      try {
-        const res = await fetch("/api/yolo/log?limit=500");
-        const data = await res.json();
-        this.yoloLog = data.entries || [];
-      } catch (_) {}
-    },
-
-    // ===================================================================
-    // ACTIVITY FEED
-    // ===================================================================
-
-    addFeedItem(msg, color = "#94a3b8") {
-      const now = new Date();
-      const time = now.toLocaleTimeString("en-US", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      });
-      this.activityFeed.unshift({ msg, color, time });
-      if (this.activityFeed.length > this.maxFeedItems) {
-        this.activityFeed.pop();
-      }
-    },
-
-    // ===================================================================
-    // TABLE HELPERS
-    // ===================================================================
-
-    toggleExpand(jobId) {
-      this.expandedJob = this.expandedJob === jobId ? null : jobId;
-      if (this.expandedJob === jobId) {
-        this.fetchTailorData(jobId);
-      }
-    },
-
-    toggleSort(col) {
-      if (this.filters.sort_by === col) {
-        this.filters.sort_order =
-          this.filters.sort_order === "asc" ? "desc" : "asc";
-      } else {
-        this.filters.sort_by = col;
-        this.filters.sort_order = "desc";
-      }
-      this.resetOffset();
-      this.fetchJobs();
-    },
-
-    sortIcon(col) {
-      if (this.filters.sort_by !== col) return "";
-      return this.filters.sort_order === "asc" ? "\u2191" : "\u2193";
-    },
-
-    resetFilters() {
-      this.filters = {
-        status: "",
-        company: "",
-        min_score: null,
-        search: "",
-        sort_by: "discovered_at",
-        sort_order: "desc",
-        limit: 50,
-        offset: 0,
-      };
-      this.fetchJobs();
-    },
-
-    resetOffset() {
-      this.filters.offset = 0;
-    },
-
-    prevPage() {
-      this.filters.offset = Math.max(
-        0,
-        this.filters.offset - this.filters.limit,
-      );
-      this.fetchJobs();
-    },
-
-    nextPage() {
-      this.filters.offset += this.filters.limit;
-      this.fetchJobs();
-    },
-
-    // ===================================================================
-    // STYLING HELPERS
-    // ===================================================================
-
-    scoreBadgeClass(score) {
-      if (score === null || score === undefined) return "none";
-      if (score >= 75) return "high";
-      if (score >= 50) return "mid";
-      return "low";
-    },
-
-    statusSelectClass(status) {
-      const map = {
-        discovered: "border-[#334155] text-[#94a3b8]",
-        matched: "border-emerald-800 text-emerald-400",
-        applied: "border-blue-800 text-blue-400",
-        interviewing: "border-violet-800 text-violet-400",
-        offer: "border-emerald-700 text-emerald-300",
-        rejected: "border-rose-800 text-rose-400",
-        skipped: "border-amber-800 text-amber-400",
-        failed: "border-rose-800 text-rose-400",
-        withdrawn: "border-[#334155] text-[#64748b]",
-        archived: "border-[#334155] text-[#475569]",
-      };
-      return map[status] || "";
-    },
-
-    // ===================================================================
-    // FORMATTING
-    // ===================================================================
-
-    formatDate(dt) {
-      if (!dt) return "\u2014";
-      return new Date(dt).toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    },
-
-    formatSalary(min, max) {
-      const fmt = (n) =>
-        n
-          ? "$" +
-            Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 })
-          : null;
-      const lo = fmt(min);
-      const hi = fmt(max);
-      if (lo && hi) return `${lo} \u2013 ${hi}`;
-      if (lo) return `from ${lo}`;
-      if (hi) return `up to ${hi}`;
-      return "\u2014";
-    },
-
-    _formatCountdown(targetMs) {
-      if (!targetMs) return "--:--";
-      const diff = targetMs - Date.now();
-      if (diff <= 0) return "NOW";
-      const h = Math.floor(diff / 3600000);
-      const m = Math.floor((diff % 3600000) / 60000);
-      const s = Math.floor((diff % 60000) / 1000);
-      if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-      return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-    },
-
-    updateCountdowns() {
-      if (!this.schedulerData.jobs) return;
-      for (const job of this.schedulerData.jobs) {
-        if (job._nextRunMs) {
-          job.countdown = this._formatCountdown(job._nextRunMs);
-        }
-      }
-    },
-
-    // ===================================================================
-    // NOTIFICATION
-    // ===================================================================
-
-    notify(msg, type = "success") {
-      this.notification = msg;
-      this.notificationType = type;
-      if (type === "success" || type === "info") {
-        setTimeout(() => {
-          if (this.notification === msg) this.notification = "";
-        }, 5000);
-      }
-    },
-
-    // ===================================================================
-    // WEBSOCKET
-    // ===================================================================
-
-    connectWebSocket() {
-      if (this._wsReconnecting) return;
-      this._wsReconnecting = true;
-
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      this.ws = new WebSocket(`${proto}//${location.host}/ws`);
-
-      this.ws.onopen = () => {
-        this.wsConnected = true;
-        this._wsReconnectDelay = 1000;
-        this._wsReconnecting = false;
-        this.addFeedItem("WebSocket link established.", "#10b981");
-      };
-
-      this.ws.onclose = () => {
-        this.wsConnected = false;
-        this._wsReconnecting = false;
-        // Exponential backoff: 1s, 2s, 4s, 8s, max 15s
-        const delay = this._wsReconnectDelay || 1000;
-        this._wsReconnectDelay = Math.min(delay * 2, 15000);
-        this.addFeedItem(
-          `WebSocket disconnected. Reconnecting in ${Math.round(delay / 1000)}s...`,
-          "#f43f5e",
-        );
-        setTimeout(() => this.connectWebSocket(), delay);
-      };
-
-      this.ws.onerror = () => {
-        this.wsConnected = false;
-        this._wsReconnecting = false;
-      };
-
-      this.ws.onmessage = (e) => {
-        try {
-          this.handleServerEvent(JSON.parse(e.data));
-        } catch (_) {}
-      };
-
-      if (this._pingTimer) clearInterval(this._pingTimer);
-      this._pingTimer = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send("ping");
-        }
-      }, 25000);
-    },
-
-    handleServerEvent(event) {
-      switch (event.type) {
-        case "discovery_started":
-          this.discovering = true;
-          this.addFeedItem("Discovery scan in progress...", "#22d3ee");
-          break;
-
-        case "discovery_complete":
-          this.discovering = false;
-          this.notify(
-            `Scan complete: ${event.data.new} new targets acquired.`,
-            "success",
-          );
-          this.addFeedItem(
-            `Discovery complete: ${event.data.new} new / ${event.data.total} total`,
-            "#10b981",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          this.fetchCompanies();
-          this.updateCharts();
-          break;
-
-        case "discovery_error":
-          this.discovering = false;
-          this.notify(`Scan error: ${event.data.error}`, "error");
-          this.addFeedItem(`Discovery error: ${event.data.error}`, "#f43f5e");
-          break;
-
-        case "score_all_complete":
-          this.scoring = false;
-          this.notify(
-            `Scoring complete: ${event.data.count} targets processed.`,
-            "success",
-          );
-          this.addFeedItem(`Scored ${event.data.count} jobs.`, "#10b981");
-          this.fetchJobs();
-          this.fetchStats();
-          this.updateCharts();
-          break;
-
-        case "score_all_error":
-          this.scoring = false;
-          this.notify(`Scoring error: ${event.data.error}`, "error");
-          this.addFeedItem(`Scoring error: ${event.data.error}`, "#f43f5e");
-          break;
-
-        case "rescore_complete":
-          this.notify(`Target rescored: ${event.data.score}`, "success");
-          this.addFeedItem(
-            `Job rescored: score=${event.data.score}`,
-            "#8b5cf6",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "rescore_error":
-          this.notify(`Rescore failed: ${event.data.error}`, "error");
-          break;
-
-        case "tailor_complete":
-          this.tailoring[event.data.id] = false;
-          this.notify("Resume tailoring complete!", "success");
-          this.addFeedItem(
-            `Tailored resume for ${event.data.id?.substring(0, 8)}`,
-            "#8b5cf6",
-          );
-          this.fetchTailorData(event.data.id);
-          break;
-
-        case "tailor_error":
-          this.tailoring[event.data.id] = false;
-          this.notify(`Tailoring error: ${event.data.error}`, "error");
-          break;
-
-        case "email_check_complete":
-          this.addFeedItem(
-            `Email check: ${event.data.count} updates found.`,
-            "#f59e0b",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "mcp_ingest_complete":
-          this.addFeedItem(
-            `MCP ingest: ${event.data.ingested || 0} jobs added.`,
-            "#22d3ee",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "job_discovered":
-          this.addFeedItem(
-            `+ ${event.data.title} @ ${event.data.company}`,
-            "#22d3ee",
-          );
-          this.fetchStats();
-          break;
-
-        case "job_matched":
-          this.addFeedItem(
-            `Scored: ${event.data.id?.substring(0, 8)} = ${event.data.score}`,
-            "#8b5cf6",
-          );
-          break;
-
-        case "job_applied":
-          this.addFeedItem(
-            `Applied: ${event.data.id?.substring(0, 8)} ${event.data.success ? "OK" : "FAIL"}`,
-            event.data.success ? "#10b981" : "#f43f5e",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "job_status_changed":
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        // ----- Apply Events -----
-        case "apply_started":
-          this.applyState.running = true;
-          this.applyState.job_id = event.data.job_id;
-          this.addFeedItem(
-            `APPLY: ${event.data.title} @ ${event.data.company} [${event.data.dry_run ? "DRY RUN" : "LIVE"}]`,
-            "#10b981",
-          );
-          break;
-
-        case "apply_complete":
-          this.applyState.running = false;
-          this.applyState.job_id = null;
-          this.notify(
-            `${event.data.dry_run ? "Dry run" : "Application"} ${event.data.success ? "complete" : "failed"}: ${event.data.title} @ ${event.data.company}`,
-            event.data.success ? "success" : "error",
-          );
-          this.addFeedItem(
-            `APPLY ${event.data.success ? "OK" : "FAIL"}: ${event.data.title} @ ${event.data.company}`,
-            event.data.success ? "#10b981" : "#f43f5e",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "apply_error":
-          this.applyState.running = false;
-          this.applyState.job_id = null;
-          this.notify(`Apply error: ${event.data.error}`, "error");
-          this.addFeedItem(`APPLY ERROR: ${event.data.error}`, "#f43f5e");
-          break;
-
-        case "apply_batch_started":
-          this.applyState.running = true;
-          this.applyState.total = event.data.count;
-          this.applyState.progress = [];
-          this.addFeedItem(
-            `BATCH APPLY started: ${event.data.count} jobs [${event.data.dry_run ? "DRY RUN" : "LIVE"}]`,
-            "#10b981",
-          );
-          break;
-
-        case "apply_progress":
-          this.applyState.job_id = event.data.job_id;
-          this.addFeedItem(
-            `[${event.data.current}/${event.data.total}] ${event.data.title} @ ${event.data.company}`,
-            "#22d3ee",
-          );
-          break;
-
-        case "apply_waiting":
-          this.addFeedItem(
-            `Rate limit: waiting ${event.data.seconds}s before next...`,
-            "#f59e0b",
-          );
-          break;
-
-        case "apply_batch_complete":
-          this.applyState.running = false;
-          this.applyState.job_id = null;
-          this.applyState.progress = event.data.results || [];
-          this.notify(
-            `Batch complete: ${event.data.applied}/${event.data.total} ${event.data.dry_run ? "(dry run)" : "submitted"}`,
-            "success",
-          );
-          this.addFeedItem(
-            `BATCH COMPLETE: ${event.data.applied}/${event.data.total} jobs`,
-            "#10b981",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          this.updateCharts();
-          break;
-
-        case "apply_batch_cancelled":
-          this.applyState.running = false;
-          this.applyState.job_id = null;
-          this.notify(
-            `Batch cancelled after ${event.data.applied} applications.`,
-            "warning",
-          );
-          this.addFeedItem(
-            `BATCH CANCELLED at job ${event.data.cancelled_at}`,
-            "#f59e0b",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          break;
-
-        case "apply_batch_error":
-          this.applyState.running = false;
-          this.applyState.job_id = null;
-          this.notify(`Batch error: ${event.data.error}`, "error");
-          this.addFeedItem(`BATCH ERROR: ${event.data.error}`, "#f43f5e");
-          break;
-
-        // ----- YOLO Events -----
-        case "yolo_cycle_start":
-          this.yoloState.running = true;
-          this.yoloState.cycle = event.data.cycle;
-          this.addFeedItem(
-            `YOLO CYCLE ${event.data.cycle} [${event.data.dry_run ? "DRY" : "LIVE"}]`,
-            "#fbbf24",
-          );
-          break;
-
-        case "yolo_phase":
-          this.yoloState.phase = event.data.phase;
-          {
-            const colors = {
-              discover: "#22d3ee",
-              score: "#8b5cf6",
-              apply: "#10b981",
-            };
-            this.addFeedItem(
-              `YOLO → ${event.data.phase.toUpperCase()}`,
-              colors[event.data.phase] || "#fbbf24",
-            );
-          }
-          break;
-
-        case "yolo_discover_done":
-          this.addFeedItem(
-            `YOLO discovered ${event.data.new} new / ${event.data.total} total`,
-            "#22d3ee",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          this.fetchCompanies();
-          break;
-
-        case "yolo_score_done":
-          this.addFeedItem(`YOLO scored ${event.data.scored} jobs`, "#8b5cf6");
-          this.fetchJobs();
-          this.fetchStats();
-          this.updateCharts();
-          break;
-
-        case "yolo_applying":
-          this.addFeedItem(
-            `YOLO [${event.data.current}/${event.data.total}] ${event.data.title} @ ${event.data.company}`,
-            "#10b981",
-          );
-          break;
-
-        case "yolo_apply_done":
-          this.addFeedItem(
-            `YOLO applied: ${event.data.applied} jobs ${event.data.dry_run ? "(dry run)" : "(submitted)"}`,
-            "#10b981",
-          );
-          this.fetchJobs();
-          this.fetchStats();
-          this.updateCharts();
-          break;
-
-        case "yolo_cycle_complete":
-          this.addFeedItem(
-            `YOLO CYCLE ${event.data.cycle} COMPLETE`,
-            "#fbbf24",
-          );
-          this.fetchYoloLog();
-          break;
-
-        case "yolo_waiting":
-          this.yoloState.phase = "waiting";
-          this.addFeedItem(
-            `YOLO sleeping ${event.data.minutes}min until cycle ${event.data.next_cycle}`,
-            "#f59e0b",
-          );
-          break;
-
-        case "yolo_cancelled":
-          this.yoloState.running = false;
-          this.yoloState.phase = null;
-          this.notify("YOLO mode cancelled.", "warning");
-          this.addFeedItem("YOLO CANCELLED", "#f43f5e");
-          this.fetchYoloLog();
-          break;
-
-        case "yolo_error":
-          this.addFeedItem(
-            `YOLO ERROR [${event.data.phase}]: ${event.data.error}`,
-            "#f43f5e",
-          );
-          if (event.data.phase === "fatal") {
-            this.yoloState.running = false;
-            this.yoloState.phase = null;
-          }
-          break;
-
-        // ----- Profile AI Analysis -----
-        case "profile_score_complete":
-          this.profileScoring = false;
-          this.profileInsights = event.data;
-          this.notify(
-            `Profile score: ${event.data.profile_score}/100`,
-            "success",
-          );
-          this.addFeedItem(
-            `Profile analyzed: ${event.data.profile_score}/100`,
-            "#a78bfa",
-          );
-          break;
-
-        case "profile_score_error":
-          this.profileScoring = false;
-          this.notify(`Profile analysis failed: ${event.data.error}`, "error");
-          this.addFeedItem(
-            `Profile analysis error: ${event.data.error}`,
-            "#f43f5e",
-          );
-          break;
-
-        case "profile_score_started":
-          this.addFeedItem("AI analyzing profile + resume...", "#a78bfa");
-          break;
-
-        // ----- Follow-up Events -----
-        case "follow_up_set":
-        case "follow_up_done":
-          this.fetchFollowUps();
-          break;
-      }
-    },
-
-    // ===================================================================
-    // VIEW ROUTING
-    // ===================================================================
-
-    switchView(view) {
-      this.currentView = view;
-      if (view === "profile") {
-        this.loadFullProfile();
-        this.loadResumes();
-      }
-      if (view === "dashboard") {
-        this.$nextTick(() => this.updateCharts());
-      }
-    },
-
-    // ===================================================================
-    // FULL PROFILE EDITOR
-    // ===================================================================
-
-    async scoreProfile() {
-      this.profileScoring = true;
-      try {
-        const res = await fetch("/api/profile/score", { method: "POST" });
-        if (res.ok) {
-          this.notify(
-            "Profile analysis started — Claude is reading your resume...",
-            "success",
-          );
-          this.addFeedItem("Profile AI analysis started", "#a78bfa");
-        } else {
-          const data = await res.json();
-          this.notify(data.detail || "Profile analysis failed", "error");
-          this.profileScoring = false;
-        }
-      } catch (err) {
-        this.notify(`Profile analysis error: ${err.message}`, "error");
-        this.profileScoring = false;
-      }
-    },
-
-    async loadFullProfile() {
-      try {
-        const res = await fetch("/api/profile");
-        this.fullProfile = await res.json();
-        this.coverLetterTemplates =
-          this.fullProfile.cover_letter_templates || [];
-      } catch (err) {
-        this.notify("Failed to load profile", "error");
-      }
-    },
-
-    updateProfileField(path, value) {
-      const keys = path.split(".");
-      let obj = this.fullProfile;
-      for (let i = 0; i < keys.length - 1; i++) {
-        if (!obj[keys[i]]) obj[keys[i]] = {};
-        obj = obj[keys[i]];
-      }
-      obj[keys[keys.length - 1]] = value;
-      this.scheduleProfileSave();
-    },
-
-    getProfileField(path) {
-      const keys = path.split(".");
-      let obj = this.fullProfile;
-      for (const k of keys) {
-        if (!obj || typeof obj !== "object") return "";
-        obj = obj[k];
-      }
-      return obj || "";
-    },
-
-    scheduleProfileSave() {
-      if (this.profileSaveTimer) clearTimeout(this.profileSaveTimer);
-      this.profileSaveTimer = setTimeout(() => this.saveFullProfile(), 800);
-    },
-
-    async saveFullProfile() {
-      this.profileSaving = true;
-      try {
-        await fetch("/api/profile", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(this.fullProfile),
-        });
-        this.lastSaveTime = new Date().toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false,
-        });
-        this.fetchProfile(); // sync sidebar quick-edit
-      } catch (err) {
-        this.notify("Profile save failed: " + err.message, "error");
-      } finally {
-        this.profileSaving = false;
-      }
-    },
-
-    toggleSection(section) {
-      this.profileSections[section] = !this.profileSections[section];
-    },
-
-    // Profile array field helpers (for tag-chip lists in profile editor)
-    addProfileArrayItem(path, inputRef) {
-      const val = this[inputRef]?.trim();
-      if (!val) return;
-      const keys = path.split(".");
-      let obj = this.fullProfile;
-      for (let i = 0; i < keys.length - 1; i++) {
-        if (!obj[keys[i]]) obj[keys[i]] = {};
-        obj = obj[keys[i]];
-      }
-      const lastKey = keys[keys.length - 1];
-      if (!Array.isArray(obj[lastKey])) obj[lastKey] = [];
-      if (!obj[lastKey].includes(val)) {
-        obj[lastKey].push(val);
-        this.scheduleProfileSave();
-      }
-      this[inputRef] = "";
-    },
-
-    removeProfileArrayItem(path, index) {
-      const keys = path.split(".");
-      let obj = this.fullProfile;
-      for (let i = 0; i < keys.length - 1; i++) {
-        if (!obj[keys[i]]) return;
-        obj = obj[keys[i]];
-      }
-      const arr = obj[keys[keys.length - 1]];
-      if (Array.isArray(arr)) {
-        arr.splice(index, 1);
-        this.scheduleProfileSave();
-      }
-    },
-
-    getProfileArray(path) {
-      const keys = path.split(".");
-      let obj = this.fullProfile;
-      for (const k of keys) {
-        if (!obj || typeof obj !== "object") return [];
-        obj = obj[k];
-      }
-      return Array.isArray(obj) ? obj : [];
-    },
-
-    // ===================================================================
-    // RESUME MANAGEMENT
-    // ===================================================================
-
-    async loadResumes() {
-      try {
-        const res = await fetch("/api/resumes");
-        this.resumes = await res.json();
-      } catch (_) {}
-    },
-
-    async uploadResume(fileInput) {
-      const file = fileInput?.files?.[0];
-      if (!file || !this.newResumeName.trim()) {
-        this.notify("Provide a name and select a file.", "warning");
-        return;
-      }
-      this.resumeUploading = true;
-      try {
-        const fd = new FormData();
-        fd.append("file", file);
-        fd.append("name", this.newResumeName.trim());
-        const res = await fetch("/api/resumes", { method: "POST", body: fd });
-        if (!res.ok) throw new Error(await res.text());
-        this.newResumeName = "";
-        fileInput.value = "";
-        await this.loadResumes();
-        this.notify("Resume uploaded.", "success");
-        this.addFeedItem("Resume uploaded: " + this.newResumeName, "#3b82f6");
-      } catch (err) {
-        this.notify("Upload failed: " + err.message, "error");
-      } finally {
-        this.resumeUploading = false;
-      }
-    },
-
-    async setDefaultResume(name) {
-      await fetch(`/api/resumes/${encodeURIComponent(name)}/default`, {
-        method: "PATCH",
-      });
-      await this.loadResumes();
-      this.notify(`"${name}" set as default.`, "success");
-    },
-
-    async deleteResume(name) {
-      if (!confirm(`Delete resume "${name}"?`)) return;
-      await fetch(`/api/resumes/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-      });
-      await this.loadResumes();
-      this.notify("Resume deleted.", "success");
-    },
-
-    handleResumeDrop(e) {
-      e.preventDefault();
-      this.resumeDragActive = false;
-      const file = e.dataTransfer?.files?.[0];
-      if (file && this.$refs.resumeFileInput) {
-        const dt = new DataTransfer();
-        dt.items.add(file);
-        this.$refs.resumeFileInput.files = dt.files;
-      }
-    },
-
-    // ===================================================================
-    // COVER LETTER TEMPLATES
-    // ===================================================================
-
-    addCoverLetterTemplate() {
-      if (!this.newTemplateName.trim() || !this.newTemplateBody.trim()) return;
-      if (!this.fullProfile.cover_letter_templates) {
-        this.fullProfile.cover_letter_templates = [];
-      }
-      this.fullProfile.cover_letter_templates.push({
-        name: this.newTemplateName.trim(),
-        body: this.newTemplateBody.trim(),
-      });
-      this.coverLetterTemplates = this.fullProfile.cover_letter_templates;
-      this.newTemplateName = "";
-      this.newTemplateBody = "";
-      this.scheduleProfileSave();
-    },
-
-    removeCoverLetterTemplate(index) {
-      this.fullProfile.cover_letter_templates.splice(index, 1);
-      this.coverLetterTemplates = this.fullProfile.cover_letter_templates;
-      this.scheduleProfileSave();
-    },
-
-    updateCoverLetterTemplate(index, field, value) {
-      this.fullProfile.cover_letter_templates[index][field] = value;
-      this.scheduleProfileSave();
-    },
-
-    // ===================================================================
-    // CHARTS
-    // ===================================================================
-
-    async initCharts() {
-      // Destroy existing charts first
-      if (this.scoreChart) {
-        this.scoreChart.destroy();
-        this.scoreChart = null;
-      }
-      if (this.timelineChart) {
-        this.timelineChart.destroy();
-        this.timelineChart = null;
-      }
-
-      // Set Chart.js defaults for dark theme
-      Chart.defaults.color = "#64748b";
-      Chart.defaults.borderColor = "#1e293b";
-      Chart.defaults.font.family = "'JetBrains Mono', monospace";
-      Chart.defaults.font.size = 10;
-
-      await Promise.all([this._buildScoreChart(), this._buildTimelineChart()]);
-    },
-
-    async updateCharts() {
-      if (this.scoreChart) {
-        this.scoreChart.destroy();
-        this.scoreChart = null;
-      }
-      if (this.timelineChart) {
-        this.timelineChart.destroy();
-        this.timelineChart = null;
-      }
-      await this.initCharts();
-    },
-
-    async _buildScoreChart() {
-      const canvas = document.getElementById("scoreChart");
-      if (!canvas) return;
-      // Destroy any existing chart on this canvas
-      const existing = Chart.getChart(canvas);
-      if (existing) existing.destroy();
-
-      const res = await fetch("/api/stats/scores");
-      const scores = await res.json();
-
-      const bgColors = scores.map((s) => {
-        if (s.bracket === "90-100") return "rgba(16, 185, 129, 0.6)";
-        if (s.bracket === "80-89") return "rgba(16, 185, 129, 0.4)";
-        if (s.bracket === "70-79") return "rgba(245, 158, 11, 0.5)";
-        if (s.bracket === "60-69") return "rgba(245, 158, 11, 0.3)";
-        if (s.bracket === "50-59") return "rgba(244, 63, 94, 0.4)";
-        return "rgba(100, 116, 139, 0.3)";
-      });
-
-      const borderColors = scores.map((s) => {
-        if (s.bracket === "90-100") return "#10b981";
-        if (s.bracket === "80-89") return "#10b981";
-        if (s.bracket === "70-79") return "#f59e0b";
-        if (s.bracket === "60-69") return "#f59e0b";
-        if (s.bracket === "50-59") return "#f43f5e";
-        return "#475569";
-      });
-
-      this.scoreChart = new Chart(canvas, {
-        type: "bar",
-        data: {
-          labels: scores.map((s) => s.bracket),
-          datasets: [
-            {
-              label: "Jobs",
-              data: scores.map((s) => s.count),
-              backgroundColor: bgColors,
-              borderColor: borderColors,
-              borderWidth: 1,
-              borderRadius: 4,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              backgroundColor: "#1a2235",
-              borderColor: "#2a3a52",
-              borderWidth: 1,
-              titleColor: "#e2e8f0",
-              bodyColor: "#94a3b8",
-              callbacks: { label: (ctx) => ` ${ctx.parsed.y} jobs` },
-            },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              ticks: { precision: 0 },
-              grid: { color: "rgba(30,41,59,0.5)" },
-            },
-            x: { grid: { display: false } },
-          },
-        },
-      });
-    },
-
-    // ===================================================================
-    // CHARTS
-    // ===================================================================
-
-    async _buildTimelineChart() {
-      const canvas = document.getElementById("timelineChart");
-      if (!canvas) return;
-      const existing = Chart.getChart(canvas);
-      if (existing) existing.destroy();
-
-      const res = await fetch("/api/stats/timeline");
-      const timeline = await res.json();
-      timeline.reverse();
-
-      this.timelineChart = new Chart(canvas, {
-        type: "line",
-        data: {
-          labels: timeline.map((t) => t.date),
-          datasets: [
-            {
-              label: "Discovered",
-              data: timeline.map((t) => t.total),
-              borderColor: "#22d3ee",
-              backgroundColor: "rgba(34,211,238,0.08)",
-              fill: true,
-              tension: 0.4,
-              pointRadius: 2,
-              pointBackgroundColor: "#22d3ee",
-              borderWidth: 1.5,
-            },
-            {
-              label: "Applied",
-              data: timeline.map((t) => t.applied),
-              borderColor: "#10b981",
-              backgroundColor: "rgba(16,185,129,0.08)",
-              fill: true,
-              tension: 0.4,
-              pointRadius: 2,
-              pointBackgroundColor: "#10b981",
-              borderWidth: 1.5,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          interaction: { mode: "index", intersect: false },
-          plugins: {
-            legend: {
-              labels: {
-                font: { size: 10 },
-                usePointStyle: true,
-                pointStyleWidth: 8,
-                padding: 16,
-              },
-            },
-            tooltip: {
-              backgroundColor: "#1a2235",
-              borderColor: "#2a3a52",
-              borderWidth: 1,
-              titleColor: "#e2e8f0",
-              bodyColor: "#94a3b8",
-            },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              ticks: { precision: 0 },
-              grid: { color: "rgba(30,41,59,0.5)" },
-            },
-            x: {
-              ticks: { maxTicksLimit: 8 },
-              grid: { display: false },
-            },
-          },
-        },
-      });
-    },
-  };
+"use strict";
+
+const state = {
+  page: "home",
+  applicationTab: "NEEDS_ATTENTION",
+  overview: null,
+  profile: null,
+  jobs: null,
+  applications: null,
+  attention: null,
+  loading: true,
+  refreshing: false,
+  automating: false,
+  activeAttentionItem: null,
+};
+
+const labels = {
+  profile: {
+    EMPTY: "Not started",
+    INCOMPLETE: "Needs information",
+    READY: "Ready",
+    CONFLICT: "Needs review",
+    SYSTEM_ISSUE: "System issue",
+  },
+  job: {
+    NOT_EVALUATED: "Not evaluated",
+    EVALUATING: "Evaluating",
+    HIGH_MATCH: "High match",
+    READY_TO_PREPARE: "Ready to prepare",
+    NEEDS_INPUT: "Needs input",
+    NOT_A_MATCH: "Not a match",
+    APPLICATION_CREATED: "Application created",
+    SYSTEM_ISSUE: "System issue",
+  },
+  application: {
+    SELECTED: "Selected",
+    PREPARING: "Preparing",
+    NEEDS_ATTENTION: "Needs your attention",
+    READY: "Ready",
+    SUBMITTED: "Submitted",
+    SUBMISSION_UNCERTAIN: "Submission uncertain",
+    SYSTEM_ISSUE: "System issue",
+  },
+  field: {
+    first_name: "First name", last_name: "Last name", preferred_name: "Preferred name",
+    email: "Email", phone: "Phone", location: "Location", address: "Address",
+    city: "City", state: "State or province", postal_code: "Postal code",
+    country: "Country", linkedin: "LinkedIn", github: "GitHub", portfolio: "Portfolio",
+  },
+};
+
+const nextStepCopy = {
+  SYSTEM_ATTENTION: ["JobOps needs attention", "A system or data integrity issue must be resolved before continuing.", "View system issues", "applications"],
+  COMPLETE_PROFILE: ["Complete your profile", "Add or verify the required information used in applications.", "Review profile", "profile"],
+  SET_JOB_PREFERENCES: ["Set your job preferences", "Choose the roles and locations you want JobOps to search.", "Set preferences", "profile"],
+  REVIEW_ATTENTION: ["Review items needing your attention", "Your input is required before those applications can continue.", "Review items", "applications"],
+  REFRESH_JOB_LIBRARY: ["Find matching jobs", "Refresh your job library using your enabled search preferences.", "Refresh job library", "refresh"],
+  CONTINUE_AUTOMATION: ["Continue automatic applications", "Prepare and safely advance the applications that are ready.", "Continue applications", "automation"],
+  VIEW_APPLICATIONS: ["Review your applications", "Your current application work is up to date.", "View applications", "applications"],
+  ALL_CAUGHT_UP: ["You’re all caught up", "There is no action required right now.", "View jobs", "jobs"],
+};
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+  })[char]);
 }
+
+function invocation(prefix) {
+  return `${prefix}-${Date.now()}-${crypto.getRandomValues(new Uint32Array(1))[0].toString(16)}`;
+}
+
+async function getJson(url) {
+  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  return response.json();
+}
+
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  return response.json();
+}
+
+async function loadDashboard() {
+  state.loading = true;
+  setHeader("Loading", "");
+  const requests = {
+    overview: getJson("/api/dashboard/overview"),
+    profile: getJson("/api/dashboard/profile"),
+    jobs: getJson("/api/dashboard/jobs"),
+    applications: getJson("/api/dashboard/applications"),
+    attention: getJson("/api/human-attention-inbox"),
+  };
+  const keys = Object.keys(requests);
+  const results = await Promise.allSettled(Object.values(requests));
+  let failures = 0;
+  results.forEach((result, index) => {
+    if (result.status === "fulfilled") state[keys[index]] = result.value;
+    else failures += 1;
+  });
+  state.loading = false;
+  if (failures) {
+    showNotice(`${failures} Dashboard section${failures === 1 ? "" : "s"} could not be loaded. System failures are not shown as empty data.`);
+    setHeader("Needs attention", "is-failed");
+  } else {
+    hideNotice();
+    setHeader("Up to date", "is-ready");
+  }
+  renderAll();
+}
+
+function setHeader(text, className) {
+  const node = document.querySelector("#header-status");
+  node.className = `header-status ${className}`.trim();
+  node.querySelector("span:last-child").textContent = text;
+}
+function showNotice(text) { const node = document.querySelector("#global-notice"); node.textContent = text; node.hidden = false; }
+function hideNotice() { document.querySelector("#global-notice").hidden = true; }
+
+function navigate(page) {
+  state.page = page;
+  document.querySelectorAll("[data-page]").forEach((node) => {
+    const active = node.dataset.page === page;
+    node.hidden = !active;
+    node.classList.toggle("is-active", active);
+  });
+  document.querySelectorAll(".nav-link").forEach((node) => {
+    node.classList.toggle("is-active", node.dataset.nav === page);
+  });
+  history.replaceState(null, "", `#${page}`);
+  document.querySelector("#main-content").focus({ preventScroll: true });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function emptyState(title, detail, action = "") {
+  return `<div class="empty-state"><h3>${escapeHtml(title)}</h3><p>${escapeHtml(detail)}</p>${action}</div>`;
+}
+function failureState(title = "This section could not be loaded") {
+  return `<div class="empty-state"><h3>${escapeHtml(title)}</h3><p>This is a system issue, not an empty result. Try again or review system status.</p><button class="button secondary" data-reload>Try again</button></div>`;
+}
+function pill(status, text) {
+  const tone = ["SUBMITTED", "READY", "READY_TO_PREPARE"].includes(status) ? "success"
+    : ["NEEDS_ATTENTION", "NEEDS_INPUT", "SUBMISSION_UNCERTAIN"].includes(status) ? "warning"
+    : status === "SYSTEM_ISSUE" ? "danger" : "neutral";
+  return `<span class="status-pill ${tone}">${escapeHtml(text)}</span>`;
+}
+
+function renderAll() {
+  renderNextStep();
+  renderOnboarding();
+  renderPipeline();
+  renderAttention();
+  renderMatches();
+  renderRecentApplications();
+  renderJobs();
+  renderApplications();
+  renderProfile();
+  bindDynamicActions();
+}
+
+function renderNextStep() {
+  const next = state.overview?.next_step || (state.loading ? null : "SYSTEM_ATTENTION");
+  const copy = next ? nextStepCopy[next] : ["Loading your next step…", "Checking current records.", "Loading", ""];
+  document.querySelector("#next-step-title").textContent = copy[0];
+  document.querySelector("#next-step-description").textContent = copy[1];
+  const button = document.querySelector("#next-step-action");
+  button.textContent = copy[2];
+  button.disabled = !next || state.refreshing || state.automating;
+  button.dataset.action = copy[3];
+}
+
+function renderOnboarding() {
+  const profile = state.profile;
+  const jobs = state.jobs;
+  const node = document.querySelector("#onboarding");
+  if (!profile || !jobs) { node.hidden = true; return; }
+  const profileComplete = profile.profile_state === "READY";
+  const preferencesComplete = (profile.search_preference_summary?.enabled_profile_count || 0) > 0;
+  const jobsComplete = (jobs.counts?.total || 0) > 0;
+  node.hidden = profileComplete && preferencesComplete && jobsComplete;
+  if (node.hidden) return;
+  const steps = [
+    ["Add your information", "Give JobOps the verified facts required to prepare applications.", profileComplete, "Profile", "profile"],
+    ["Set roles and locations", "Choose the kinds of jobs you want to find.", preferencesComplete, "Job preferences", "profile"],
+    ["Refresh your job library", "Find opportunities matching your enabled preferences.", jobsComplete, "Refresh jobs", "refresh"],
+  ];
+  document.querySelector("#onboarding-progress").textContent = `${steps.filter((step) => step[2]).length} of 3 complete`;
+  document.querySelector("#onboarding-steps").innerHTML = steps.map((step) => `
+    <li class="onboarding-step ${step[2] ? "is-complete" : ""}">
+      <h3>${escapeHtml(step[0])}</h3><p>${escapeHtml(step[1])}</p>
+      <button class="button ${step[2] ? "secondary" : "primary"}" data-action="${step[4]}" ${step[2] ? 'aria-label="Review completed step"' : ""}>${escapeHtml(step[2] ? "Review" : step[3])}</button>
+    </li>`).join("");
+}
+
+function renderPipeline() {
+  const profile = state.profile;
+  const jobs = state.jobs;
+  const applications = state.applications;
+  if (!profile || !jobs || !applications) {
+    document.querySelector("#pipeline-grid").innerHTML = failureState();
+    return;
+  }
+  const counts = applications.counts || {};
+  const stages = [
+    ["01", "Profile", labels.profile[profile.profile_state] || "Unknown", `${profile.verified_required_field_count || 0} of ${profile.required_field_count || 0} required fields`, "profile"],
+    ["02", "Job Library", jobs.library_state === "EMPTY" ? "No jobs yet" : "Ready", `${jobs.counts?.total ?? "—"} jobs`, "jobs"],
+    ["03", "Applications", (counts.needs_attention || 0) ? "Needs attention" : "In progress", `${counts.total || 0} applications`, "applications"],
+    ["04", "Submitted", (counts.submitted || 0) ? "Submissions confirmed" : "None submitted yet", `${counts.submitted || 0} submitted`, "applications"],
+  ];
+  document.querySelector("#pipeline-grid").innerHTML = stages.map((item) => `
+    <button class="pipeline-card" data-nav="${item[4]}">
+      <span class="pipeline-index">${item[0]}</span><strong>${escapeHtml(item[1])}</strong>
+      <span>${escapeHtml(item[2])}</span><div class="item-meta">${escapeHtml(item[3])}</div>
+    </button>`).join("");
+}
+
+function renderAttention() {
+  const node = document.querySelector("#attention-list");
+  if (!state.attention) { node.innerHTML = state.loading ? emptyState("Loading attention items", "Checking your current queue.") : failureState(); return; }
+  if (state.attention.status === "FAILED") { node.innerHTML = failureState("Attention items could not be loaded"); return; }
+  const items = state.attention.user_items || [];
+  if (!items.length) { node.innerHTML = emptyState("Nothing needs your attention", "JobOps can continue without additional input from you."); return; }
+  node.innerHTML = items.slice(0, 5).map((item) => `
+    <article class="attention-item">
+      <div class="item-row"><div><h3>${escapeHtml(item.attention_label)}</h3><div class="item-meta">Application ${escapeHtml(item.application_plan_id.slice(0, 12))}…</div></div>${pill("NEEDS_ATTENTION", "Action needed")}</div>
+      <p>${escapeHtml(item.required_action)}</p>
+      <button class="button secondary" data-attention-id="${escapeHtml(item.item_id)}">Review item</button>
+      <details class="technical-details"><summary>Technical details</summary><div class="technical-panel">Kind: ${escapeHtml(item.attention_kind)}<br>Stage: ${escapeHtml(item.source_stage)}</div></details>
+    </article>`).join("");
+}
+
+function matchMarkup(item) {
+  const score = item.match_score == null ? item.priority_bucket || "Match" : `${Math.round(item.match_score)}%`;
+  return `<article class="match-item">
+    <div class="item-row"><div><h3>${escapeHtml(item.title)}</h3><div class="item-meta">${escapeHtml(item.company)} · ${escapeHtml(item.location || "Location not listed")}</div></div>${pill(item.application_status, score)}</div>
+    ${(item.match_reasons || []).length ? `<ul class="reasons">${item.match_reasons.slice(0, 3).map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>` : '<p class="item-meta">No verified match explanation is available.</p>'}
+    <div class="item-row"><span>${pill(item.application_status, labels.job[item.application_status] || "Unknown")}</span><a href="${escapeHtml(item.canonical_url)}" target="_blank" rel="noopener noreferrer">View job</a></div>
+  </article>`;
+}
+
+function renderMatches() {
+  const node = document.querySelector("#top-matches");
+  if (!state.overview) { node.innerHTML = state.loading ? emptyState("Loading matches", "Reviewing the current job snapshot.") : failureState(); return; }
+  const items = state.overview.top_matches || [];
+  node.innerHTML = items.length ? items.slice(0, 5).map(matchMarkup).join("") : emptyState("No top matches yet", "Refresh your job library to find opportunities matching your profile.", '<button class="button primary" data-action="refresh">Refresh job library</button>');
+}
+
+function applicationMarkup(item) {
+  const progress = (item.progress_steps || []).map((step) => `<div class="progress-step ${escapeHtml(step.state)}"><strong>${escapeHtml(step.stage[0] + step.stage.slice(1).toLowerCase())}</strong><br>${escapeHtml(step.state.replaceAll("_", " ").toLowerCase())}</div>`).join("");
+  const attentionItem = (state.attention?.user_items || []).find((value) => value.application_plan_id === item.application_plan_id);
+  return `<article class="application-card">
+    <div class="item-row"><div><h3>${escapeHtml(item.title)}</h3><div class="item-meta">${escapeHtml(item.company)} · ${escapeHtml(item.location || "Location not listed")}</div></div>${pill(item.product_status, labels.application[item.product_status] || "Unknown")}</div>
+    <p>${escapeHtml(item.safe_status_detail)}</p>
+    <div class="progress" aria-label="Application progress">${progress}</div>
+    ${attentionItem ? `<button class="button primary" data-attention-id="${escapeHtml(attentionItem.item_id)}">Review required action</button>` : ""}
+    <details class="technical-details"><summary>Technical details</summary><div class="technical-panel">Plan: ${escapeHtml(item.application_plan_id)}<br>Job: ${escapeHtml(item.job_id)}</div></details>
+  </article>`;
+}
+
+function renderRecentApplications() {
+  const node = document.querySelector("#recent-applications");
+  if (!state.overview) { node.innerHTML = state.loading ? emptyState("Loading applications", "Checking current progress.") : failureState(); return; }
+  const items = state.overview.recent_applications || [];
+  node.innerHTML = items.length ? items.slice(0, 5).map(applicationMarkup).join("") : emptyState("No applications yet", "High-fit jobs will appear here after JobOps creates an application plan.", '<button class="button secondary" data-nav="jobs">View jobs</button>');
+}
+
+function renderJobs() {
+  const node = document.querySelector("#jobs-list");
+  const countsNode = document.querySelector("#job-counts");
+  if (!state.jobs) { node.innerHTML = state.loading ? emptyState("Loading jobs", "Reading your subject-scoped library.") : failureState(); countsNode.innerHTML = ""; return; }
+  if (["FAILED", "INTEGRITY_FAILURE"].includes(state.jobs.read_status)) { node.innerHTML = failureState("Your job library could not be read safely"); countsNode.innerHTML = ""; return; }
+  const counts = state.jobs.counts || {};
+  countsNode.innerHTML = [
+    ["All jobs", counts.total], ["High match", counts.high_match],
+    ["Ready", counts.ready_to_prepare], ["Needs input", counts.needs_input],
+  ].map(([label, value]) => `<div class="summary-item"><strong>${value ?? "—"}</strong><span>${label}</span></div>`).join("");
+  document.querySelector("#jobs-refresh-detail").textContent = state.jobs.last_refreshed_at ? `Last refreshed ${new Date(state.jobs.last_refreshed_at).toLocaleString()}` : "Refresh history is not available from the current formal read contract.";
+  const query = document.querySelector("#job-search").value.trim().toLowerCase();
+  const status = document.querySelector("#job-status-filter").value;
+  const items = (state.jobs.ordered_items || []).filter((item) => {
+    const haystack = `${item.title} ${item.company} ${item.location}`.toLowerCase();
+    return (!query || haystack.includes(query)) && (!status || item.application_status === status);
+  });
+  if (!items.length) {
+    node.innerHTML = (state.jobs.ordered_items || []).length
+      ? emptyState("No jobs match these filters", "Clear or adjust the current filters.")
+      : emptyState("No jobs yet", "Refresh your job library to find opportunities matching your profile.", '<button class="button primary" data-action="refresh">Refresh job library</button>');
+    return;
+  }
+  node.innerHTML = `<div class="table-head"><span>Match</span><span>Role</span><span>Company</span><span>Location</span><span>Why it fits</span><span>Status</span><span>Next action</span></div>` + items.map((item) => `
+    <div class="job-row">
+      <div data-label="Match">${escapeHtml(item.match_score == null ? item.priority_bucket || "—" : `${Math.round(item.match_score)}%`)}</div>
+      <div data-label="Role"><a href="${escapeHtml(item.canonical_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a></div>
+      <div data-label="Company">${escapeHtml(item.company)}</div>
+      <div data-label="Location">${escapeHtml(item.location || "Not listed")}</div>
+      <div data-label="Why it fits">${escapeHtml((item.match_reasons || [])[0] || "No verified explanation")}</div>
+      <div data-label="Status">${pill(item.application_status, labels.job[item.application_status] || "Unknown")}</div>
+      <div data-label="Next action"><a href="${escapeHtml(item.canonical_url)}" target="_blank" rel="noopener noreferrer">View job</a></div>
+    </div>`).join("");
+}
+
+function renderApplications() {
+  const node = document.querySelector("#applications-list");
+  document.querySelectorAll("[data-application-tab]").forEach((button) => {
+    if (button.getAttribute("role") === "tab") button.setAttribute("aria-selected", String(button.dataset.applicationTab === state.applicationTab));
+  });
+  if (!state.applications) { node.innerHTML = state.loading ? emptyState("Loading applications", "Reading current application records.") : failureState(); return; }
+  if (["FAILED", "INTEGRITY_FAILURE"].includes(state.applications.read_status)) { node.innerHTML = failureState("Applications could not be read safely"); return; }
+  const items = (state.applications.ordered_items || []).filter((item) => {
+    if (state.applicationTab === "PREPARING") return ["SELECTED", "PREPARING"].includes(item.product_status);
+    return item.product_status === state.applicationTab;
+  });
+  const tabLabel = labels.application[state.applicationTab] || state.applicationTab;
+  node.innerHTML = items.length ? items.map(applicationMarkup).join("") : emptyState(`No ${tabLabel.toLowerCase()} applications`, "Applications will move here when their formal status changes.");
+}
+
+function renderProfile() {
+  if (!state.profile) {
+    document.querySelector("#profile-overview-content").innerHTML = state.loading ? "<p>Loading profile…</p>" : failureState();
+    return;
+  }
+  if (["FAILED", "INTEGRITY_FAILURE"].includes(state.profile.read_status)) {
+    document.querySelector("#profile-overview-content").innerHTML = failureState("Your verified profile could not be read safely");
+    return;
+  }
+  const profileLabel = labels.profile[state.profile.profile_state] || "Unknown";
+  document.querySelector("#profile-state").textContent = profileLabel;
+  document.querySelector("#profile-overview-content").innerHTML = `<p><strong>${state.profile.verified_required_field_count} of ${state.profile.required_field_count}</strong> required fields are verified.</p>${state.profile.missing_required_fields?.length ? `<p>Still needed: ${state.profile.missing_required_fields.map((key) => labels.field[key] || key).join(", ")}.</p>` : "<p>Your required identity information is ready.</p>"}`;
+  const sources = state.profile.source_summary || {};
+  document.querySelector("#profile-source-summary").innerHTML = `<div class="summary-strip"><div class="summary-item"><strong>${sources.total_sources ?? 0}</strong><span>Total sources</span></div><div class="summary-item"><strong>${sources.file_source_count ?? 0}</strong><span>Files</span></div><div class="summary-item"><strong>${sources.url_source_count ?? 0}</strong><span>URLs</span></div><div class="summary-item"><strong>${sources.user_statement_count ?? 0}</strong><span>Statements</span></div></div>`;
+  document.querySelector("#identity-fields").innerHTML = (state.profile.identity_fields || []).map((field) => `<dl class="definition-item"><dt>${escapeHtml(labels.field[field.field_key] || field.field_key)}</dt><dd>${escapeHtml(field.display_value || "Not provided")}</dd><dd class="item-meta">${escapeHtml(field.value_state === "PRESENT" ? "Verified current value" : field.value_state.toLowerCase())}</dd></dl>`).join("");
+  const preferences = state.profile.search_preference_summary || {};
+  document.querySelector("#preference-summary").innerHTML = preferences.enabled_profile_count
+    ? `<p><strong>${preferences.enabled_profile_count}</strong> enabled search profile${preferences.enabled_profile_count === 1 ? "" : "s"}.</p><p>Roles: ${escapeHtml((preferences.target_roles || []).join(", ") || "Not specified")}<br>Locations: ${escapeHtml((preferences.target_locations || []).join(", ") || "Not specified")}</p>`
+    : emptyState("No job preferences yet", "Enable a formal Search Profile to choose roles and locations.");
+  document.querySelector("#review-summary").innerHTML = state.profile.capabilities?.review_capability === "UNAVAILABLE"
+    ? emptyState("Review queue unavailable", "The production Candidate Fact review capability is not connected yet. No synthetic count is shown.")
+    : `<p>${state.profile.review_summary?.pending_proposals ?? 0} proposals waiting for review.</p>`;
+}
+
+async function refreshJobs() {
+  if (state.refreshing) return;
+  state.refreshing = true;
+  updateRunningButtons();
+  try {
+    const result = await postJson("/api/job-library/refresh", {
+      invocation_id: invocation("dashboard-refresh"),
+      max_reprioritizations: 1,
+    });
+    if (result.status === "FAILED") throw new Error(result.message || "Refresh failed");
+    await loadDashboard();
+  } catch (error) {
+    showNotice(`Job library refresh failed: ${error.message}`);
+  } finally {
+    state.refreshing = false;
+    updateRunningButtons();
+  }
+}
+
+async function runAutomation() {
+  if (state.automating) return;
+  state.automating = true;
+  updateRunningButtons();
+  try {
+    const result = await postJson("/api/automation-cycle/run", { invocation_id: invocation("dashboard-automation") });
+    if (result.status === "FAILED") throw new Error(result.message || "Automation failed");
+    await loadDashboard();
+  } catch (error) {
+    showNotice(`Automatic applications could not continue: ${error.message}`);
+  } finally {
+    state.automating = false;
+    updateRunningButtons();
+  }
+}
+
+function updateRunningButtons() {
+  const refresh = document.querySelector("#refresh-jobs");
+  refresh.disabled = state.refreshing;
+  refresh.textContent = state.refreshing ? "Refreshing…" : "Refresh job library";
+  const automation = document.querySelector("#run-automation");
+  automation.disabled = state.automating;
+  automation.textContent = state.automating ? "Working…" : "Continue automatic applications";
+  renderNextStep();
+}
+
+function performAction(action) {
+  if (action === "refresh") return refreshJobs();
+  if (action === "automation") return runAutomation();
+  if (action) navigate(action);
+}
+
+function bindDynamicActions() {
+  document.querySelectorAll("[data-reload]").forEach((node) => node.onclick = loadDashboard);
+  document.querySelectorAll("[data-action]").forEach((node) => node.onclick = () => performAction(node.dataset.action));
+  document.querySelectorAll("[data-attention-id]").forEach((node) => node.onclick = () => openAttentionItem(node.dataset.attentionId));
+}
+
+function openAttentionItem(itemId) {
+  const item = [...(state.attention?.user_items || []), ...(state.attention?.operator_items || [])].find((value) => value.item_id === itemId);
+  if (!item) {
+    showNotice("The selected attention item is no longer current.");
+    return;
+  }
+  state.activeAttentionItem = item;
+  document.querySelector("#attention-dialog-action").textContent = item.required_action;
+  document.querySelector("#attention-response").value = "";
+  document.querySelector("#attention-dialog-status").textContent = "";
+  const generic = ["PROVIDE_FACT", "MAKE_CHOICE", "ATTEST"].includes(item.resolution_capability);
+  document.querySelector("#attention-response-area").hidden = !generic;
+  const specialized = document.querySelector("#attention-specialized-message");
+  specialized.hidden = generic;
+  specialized.textContent = generic ? "" : "This item requires a specialized correction or replacement capability. The guided Dashboard will not fake or bypass that workflow.";
+  document.querySelector("#attention-dialog").showModal();
+}
+
+async function submitAttentionResponse() {
+  const item = state.activeAttentionItem;
+  const message = document.querySelector("#attention-response").value.trim();
+  const status = document.querySelector("#attention-dialog-status");
+  if (!item || !message) {
+    status.textContent = "Please provide a clear response.";
+    return;
+  }
+  const button = document.querySelector("#submit-attention-response");
+  button.disabled = true;
+  status.textContent = "Submitting…";
+  try {
+    const endpoint = item.resolution_capability === "MAKE_CHOICE"
+      ? "resolve-version-choice"
+      : "resolve";
+    const result = await postJson(`/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/${endpoint}`, { message });
+    if (["FAILED", "INTEGRITY_FAILURE"].includes(result.status)) throw new Error(result.message || "Resolution failed");
+    document.querySelector("#attention-dialog").close();
+    await loadDashboard();
+  } catch (error) {
+    status.textContent = `Could not submit the response: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function bindStaticActions() {
+  document.querySelectorAll("[data-nav]").forEach((node) => node.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (node.dataset.applicationTab) state.applicationTab = node.dataset.applicationTab;
+    navigate(node.dataset.nav);
+    renderApplications();
+  }));
+  document.querySelectorAll("[data-application-tab]").forEach((node) => node.addEventListener("click", () => {
+    state.applicationTab = node.dataset.applicationTab;
+    navigate("applications");
+    renderApplications();
+  }));
+  document.querySelector("#next-step-action").addEventListener("click", (event) => performAction(event.currentTarget.dataset.action));
+  document.querySelector("#refresh-jobs").addEventListener("click", refreshJobs);
+  document.querySelector("#run-automation").addEventListener("click", runAutomation);
+  document.querySelector("#job-search").addEventListener("input", renderJobs);
+  document.querySelector("#job-status-filter").addEventListener("change", renderJobs);
+  document.querySelector("#delete-local-data").addEventListener("click", () => {
+    document.querySelector("#delete-confirmation").hidden = false;
+  });
+  document.querySelector("#cancel-delete").addEventListener("click", () => {
+    document.querySelector("#delete-confirmation").hidden = true;
+  });
+  document.querySelector("#submit-attention-response").addEventListener("click", submitAttentionResponse);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindStaticActions();
+  const initial = location.hash.slice(1);
+  navigate(["home", "jobs", "applications", "profile", "settings"].includes(initial) ? initial : "home");
+  loadDashboard();
+});

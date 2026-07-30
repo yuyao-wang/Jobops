@@ -73,6 +73,12 @@ from dashboard.job_library_refresh import (
 from dashboard.human_attention_inbox import (
     HumanAttentionInboxUIController,
 )
+from dashboard.read_models import (
+    DashboardApplicationsController,
+    DashboardJobsController,
+    DashboardOverviewController,
+    DashboardProfileController,
+)
 from dashboard.material_correction_target import (
     MaterialCorrectionTargetUIController,
 )
@@ -212,6 +218,13 @@ def configure_production_automation_ui(
     authenticated_subject: AuthenticatedSubjectDependency,
     owned_resources: tuple[object, ...],
     composition_diagnostics: Mapping[str, Any],
+    human_attention_controller: HumanAttentionInboxUIController | None = None,
+    dashboard_profile_controller: DashboardProfileController | None = None,
+    dashboard_jobs_controller: DashboardJobsController | None = None,
+    dashboard_applications_controller: (
+        DashboardApplicationsController | None
+    ) = None,
+    dashboard_overview_controller: DashboardOverviewController | None = None,
 ) -> None:
     """Atomically install the complete P2c10c production UI boundary."""
 
@@ -229,9 +242,34 @@ def configure_production_automation_ui(
         raise TypeError("owned resources are invalid")
     if not isinstance(composition_diagnostics, Mapping):
         raise TypeError("composition diagnostics are invalid")
+    optional_controllers = (
+        (human_attention_controller, HumanAttentionInboxUIController),
+        (dashboard_profile_controller, DashboardProfileController),
+        (dashboard_jobs_controller, DashboardJobsController),
+        (dashboard_applications_controller, DashboardApplicationsController),
+        (dashboard_overview_controller, DashboardOverviewController),
+    )
+    if any(
+        controller is not None and not isinstance(controller, expected)
+        for controller, expected in optional_controllers
+    ):
+        raise TypeError("dashboard read controller is invalid")
     application.state.job_library_refresh_controller = refresh_controller
     application.state.automation_cycle_controller = automation_controller
     application.state.authenticated_subject_dependency = authenticated_subject
+    application.state.human_attention_inbox_controller = (
+        human_attention_controller
+    )
+    application.state.dashboard_profile_controller = (
+        dashboard_profile_controller
+    )
+    application.state.dashboard_jobs_controller = dashboard_jobs_controller
+    application.state.dashboard_applications_controller = (
+        dashboard_applications_controller
+    )
+    application.state.dashboard_overview_controller = (
+        dashboard_overview_controller
+    )
     application.state.production_owned_resources = owned_resources
     application.state.production_composition_diagnostics = dict(
         composition_diagnostics
@@ -695,6 +733,86 @@ async def human_attention_inbox_ui(
         )
     result = await controller.load(context=context)
     return result.to_dict()
+
+
+async def _load_dashboard_read(
+    request: Request,
+    context: AuthenticatedSubjectContext,
+    *,
+    state_name: str,
+    controller_type: type,
+    unavailable_message: str,
+) -> dict:
+    controller = getattr(request.app.state, state_name, None)
+    if not isinstance(controller, controller_type):
+        raise HTTPException(status_code=503, detail=unavailable_message)
+    result = await controller.load(context=context)
+    return result.to_public_dict()
+
+
+@app.get("/api/dashboard/profile")
+async def dashboard_profile_read_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    return await _load_dashboard_read(
+        request,
+        context,
+        state_name="dashboard_profile_controller",
+        controller_type=DashboardProfileController,
+        unavailable_message="Dashboard profile is unavailable.",
+    )
+
+
+@app.get("/api/dashboard/jobs")
+async def dashboard_jobs_read_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    return await _load_dashboard_read(
+        request,
+        context,
+        state_name="dashboard_jobs_controller",
+        controller_type=DashboardJobsController,
+        unavailable_message="Dashboard jobs are unavailable.",
+    )
+
+
+@app.get("/api/dashboard/applications")
+@app.get("/api/applications")
+async def dashboard_applications_read_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    return await _load_dashboard_read(
+        request,
+        context,
+        state_name="dashboard_applications_controller",
+        controller_type=DashboardApplicationsController,
+        unavailable_message="Dashboard applications are unavailable.",
+    )
+
+
+@app.get("/api/dashboard/overview")
+async def dashboard_overview_read_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    return await _load_dashboard_read(
+        request,
+        context,
+        state_name="dashboard_overview_controller",
+        controller_type=DashboardOverviewController,
+        unavailable_message="Dashboard overview is unavailable.",
+    )
 
 
 @app.get("/api/candidate-facts/review")

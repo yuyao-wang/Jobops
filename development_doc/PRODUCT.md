@@ -75,10 +75,22 @@ V1 要完成所有核心业务域的端到端功能，而不是覆盖所有外�
   - login/registration、Review、Gate B、handoff、resume 和 evidence。
   - `SUBMITTED_VERIFIED`、`SUBMIT_UNKNOWN` 和 duplicate-submit protection。
 - Product surfaces
-  - Search settings / Update Jobs。
-  - Job board。
-  - Material review。
-  - Application run / blocker view。
+  - Guided Dashboard navigation is limited to Home, Jobs, Applications,
+    Profile, and Settings.
+  - Home explains the product, derives one contextual next step from formal
+    read models, presents the four-stage user pipeline, and prioritizes Human
+    Attention above job refresh or automation.
+  - First-run guidance is derived from verified profile, enabled SearchProfile,
+    and subject Job Library state; it does not persist a separate onboarding
+    flag.
+  - Jobs owns the manual Refresh action, match explanations, filters, and
+    subject-scoped library status. Applications owns five-stage user progress,
+    attention, readiness, submitted, uncertain, and system-issue groupings.
+  - Profile exposes verified facts, source summaries, preferences, answers
+    capability, and review capability without reading legacy `profile.yaml`.
+  - Settings contains server-managed AI, Browser, and Automation information;
+    advanced and destructive legacy actions are removed from primary
+    navigation and cannot bypass authenticated production controllers.
 - Durable operation
   - 所有入口使用相同的业务服务和状态规则。
   - 私有数据、材料、queue、events 和 browser state 保存在 Private Home。

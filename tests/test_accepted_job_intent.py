@@ -38,6 +38,12 @@ from core.job_discovery import (
     JobIntakeIntent,
 )
 from core.private_home import PrivateHome
+from core.subject_job_discovery import (
+    SubjectJobDiscoveryCommand,
+    SubjectJobDiscoveryResult,
+    SubjectJobDiscoveryStatus,
+)
+from core.subject_job_library import RegisterSubjectJobMembershipStatus
 from source_connectors import (
     AtsType,
     FieldProvenance,
@@ -123,17 +129,17 @@ class _DiscoveryPort:
         self.job_id = job_id
         self.run_id = run_id
         self.disposition = disposition
-        self.calls: list[JobDiscoveryRequest] = []
+        self.calls: list[SubjectJobDiscoveryCommand] = []
 
     def __call__(
         self,
-        request: JobDiscoveryRequest,
-    ) -> JobDiscoveryResponse:
+        request: SubjectJobDiscoveryCommand,
+    ) -> SubjectJobDiscoveryResult:
         self.calls.append(request)
         accepted = self.disposition is DiscoveryDisposition.ACCEPTED
-        return JobDiscoveryResponse(
+        response = JobDiscoveryResponse(
             disposition=self.disposition,
-            original_intent=request.proposal.intent,
+            original_intent=request.request.proposal.intent,
             reason_code=(
                 DiscoveryReason.JOB_CREATED
                 if accepted
@@ -142,6 +148,20 @@ class _DiscoveryPort:
             run_id=self.run_id,
             job_id=self.job_id if accepted else None,
             change=DiscoveryChange.CREATED if accepted else None,
+        )
+        return SubjectJobDiscoveryResult(
+            (
+                SubjectJobDiscoveryStatus.ACCEPTED
+                if accepted
+                else SubjectJobDiscoveryStatus.NOT_ACCEPTED
+            ),
+            response,
+            object() if accepted else None,
+            (
+                RegisterSubjectJobMembershipStatus.CREATED
+                if accepted
+                else None
+            ),
         )
 
 
