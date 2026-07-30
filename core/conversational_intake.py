@@ -16,6 +16,8 @@ from core.accepted_job_intent import (
     AcceptedJobIntent,
     AcceptedJobIntentFailureReason,
     AcceptedJobIntentRepository,
+    AcceptedJobIntentSourceProvenance,
+    AcceptedJobIntentSourceType,
     AcceptedJobIntentWriteResult,
     AcceptedJobIntentWriteStatus,
 )
@@ -1936,6 +1938,12 @@ def _persist_retained_intent(
         intake_proposal_id=f"proposal-{pending.pending_intake_id}",
         discovery_run_id=discovery_response.run_id,
         recorded_at=pending.accepted_intent_recorded_at,
+        provenance=AcceptedJobIntentSourceProvenance(
+            source_type=(
+                AcceptedJobIntentSourceType.CONVERSATIONAL_INTAKE
+            ),
+            source_id=f"proposal-{pending.pending_intake_id}",
+        ),
     )
     try:
         write_result = accepted_intent_repository.save(record)

@@ -540,6 +540,11 @@ class ApplicationExecutionRunWriteStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ApplicationExecutionRunListStatus(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
+
+
 @dataclass(frozen=True, slots=True)
 class ApplicationExecutionRunReadResult:
     status: ApplicationExecutionRunReadStatus
@@ -551,6 +556,45 @@ class ApplicationExecutionRunWriteResult:
     status: ApplicationExecutionRunWriteStatus
     run: ApplicationExecutionRun | None
     reason: ApplicationExecutionFailureReason | None
+
+
+@dataclass(frozen=True, slots=True)
+class ApplicationExecutionRunListResult:
+    status: ApplicationExecutionRunListStatus
+    runs: tuple[ApplicationExecutionRun, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "status", ApplicationExecutionRunListStatus(self.status)
+        )
+        if not isinstance(self.runs, tuple) or any(
+            not isinstance(item, ApplicationExecutionRun)
+            for item in self.runs
+        ):
+            raise TypeError("listed execution runs must be typed")
+        if self.status is ApplicationExecutionRunListStatus.INTEGRITY_FAILURE:
+            if self.runs:
+                raise ValueError("failed execution-run list cannot expose runs")
+            return
+        expected = tuple(
+            sorted(
+                self.runs,
+                key=lambda item: (
+                    item.application_plan_id,
+                    item.assembly_record_id,
+                    item.completed_at.astimezone(timezone.utc),
+                    item.run_id,
+                ),
+            )
+        )
+        if self.runs != expected or len(
+            {item.run_id for item in self.runs}
+        ) != len(self.runs):
+            raise ValueError("execution-run list ordering is invalid")
+        if self.runs and len(
+            {item.subject_id for item in self.runs}
+        ) != 1:
+            raise ValueError("execution-run list mixes subjects")
 
 
 @runtime_checkable
@@ -566,6 +610,10 @@ class ApplicationExecutionRunRepository(Protocol):
     def find_current_for_assembly(
         self, *, subject_id: str, assembly_record_id: str
     ) -> ApplicationExecutionRunReadResult: ...
+
+    def list_for_subject(
+        self, *, subject_id: str
+    ) -> ApplicationExecutionRunListResult: ...
 
 
 def _stage_from_dict(value: Mapping[str, Any]) -> ApplicationExecutionStageResult:
@@ -777,33 +825,16 @@ class PrivateHomeApplicationExecutionRunRepository:
     def find_current_for_assembly(
         self, *, subject_id: str, assembly_record_id: str
     ) -> ApplicationExecutionRunReadResult:
-        directory = self._directory(subject_id)
-        if not directory.exists():
-            return ApplicationExecutionRunReadResult(
-                ApplicationExecutionRunReadStatus.NOT_FOUND, None
-            )
-        try:
-            paths = tuple(directory.iterdir())
-        except OSError:
+        listed = self.list_for_subject(subject_id=subject_id)
+        if listed.status is ApplicationExecutionRunListStatus.INTEGRITY_FAILURE:
             return ApplicationExecutionRunReadResult(
                 ApplicationExecutionRunReadStatus.INTEGRITY_FAILURE, None
             )
-        runs: list[ApplicationExecutionRun] = []
-        for path in paths:
-            if path.is_symlink() or not path.is_file() or path.suffix != ".json":
-                return ApplicationExecutionRunReadResult(
-                    ApplicationExecutionRunReadStatus.INTEGRITY_FAILURE, None
-                )
-            read = self.get(subject_id=subject_id, run_id=path.stem)
-            if (
-                read.status is not ApplicationExecutionRunReadStatus.FOUND
-                or read.run is None
-            ):
-                return ApplicationExecutionRunReadResult(
-                    ApplicationExecutionRunReadStatus.INTEGRITY_FAILURE, None
-                )
-            if read.run.assembly_record_id == assembly_record_id:
-                runs.append(read.run)
+        runs = [
+            item
+            for item in listed.runs
+            if item.assembly_record_id == assembly_record_id
+        ]
         if not runs:
             return ApplicationExecutionRunReadResult(
                 ApplicationExecutionRunReadStatus.NOT_FOUND, None
@@ -817,6 +848,55 @@ class PrivateHomeApplicationExecutionRunRepository:
         )
         return ApplicationExecutionRunReadResult(
             ApplicationExecutionRunReadStatus.FOUND, current
+        )
+
+    def list_for_subject(
+        self, *, subject_id: str
+    ) -> ApplicationExecutionRunListResult:
+        directory = self._directory(subject_id)
+        if not directory.exists():
+            return ApplicationExecutionRunListResult(
+                ApplicationExecutionRunListStatus.SUCCEEDED, ()
+            )
+        try:
+            paths = tuple(directory.iterdir())
+        except OSError:
+            return ApplicationExecutionRunListResult(
+                ApplicationExecutionRunListStatus.INTEGRITY_FAILURE, ()
+            )
+        runs: list[ApplicationExecutionRun] = []
+        for path in paths:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.suffix != ".json"
+                or _RUN_ID_RE.fullmatch(path.stem) is None
+            ):
+                return ApplicationExecutionRunListResult(
+                    ApplicationExecutionRunListStatus.INTEGRITY_FAILURE, ()
+                )
+            read = self.get(subject_id=subject_id, run_id=path.stem)
+            if (
+                read.status is not ApplicationExecutionRunReadStatus.FOUND
+                or read.run is None
+            ):
+                return ApplicationExecutionRunListResult(
+                    ApplicationExecutionRunListStatus.INTEGRITY_FAILURE, ()
+                )
+            runs.append(read.run)
+        return ApplicationExecutionRunListResult(
+            ApplicationExecutionRunListStatus.SUCCEEDED,
+            tuple(
+                sorted(
+                    runs,
+                    key=lambda item: (
+                        item.application_plan_id,
+                        item.assembly_record_id,
+                        item.completed_at.astimezone(timezone.utc),
+                        item.run_id,
+                    ),
+                )
+            ),
         )
 
 
@@ -1569,6 +1649,8 @@ __all__ = [
     "ApplicationExecutionRun",
     "ApplicationExecutionRunReadResult",
     "ApplicationExecutionRunReadStatus",
+    "ApplicationExecutionRunListResult",
+    "ApplicationExecutionRunListStatus",
     "ApplicationExecutionRunRepository",
     "ApplicationExecutionRunStatus",
     "ApplicationExecutionRunWriteResult",

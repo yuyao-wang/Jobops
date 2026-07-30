@@ -21,10 +21,22 @@ from .application_answer_taxonomy import (
     canonical_application_answer_taxonomy_hash,
     normalize_canonical_application_answer_key,
 )
+from .application_attestation import (
+    ApplicationAttestationDecision,
+    PlanScopedApplicationAttestationProvider,
+)
 from .application_plan import (
     ApplicationPlan,
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
+)
+from .application_preparation_orchestrator import (
+    APPLICATION_ANSWERS_STOP_REASON_CONTRACT_VERSION,
+    ApplicationAnswersStopReason,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
 )
 from .private_home import PrivateHome, PrivateHomeError
 from .profile_store import CandidateVault, ProfileStoreError
@@ -1225,6 +1237,39 @@ class PrepareApplicationAnswersResult:
     reason_code: PreparedApplicationAnswerSetFailureReason | None
     retryable: bool
     message: str
+    unresolved_reasons: tuple[UnresolvedAnswerReason, ...] = ()
+
+    def __post_init__(self) -> None:
+        status = PreparedApplicationAnswerSetStatus(self.status)
+        object.__setattr__(self, "status", status)
+        if self.reason_code is not None:
+            object.__setattr__(
+                self,
+                "reason_code",
+                PreparedApplicationAnswerSetFailureReason(self.reason_code),
+            )
+        if (
+            not isinstance(self.unresolved_reasons, tuple)
+            or any(
+                not isinstance(item, UnresolvedAnswerReason)
+                for item in self.unresolved_reasons
+            )
+            or tuple(
+                sorted(
+                    set(self.unresolved_reasons),
+                    key=lambda item: item.value,
+                )
+            )
+            != self.unresolved_reasons
+        ):
+            raise ValueError("unresolved reasons must be unique and ordered")
+        if (
+            status
+            is PreparedApplicationAnswerSetStatus.DEFERRED_NEEDS_HUMAN
+        ) != bool(self.unresolved_reasons):
+            raise ValueError(
+                "only a needs-human result carries unresolved reasons"
+            )
 
 
 def _unresolved(
@@ -1345,6 +1390,9 @@ def prepare_application_answers(
     fact_provider: ApplicationFactProvider,
     answer_policy: ApplicationAnswerPolicy,
     answer_set_repository: PreparedApplicationAnswerSetRepository,
+    attestation_provider: (
+        PlanScopedApplicationAttestationProvider | None
+    ) = None,
 ) -> PrepareApplicationAnswersResult:
     try:
         subject = _clean_text(
@@ -1412,7 +1460,31 @@ def prepare_application_answers(
         and (fact.expires_at is None or fact.expires_at > now)
         and _scope_allows(fact, plan.job_id)
     )
-    if not active_facts:
+    attestations = {}
+    if attestation_provider is not None:
+        try:
+            for key in answer_policy.attestation_keys:
+                attestation = attestation_provider.get_current(
+                    subject_id=subject,
+                    application_plan_id=plan.plan_id,
+                    canonical_key=key,
+                )
+                if attestation is not None:
+                    if (
+                        attestation.subject_id != subject
+                        or attestation.application_plan_id != plan.plan_id
+                        or attestation.canonical_key is not key
+                    ):
+                        raise ValueError(
+                            "attestation binding mismatch"
+                        )
+                    attestations[key] = attestation
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return _failure_result(
+                PreparedApplicationAnswerSetFailureReason
+                .FACT_SNAPSHOT_INTEGRITY_FAILURE
+            )
+    if not active_facts and not attestations:
         return PrepareApplicationAnswersResult(
             status=(
                 PreparedApplicationAnswerSetStatus
@@ -1449,6 +1521,24 @@ def prepare_application_answers(
             )
             continue
         if key in answer_policy.attestation_keys:
+            attestation = attestations.get(key)
+            if (
+                attestation is not None
+                and attestation.decision
+                is ApplicationAttestationDecision.CONFIRMED
+            ):
+                answers.append(
+                    _prepared(
+                        key,
+                        True,
+                        PreparedAnswerSource.USER_CONFIRMED,
+                        (attestation.attestation_id,),
+                        canonical_application_answer_definition(
+                            key
+                        ).sensitivity,
+                    )
+                )
+                continue
             unresolved.append(
                 _unresolved(
                     key,
@@ -1574,6 +1664,12 @@ def prepare_application_answers(
             )
         )
     if not answers:
+        unresolved_reasons = tuple(
+            sorted(
+                {item.reason for item in unresolved},
+                key=lambda item: item.value,
+            )
+        )
         return PrepareApplicationAnswersResult(
             status=(
                 PreparedApplicationAnswerSetStatus.DEFERRED_NEEDS_HUMAN
@@ -1584,6 +1680,7 @@ def prepare_application_answers(
             message=(
                 "Trusted records exist, but no answer is safe to prepare."
             ),
+            unresolved_reasons=unresolved_reasons,
         )
     answers_tuple = tuple(
         sorted(answers, key=lambda item: item.canonical_key.value)
@@ -1729,6 +1826,122 @@ def prepare_application_answers(
     )
 
 
+_APPLICATION_ANSWERS_FAILURE_REASON_MAP = {
+    reason: ApplicationAnswersStopReason[reason.name]
+    for reason in PreparedApplicationAnswerSetFailureReason
+}
+
+
+def _application_answers_user_stop_reason(
+    unresolved_reasons: tuple[UnresolvedAnswerReason, ...],
+) -> ApplicationAnswersStopReason:
+    reasons = frozenset(unresolved_reasons)
+    attestation = UnresolvedAnswerReason.REQUIRES_ATTESTATION in reasons
+    choice = UnresolvedAnswerReason.REQUIRES_USER_CHOICE in reasons
+    missing_fact = UnresolvedAnswerReason.MISSING_FACT in reasons
+    if missing_fact and choice and attestation:
+        return (
+            ApplicationAnswersStopReason
+            .USER_FACT_CHOICE_AND_ATTESTATION_REQUIRED
+        )
+    if missing_fact and choice:
+        return ApplicationAnswersStopReason.USER_FACT_AND_CHOICE_REQUIRED
+    if missing_fact and attestation:
+        return (
+            ApplicationAnswersStopReason.USER_FACT_AND_ATTESTATION_REQUIRED
+        )
+    if choice and attestation:
+        return (
+            ApplicationAnswersStopReason.USER_CHOICE_AND_ATTESTATION_REQUIRED
+        )
+    if attestation:
+        return ApplicationAnswersStopReason.USER_ATTESTATION_REQUIRED
+    if choice:
+        return ApplicationAnswersStopReason.USER_CHOICE_REQUIRED
+    if missing_fact:
+        return ApplicationAnswersStopReason.USER_FACT_REQUIRED
+    return ApplicationAnswersStopReason.NO_SAFE_AUTOMATABLE_ANSWER
+
+
+def application_answers_public_result(
+    result: PrepareApplicationAnswersResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b3b outcome to stage-result v2."""
+
+    if not isinstance(result, PrepareApplicationAnswersResult):
+        raise TypeError("result must be an application-answers result")
+    stage = ApplicationPreparationStage.APPLICATION_ANSWERS
+    if result.status in {
+        PreparedApplicationAnswerSetStatus.CREATED,
+        PreparedApplicationAnswerSetStatus.UNCHANGED,
+    }:
+        if result.answer_set is None:
+            raise ValueError("successful answer preparation has no AnswerSet")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is PreparedApplicationAnswerSetStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.answer_set.answer_set_id,
+            result_content_hash=result.answer_set.answer_set_content_hash,
+            outputs={
+                "prepared_application_answer_set_id": (
+                    result.answer_set.answer_set_id
+                )
+            },
+            human_attention_required=any(
+                item.blocking for item in result.answer_set.unresolved_items
+            ),
+        )
+    if (
+        result.status
+        is PreparedApplicationAnswerSetStatus.DEFERRED_NO_TRUSTED_FACTS
+    ):
+        reason = ApplicationAnswersStopReason.NO_TRUSTED_FACTS
+        outcome = PreparationStageOutcome.DEFERRED
+    elif (
+        result.status
+        is PreparedApplicationAnswerSetStatus.DEFERRED_NEEDS_HUMAN
+    ):
+        reason = _application_answers_user_stop_reason(
+            result.unresolved_reasons
+        )
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped answer preparation has no reason")
+        try:
+            reason = _APPLICATION_ANSWERS_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped application-answers stop reason"
+            ) from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=APPLICATION_ANSWERS_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        human_attention_required=(
+            outcome is PreparationStageOutcome.DEFERRED
+        ),
+    )
+
+
 __all__ = [
     "APPLICATION_ANSWER_POLICY_VERSION",
     "APPLICATION_FACT_SNAPSHOT_CONTRACT_VERSION",
@@ -1757,5 +1970,6 @@ __all__ = [
     "UnresolvedAnswerReason",
     "UnresolvedApplicationAnswer",
     "UnresolvedDefaultHandling",
+    "application_answers_public_result",
     "prepare_application_answers",
 ]

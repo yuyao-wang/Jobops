@@ -88,6 +88,11 @@ class ApplicationBundleAssemblyWriteStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ApplicationBundleAssemblyListStatus(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
+
+
 class ApplicationBundleAssemblyNotReadyReason(StrEnum):
     MANIFEST_NOT_FOUND = "MANIFEST_NOT_FOUND"
     REQUIRED_MATERIALS_INCOMPLETE = "REQUIRED_MATERIALS_INCOMPLETE"
@@ -343,6 +348,44 @@ class ApplicationBundleAssemblyWriteResult:
     reason_code: ApplicationBundleAssemblyFailureReason | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ApplicationBundleAssemblyListResult:
+    status: ApplicationBundleAssemblyListStatus
+    records: tuple[ApplicationBundleAssemblyRecord, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "status", ApplicationBundleAssemblyListStatus(self.status)
+        )
+        if not isinstance(self.records, tuple) or any(
+            not isinstance(item, ApplicationBundleAssemblyRecord)
+            for item in self.records
+        ):
+            raise TypeError("listed assembly records must be typed")
+        if self.status is ApplicationBundleAssemblyListStatus.INTEGRITY_FAILURE:
+            if self.records:
+                raise ValueError("failed assembly list cannot expose records")
+            return
+        expected = tuple(
+            sorted(
+                self.records,
+                key=lambda item: (
+                    item.application_plan_id,
+                    item.assembled_at.astimezone(timezone.utc),
+                    item.record_id,
+                ),
+            )
+        )
+        if self.records != expected or len(
+            {item.record_id for item in self.records}
+        ) != len(self.records):
+            raise ValueError("assembly list ordering is invalid")
+        if self.records and len(
+            {item.subject_id for item in self.records}
+        ) != 1:
+            raise ValueError("assembly list mixes subjects")
+
+
 @runtime_checkable
 class ApplicationBundleAssemblyRepository(Protocol):
     def save(
@@ -356,6 +399,10 @@ class ApplicationBundleAssemblyRepository(Protocol):
     def find_current_for_plan(
         self, *, subject_id: str, application_plan_id: str
     ) -> ApplicationBundleAssemblyReadResult: ...
+
+    def list_for_subject(
+        self, *, subject_id: str
+    ) -> ApplicationBundleAssemblyListResult: ...
 
 
 def _record_from_dict(value: Any) -> ApplicationBundleAssemblyRecord:
@@ -508,38 +555,19 @@ class PrivateHomeApplicationBundleAssemblyRepository:
     def find_current_for_plan(
         self, *, subject_id: str, application_plan_id: str
     ) -> ApplicationBundleAssemblyReadResult:
-        directory = self._directory(subject_id)
-        if not directory.exists():
-            return ApplicationBundleAssemblyReadResult(
-                ApplicationBundleAssemblyReadStatus.NOT_FOUND, None
-            )
-        try:
-            paths = tuple(directory.iterdir())
-        except OSError:
+        listed = self.list_for_subject(subject_id=subject_id)
+        if (
+            listed.status
+            is ApplicationBundleAssemblyListStatus.INTEGRITY_FAILURE
+        ):
             return ApplicationBundleAssemblyReadResult(
                 ApplicationBundleAssemblyReadStatus.INTEGRITY_FAILURE, None
             )
-        records: list[ApplicationBundleAssemblyRecord] = []
-        for path in paths:
-            if (
-                path.suffix != ".json"
-                or _RECORD_ID_RE.fullmatch(path.stem) is None
-            ):
-                return ApplicationBundleAssemblyReadResult(
-                    ApplicationBundleAssemblyReadStatus.INTEGRITY_FAILURE,
-                    None,
-                )
-            read = self.get(subject_id=subject_id, record_id=path.stem)
-            if (
-                read.status is not ApplicationBundleAssemblyReadStatus.FOUND
-                or read.record is None
-            ):
-                return ApplicationBundleAssemblyReadResult(
-                    ApplicationBundleAssemblyReadStatus.INTEGRITY_FAILURE,
-                    None,
-                )
-            if read.record.application_plan_id == application_plan_id:
-                records.append(read.record)
+        records = [
+            item
+            for item in listed.records
+            if item.application_plan_id == application_plan_id
+        ]
         if not records:
             return ApplicationBundleAssemblyReadResult(
                 ApplicationBundleAssemblyReadStatus.NOT_FOUND, None
@@ -553,6 +581,54 @@ class PrivateHomeApplicationBundleAssemblyRepository:
         )
         return ApplicationBundleAssemblyReadResult(
             ApplicationBundleAssemblyReadStatus.FOUND, current
+        )
+
+    def list_for_subject(
+        self, *, subject_id: str
+    ) -> ApplicationBundleAssemblyListResult:
+        directory = self._directory(subject_id)
+        if not directory.exists():
+            return ApplicationBundleAssemblyListResult(
+                ApplicationBundleAssemblyListStatus.SUCCEEDED, ()
+            )
+        try:
+            paths = tuple(directory.iterdir())
+        except OSError:
+            return ApplicationBundleAssemblyListResult(
+                ApplicationBundleAssemblyListStatus.INTEGRITY_FAILURE, ()
+            )
+        records: list[ApplicationBundleAssemblyRecord] = []
+        for path in paths:
+            if (
+                path.suffix != ".json"
+                or _RECORD_ID_RE.fullmatch(path.stem) is None
+            ):
+                return ApplicationBundleAssemblyListResult(
+                    ApplicationBundleAssemblyListStatus.INTEGRITY_FAILURE,
+                    (),
+                )
+            read = self.get(subject_id=subject_id, record_id=path.stem)
+            if (
+                read.status is not ApplicationBundleAssemblyReadStatus.FOUND
+                or read.record is None
+            ):
+                return ApplicationBundleAssemblyListResult(
+                    ApplicationBundleAssemblyListStatus.INTEGRITY_FAILURE,
+                    (),
+                )
+            records.append(read.record)
+        return ApplicationBundleAssemblyListResult(
+            ApplicationBundleAssemblyListStatus.SUCCEEDED,
+            tuple(
+                sorted(
+                    records,
+                    key=lambda item: (
+                        item.application_plan_id,
+                        item.assembled_at.astimezone(timezone.utc),
+                        item.record_id,
+                    ),
+                )
+            ),
         )
 
 
@@ -1113,6 +1189,8 @@ def assemble_application_bundle(
 __all__ = [
     "APPLICATION_BUNDLE_ASSEMBLY_CONTRACT_VERSION",
     "ApplicationBundleAssemblyFailureReason",
+    "ApplicationBundleAssemblyListResult",
+    "ApplicationBundleAssemblyListStatus",
     "ApplicationBundleAssemblyNotReadyReason",
     "ApplicationBundleAssemblyReadResult",
     "ApplicationBundleAssemblyReadStatus",

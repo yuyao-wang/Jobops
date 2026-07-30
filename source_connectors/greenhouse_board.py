@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,6 +18,8 @@ from core.job_search import (
     JobSearchRequest,
     JobSearchResult,
     SearchCandidate,
+    canonicalize_search_company,
+    canonicalize_search_match_text,
 )
 from source_connectors.contract import SourcePlatform
 
@@ -36,15 +37,15 @@ def _utc_now() -> datetime:
 
 
 def _normalize_company(value: str) -> str:
-    return " ".join(value.casefold().split())
+    return canonicalize_search_company(value)
 
 
 def _normalize_match_text(value: str) -> str:
-    punctuation_as_spaces = "".join(
-        " " if unicodedata.category(character).startswith("P") else character
-        for character in value.casefold()
+    return canonicalize_search_match_text(
+        value,
+        name="search match text",
+        maximum=320,
     )
-    return " ".join(punctuation_as_spaces.split())
 
 
 def _contains_phrase(container: str, phrase: str) -> bool:

@@ -17,12 +17,25 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    BASE_RESUME_SELECTION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    BaseResumeSelectionStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .job_discovery import (
     JobPosting,
     JobPostingReadRepository,
     JobPostingRepositoryError,
 )
 from .private_home import PrivateHome, PrivateHomeError
+from .plan_scoped_version_override import (
+    PLAN_SCOPED_VERSION_OVERRIDE_REPLACEMENT_CONTRACT_VERSION,
+    PlanScopedVersionOverrideKind,
+    PlanScopedVersionOverrideProvider,
+)
 from .resume_candidates import (
     ResumeCandidate,
     ResumeCandidateListStatus,
@@ -39,6 +52,7 @@ _DECISION_ID_PATTERN = re.compile(r"^resume-selection-[a-f0-9]{64}$")
 class ResumeSelectionMethod(str, Enum):
     ONLY_CANDIDATE = "ONLY_CANDIDATE"
     AGENT_SELECTED = "AGENT_SELECTED"
+    USER_OVERRIDE = "USER_OVERRIDE"
 
 
 class ResumeSelectionAgentDisposition(str, Enum):
@@ -79,6 +93,7 @@ class ResumeSelectionFailureReason(str, Enum):
     JOB_READ_FAILED = "JOB_READ_FAILED"
     JOB_BINDING_MISMATCH = "JOB_BINDING_MISMATCH"
     CANDIDATE_PROVIDER_FAILED = "CANDIDATE_PROVIDER_FAILED"
+    OVERRIDE_INVALID = "OVERRIDE_INVALID"
     AGENT_TIMEOUT = "AGENT_TIMEOUT"
     AGENT_UNAVAILABLE = "AGENT_UNAVAILABLE"
     AGENT_SELECTION_UNSAFE = "AGENT_SELECTION_UNSAFE"
@@ -350,27 +365,29 @@ def _selection_binding(
     job: JobPosting,
     candidate_set_hash: str,
     metadata: ResumeSelectionAgentMetadata,
+    override_content_hash: str | None = None,
 ) -> str:
-    return _canonical_hash(
-        {
-            "application_plan_contract_version": plan.contract_version,
-            "application_plan_id": plan.plan_id,
-            "candidate_set_hash": candidate_set_hash,
-            "job_content_hash": job.content_hash,
-            "job_id": job.job_id,
-            "job_revision": job.revision,
-            "resume_selection_agent_version": metadata.agent_version,
-            "resume_selection_contract_version": (
-                RESUME_SELECTION_CONTRACT_VERSION
-            ),
-            "resume_selection_model_id": metadata.model_id,
-            "resume_selection_prompt_version": metadata.prompt_version,
-            "subject_id": plan.subject_id,
-            "user_preparation_instructions_hash": (
-                plan.user_preparation_instructions_hash
-            ),
-        }
-    )
+    payload = {
+        "application_plan_contract_version": plan.contract_version,
+        "application_plan_id": plan.plan_id,
+        "candidate_set_hash": candidate_set_hash,
+        "job_content_hash": job.content_hash,
+        "job_id": job.job_id,
+        "job_revision": job.revision,
+        "resume_selection_agent_version": metadata.agent_version,
+        "resume_selection_contract_version": (
+            RESUME_SELECTION_CONTRACT_VERSION
+        ),
+        "resume_selection_model_id": metadata.model_id,
+        "resume_selection_prompt_version": metadata.prompt_version,
+        "subject_id": plan.subject_id,
+        "user_preparation_instructions_hash": (
+            plan.user_preparation_instructions_hash
+        ),
+    }
+    if override_content_hash is not None:
+        payload["plan_scoped_override_content_hash"] = override_content_hash
+    return _canonical_hash(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1005,6 +1022,7 @@ async def select_base_resume(
     agent: ResumeSelectionAgentPort,
     metadata: ResumeSelectionAgentMetadata,
     decision_repository: ResumeSelectionDecisionRepository,
+    override_provider: PlanScopedVersionOverrideProvider | None = None,
 ) -> SelectBaseResumeResult:
     """Select one trusted base resume without altering any artifact."""
 
@@ -1107,11 +1125,59 @@ async def select_base_resume(
         )
     candidates = candidate_result.candidates
     candidate_hash = resume_candidate_set_hash(candidates)
+    override = None
+    if override_provider is not None:
+        try:
+            override = override_provider.get_current(
+                subject_id=subject_id,
+                application_plan_id=plan.plan_id,
+                override_kind=(
+                    PlanScopedVersionOverrideKind
+                    .RESUME_CANDIDATE_OVERRIDE
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failed(
+                command=command,
+                reason=ResumeSelectionFailureReason.OVERRIDE_INVALID,
+                job_id=plan.job_id,
+                candidate_set_hash=candidate_hash,
+            )
+        if override is not None and (
+            override.subject_id != subject_id
+            or override.application_plan_id != plan.plan_id
+            or override.override_kind
+            is not PlanScopedVersionOverrideKind
+            .RESUME_CANDIDATE_OVERRIDE
+            or override.selected_option_id
+            not in {item.resume_id for item in candidates}
+            or (
+                override.contract_version
+                == PLAN_SCOPED_VERSION_OVERRIDE_REPLACEMENT_CONTRACT_VERSION
+                and not any(
+                    item.resume_id == override.replaced_option_id
+                    and item.contract_version
+                    == override.replaced_option_version
+                    and item.artifact_sha256
+                    == override.replaced_option_content_hash
+                    for item in candidates
+                )
+            )
+        ):
+            return _failed(
+                command=command,
+                reason=ResumeSelectionFailureReason.OVERRIDE_INVALID,
+                job_id=plan.job_id,
+                candidate_set_hash=candidate_hash,
+            )
     binding = _selection_binding(
         plan=plan,
         job=job,
         candidate_set_hash=candidate_hash,
         metadata=metadata,
+        override_content_hash=(
+            override.override_content_hash if override else None
+        ),
     )
     try:
         existing = decision_repository.find_completed_by_binding(
@@ -1178,7 +1244,17 @@ async def select_base_resume(
     selected: ResumeCandidate
     method: ResumeSelectionMethod
     rationale: str
-    if len(candidates) == 1:
+    if override is not None:
+        selected = next(
+            item
+            for item in candidates
+            if item.resume_id == override.selected_option_id
+        )
+        method = ResumeSelectionMethod.USER_OVERRIDE
+        rationale = (
+            "The current plan-scoped user override selected this resume."
+        )
+    elif len(candidates) == 1:
         selected = candidates[0]
         method = ResumeSelectionMethod.ONLY_CANDIDATE
         rationale = "The only trusted selectable resume candidate was selected."
@@ -1345,6 +1421,123 @@ async def select_base_resume(
     )
 
 
+_BASE_RESUME_FAILURE_REASON_MAP = {
+    ResumeSelectionFailureReason.INVALID_REQUEST: (
+        BaseResumeSelectionStopReason.INVALID_REQUEST
+    ),
+    ResumeSelectionFailureReason.APPLICATION_PLAN_NOT_FOUND: (
+        BaseResumeSelectionStopReason.APPLICATION_PLAN_NOT_FOUND
+    ),
+    ResumeSelectionFailureReason.APPLICATION_PLAN_INTEGRITY_FAILURE: (
+        BaseResumeSelectionStopReason.APPLICATION_PLAN_INTEGRITY_FAILURE
+    ),
+    ResumeSelectionFailureReason.APPLICATION_PLAN_SUBJECT_MISMATCH: (
+        BaseResumeSelectionStopReason.APPLICATION_PLAN_SUBJECT_MISMATCH
+    ),
+    ResumeSelectionFailureReason.JOB_NOT_FOUND: (
+        BaseResumeSelectionStopReason.JOB_NOT_FOUND
+    ),
+    ResumeSelectionFailureReason.JOB_READ_FAILED: (
+        BaseResumeSelectionStopReason.JOB_READ_FAILED
+    ),
+    ResumeSelectionFailureReason.JOB_BINDING_MISMATCH: (
+        BaseResumeSelectionStopReason.JOB_BINDING_MISMATCH
+    ),
+    ResumeSelectionFailureReason.CANDIDATE_PROVIDER_FAILED: (
+        BaseResumeSelectionStopReason.CANDIDATE_PROVIDER_FAILED
+    ),
+    ResumeSelectionFailureReason.OVERRIDE_INVALID: (
+        BaseResumeSelectionStopReason.OVERRIDE_INVALID
+    ),
+    ResumeSelectionFailureReason.AGENT_TIMEOUT: (
+        BaseResumeSelectionStopReason.AGENT_TIMEOUT
+    ),
+    ResumeSelectionFailureReason.AGENT_UNAVAILABLE: (
+        BaseResumeSelectionStopReason.AGENT_UNAVAILABLE
+    ),
+    ResumeSelectionFailureReason.AGENT_SELECTION_UNSAFE: (
+        BaseResumeSelectionStopReason.AGENT_SELECTION_UNSAFE
+    ),
+    ResumeSelectionFailureReason.DECISION_PERSISTENCE_FAILED: (
+        BaseResumeSelectionStopReason.DECISION_PERSISTENCE_FAILED
+    ),
+    ResumeSelectionFailureReason.DECISION_INTEGRITY_FAILURE: (
+        BaseResumeSelectionStopReason.DECISION_INTEGRITY_FAILURE
+    ),
+}
+
+
+def base_resume_selection_public_result(
+    result: SelectBaseResumeResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a3 outcome to stage-result v2."""
+
+    if not isinstance(result, SelectBaseResumeResult):
+        raise TypeError("result must be a base-resume selection result")
+    stage = ApplicationPreparationStage.BASE_RESUME_SELECTION
+    if result.status in {
+        ResumeSelectionStatus.CREATED,
+        ResumeSelectionStatus.UNCHANGED,
+    }:
+        if result.decision is None:
+            raise ValueError("successful selection has no decision")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeSelectionStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.decision.decision_id,
+            result_content_hash=result.decision.decision_content_hash,
+            outputs={
+                "base_resume_selection_id": result.decision.decision_id,
+                "resume_artifact_sha256": (
+                    result.decision.source_artifact_sha256
+                ),
+                "resume_id": result.decision.source_resume_id,
+                "resume_selection_decision_id": (
+                    result.decision.decision_id
+                ),
+            },
+        )
+    if result.status is ResumeSelectionStatus.DEFERRED_NO_RESUME:
+        reason = BaseResumeSelectionStopReason.NO_SELECTABLE_RESUME
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped selection has no authoritative reason")
+        try:
+            reason = _BASE_RESUME_FAILURE_REASON_MAP[result.reason_code]
+        except KeyError as error:
+            raise ValueError("unmapped base-resume stop reason") from error
+        outcome = (
+            PreparationStageOutcome.DEFERRED
+            if result.status is ResumeSelectionStatus.DEFERRED_NEEDS_HUMAN
+            else PreparationStageOutcome.FAILED
+        )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=BASE_RESUME_SELECTION_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.selection_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status is ResumeSelectionStatus.DEFERRED_NEEDS_HUMAN
+        ),
+    )
+
+
 __all__ = [
     "RESUME_SELECTION_CONTRACT_VERSION",
     "PrivateHomeResumeSelectionDecisionRepository",
@@ -1363,6 +1556,7 @@ __all__ = [
     "ResumeSelectionDecisionWriteStatus",
     "ResumeSelectionFailureReason",
     "ResumeSelectionJobContext",
+    "base_resume_selection_public_result",
     "ResumeSelectionMethod",
     "ResumeSelectionStatus",
     "SelectBaseResumeCommand",

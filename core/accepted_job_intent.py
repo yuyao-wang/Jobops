@@ -16,7 +16,11 @@ from .job_discovery import JobIntakeIntent
 from .private_home import PrivateHome
 
 
-ACCEPTED_JOB_INTENT_CONTRACT_VERSION = "accepted-job-intent-v1"
+ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION = "accepted-job-intent-v1"
+ACCEPTED_JOB_INTENT_CONTRACT_VERSION = "accepted-job-intent-v2"
+ACCEPTED_JOB_INTENT_PROVENANCE_CONTRACT_VERSION = (
+    "accepted-job-intent-source-provenance-v1"
+)
 _RECORD_ID_PATTERN = re.compile(r"^accepted-job-intent-[a-f0-9]{64}$")
 
 
@@ -35,6 +39,11 @@ class AcceptedJobIntentReadStatus(str, Enum):
 class AcceptedJobIntentFailureReason(str, Enum):
     INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
+
+
+class AcceptedJobIntentSourceType(str, Enum):
+    CONVERSATIONAL_INTAKE = "CONVERSATIONAL_INTAKE"
+    SEARCH_PROFILE_REFRESH = "SEARCH_PROFILE_REFRESH"
 
 
 def _clean_id(name: str, value: Any, *, maximum: int = 240) -> str:
@@ -72,7 +81,7 @@ def _canonical_json(value: Mapping[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def _record_identity(
+def _record_identity_v1(
     *,
     subject_id: str,
     job_id: str,
@@ -93,6 +102,91 @@ def _record_identity(
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptedJobIntentSourceProvenance:
+    source_type: AcceptedJobIntentSourceType
+    source_id: str | None = None
+    source_version: str | None = None
+    source_profile_ids: tuple[str, ...] = ()
+    contract_version: str = ACCEPTED_JOB_INTENT_PROVENANCE_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        source_type = AcceptedJobIntentSourceType(self.source_type)
+        source_id = (
+            _clean_id("source_id", self.source_id)
+            if self.source_id is not None
+            else None
+        )
+        source_version = (
+            _clean_id("source_version", self.source_version, maximum=120)
+            if self.source_version is not None
+            else None
+        )
+        if not isinstance(self.source_profile_ids, tuple):
+            raise TypeError("source_profile_ids must be a tuple")
+        source_profile_ids = tuple(
+            sorted(
+                {
+                    _clean_id("source_profile_id", value, maximum=160)
+                    for value in self.source_profile_ids
+                }
+            )
+        )
+        contract_version = _clean_id(
+            "provenance contract_version",
+            self.contract_version,
+            maximum=100,
+        )
+        if contract_version != ACCEPTED_JOB_INTENT_PROVENANCE_CONTRACT_VERSION:
+            raise ValueError("intent source provenance contract is unsupported")
+        if (
+            source_type is AcceptedJobIntentSourceType.CONVERSATIONAL_INTAKE
+            and (source_id is None or source_profile_ids)
+        ):
+            raise ValueError("conversational intent provenance is invalid")
+        if (
+            source_type is AcceptedJobIntentSourceType.SEARCH_PROFILE_REFRESH
+            and not source_profile_ids
+        ):
+            raise ValueError("search-profile intent provenance is invalid")
+        object.__setattr__(self, "source_type", source_type)
+        object.__setattr__(self, "source_id", source_id)
+        object.__setattr__(self, "source_version", source_version)
+        object.__setattr__(self, "source_profile_ids", source_profile_ids)
+        object.__setattr__(self, "contract_version", contract_version)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_type": self.source_type.value,
+            "source_id": self.source_id,
+            "source_version": self.source_version,
+            "source_profile_ids": list(self.source_profile_ids),
+            "contract_version": self.contract_version,
+        }
+
+
+def _record_identity_v2(
+    *,
+    subject_id: str,
+    job_id: str,
+    intent: JobIntakeIntent,
+    intake_proposal_id: str,
+    discovery_run_id: str,
+    provenance: AcceptedJobIntentSourceProvenance,
+    contract_version: str,
+) -> str:
+    payload = {
+        "contract_version": contract_version,
+        "discovery_run_id": discovery_run_id,
+        "intake_proposal_id": intake_proposal_id,
+        "intent": intent.value,
+        "job_id": job_id,
+        "provenance": provenance.to_dict(),
+        "subject_id": subject_id,
+    }
+    return f"accepted-job-intent-{hashlib.sha256(_canonical_json(payload)).hexdigest()}"
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptedJobIntent:
     accepted_job_intent_id: str
     subject_id: str
@@ -101,6 +195,7 @@ class AcceptedJobIntent:
     intake_proposal_id: str
     discovery_run_id: str
     recorded_at: datetime
+    provenance: AcceptedJobIntentSourceProvenance | None = None
     contract_version: str = ACCEPTED_JOB_INTENT_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
@@ -117,8 +212,17 @@ class AcceptedJobIntent:
             self.contract_version,
             maximum=80,
         )
-        if contract_version != ACCEPTED_JOB_INTENT_CONTRACT_VERSION:
+        if contract_version not in {
+            ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION,
+            ACCEPTED_JOB_INTENT_CONTRACT_VERSION,
+        }:
             raise ValueError("accepted job intent contract version is unsupported")
+        provenance = self.provenance
+        if contract_version == ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION:
+            if provenance is not None:
+                raise ValueError("v1 accepted intent cannot contain provenance")
+        elif not isinstance(provenance, AcceptedJobIntentSourceProvenance):
+            raise ValueError("v2 accepted intent requires typed provenance")
         recorded_at = _require_aware("recorded_at", self.recorded_at)
         record_id = _clean_id(
             "accepted_job_intent_id",
@@ -127,14 +231,26 @@ class AcceptedJobIntent:
         )
         if _RECORD_ID_PATTERN.fullmatch(record_id) is None:
             raise ValueError("accepted_job_intent_id is invalid")
-        expected_id = _record_identity(
-            subject_id=subject_id,
-            job_id=job_id,
-            intent=intent,
-            intake_proposal_id=proposal_id,
-            discovery_run_id=run_id,
-            contract_version=contract_version,
-        )
+        if contract_version == ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION:
+            expected_id = _record_identity_v1(
+                subject_id=subject_id,
+                job_id=job_id,
+                intent=intent,
+                intake_proposal_id=proposal_id,
+                discovery_run_id=run_id,
+                contract_version=contract_version,
+            )
+        else:
+            assert provenance is not None
+            expected_id = _record_identity_v2(
+                subject_id=subject_id,
+                job_id=job_id,
+                intent=intent,
+                intake_proposal_id=proposal_id,
+                discovery_run_id=run_id,
+                provenance=provenance,
+                contract_version=contract_version,
+            )
         if record_id != expected_id:
             raise ValueError("accepted job intent identity is invalid")
         object.__setattr__(self, "subject_id", subject_id)
@@ -155,6 +271,7 @@ class AcceptedJobIntent:
         intake_proposal_id: str,
         discovery_run_id: str,
         recorded_at: datetime,
+        provenance: AcceptedJobIntentSourceProvenance,
     ) -> "AcceptedJobIntent":
         clean_subject = _clean_id("subject_id", subject_id)
         clean_job = _clean_id("job_id", job_id, maximum=160)
@@ -164,13 +281,16 @@ class AcceptedJobIntent:
         )
         clean_run = _clean_id("discovery_run_id", discovery_run_id)
         typed_intent = JobIntakeIntent(intent)
+        if not isinstance(provenance, AcceptedJobIntentSourceProvenance):
+            raise TypeError("provenance must be typed")
         return cls(
-            accepted_job_intent_id=_record_identity(
+            accepted_job_intent_id=_record_identity_v2(
                 subject_id=clean_subject,
                 job_id=clean_job,
                 intent=typed_intent,
                 intake_proposal_id=clean_proposal,
                 discovery_run_id=clean_run,
+                provenance=provenance,
                 contract_version=ACCEPTED_JOB_INTENT_CONTRACT_VERSION,
             ),
             subject_id=clean_subject,
@@ -179,10 +299,11 @@ class AcceptedJobIntent:
             intake_proposal_id=clean_proposal,
             discovery_run_id=clean_run,
             recorded_at=recorded_at,
+            provenance=provenance,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "accepted_job_intent_id": self.accepted_job_intent_id,
             "subject_id": self.subject_id,
             "job_id": self.job_id,
@@ -192,6 +313,10 @@ class AcceptedJobIntent:
             "recorded_at": _rfc3339(self.recorded_at),
             "contract_version": self.contract_version,
         }
+        if self.contract_version == ACCEPTED_JOB_INTENT_CONTRACT_VERSION:
+            assert self.provenance is not None
+            value["provenance"] = self.provenance.to_dict()
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,7 +404,10 @@ class AcceptedJobIntentRepository(Protocol):
 
 
 def _intent_from_dict(value: Any) -> AcceptedJobIntent:
-    expected = {
+    if not isinstance(value, Mapping):
+        raise ValueError("persisted accepted intent is invalid")
+    contract_version = value.get("contract_version")
+    expected_v1 = {
         "accepted_job_intent_id",
         "subject_id",
         "job_id",
@@ -289,7 +417,40 @@ def _intent_from_dict(value: Any) -> AcceptedJobIntent:
         "recorded_at",
         "contract_version",
     }
-    if not isinstance(value, Mapping) or set(value) != expected:
+    expected_v2 = expected_v1 | {"provenance"}
+    if (
+        contract_version == ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION
+        and set(value) == expected_v1
+    ):
+        provenance = None
+    elif (
+        contract_version == ACCEPTED_JOB_INTENT_CONTRACT_VERSION
+        and set(value) == expected_v2
+    ):
+        provenance_value = value["provenance"]
+        expected_provenance = {
+            "source_type",
+            "source_id",
+            "source_version",
+            "source_profile_ids",
+            "contract_version",
+        }
+        if (
+            not isinstance(provenance_value, Mapping)
+            or set(provenance_value) != expected_provenance
+            or not isinstance(provenance_value["source_profile_ids"], list)
+        ):
+            raise ValueError("persisted accepted intent provenance is invalid")
+        provenance = AcceptedJobIntentSourceProvenance(
+            source_type=AcceptedJobIntentSourceType(
+                provenance_value["source_type"]
+            ),
+            source_id=provenance_value["source_id"],
+            source_version=provenance_value["source_version"],
+            source_profile_ids=tuple(provenance_value["source_profile_ids"]),
+            contract_version=provenance_value["contract_version"],
+        )
+    else:
         raise ValueError("persisted accepted intent fields are invalid")
     return AcceptedJobIntent(
         accepted_job_intent_id=value["accepted_job_intent_id"],
@@ -299,7 +460,8 @@ def _intent_from_dict(value: Any) -> AcceptedJobIntent:
         intake_proposal_id=value["intake_proposal_id"],
         discovery_run_id=value["discovery_run_id"],
         recorded_at=_parse_timestamp(value["recorded_at"]),
-        contract_version=value["contract_version"],
+        provenance=provenance,
+        contract_version=contract_version,
     )
 
 
@@ -363,6 +525,45 @@ class PrivateHomeAcceptedJobIntentRepository:
             raise TypeError("intent must be an AcceptedJobIntent")
         path = self._path(intent)
         with self._lock:
+            if (
+                intent.contract_version
+                == ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION
+            ):
+                if not path.exists():
+                    return AcceptedJobIntentWriteResult(
+                        status=AcceptedJobIntentWriteStatus.FAILED,
+                        intent=None,
+                        reason_code=(
+                            AcceptedJobIntentFailureReason.INTEGRITY_FAILURE
+                        ),
+                        retryable=False,
+                    )
+                try:
+                    existing_v1 = self._read_path(path)
+                except RuntimeError:
+                    return AcceptedJobIntentWriteResult(
+                        status=AcceptedJobIntentWriteStatus.FAILED,
+                        intent=None,
+                        reason_code=(
+                            AcceptedJobIntentFailureReason.INTEGRITY_FAILURE
+                        ),
+                        retryable=False,
+                    )
+                if existing_v1 != intent:
+                    return AcceptedJobIntentWriteResult(
+                        status=AcceptedJobIntentWriteStatus.FAILED,
+                        intent=None,
+                        reason_code=(
+                            AcceptedJobIntentFailureReason.INTEGRITY_FAILURE
+                        ),
+                        retryable=False,
+                    )
+                return AcceptedJobIntentWriteResult(
+                    status=AcceptedJobIntentWriteStatus.UNCHANGED,
+                    intent=existing_v1,
+                    reason_code=None,
+                    retryable=False,
+                )
             try:
                 self._home.ensure()
                 created = self._home.write_bytes_if_absent(
@@ -479,11 +680,15 @@ class PrivateHomeAcceptedJobIntentRepository:
 
 __all__ = [
     "ACCEPTED_JOB_INTENT_CONTRACT_VERSION",
+    "ACCEPTED_JOB_INTENT_PROVENANCE_CONTRACT_VERSION",
+    "ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION",
     "AcceptedJobIntent",
     "AcceptedJobIntentFailureReason",
     "AcceptedJobIntentReadResult",
     "AcceptedJobIntentReadStatus",
     "AcceptedJobIntentRepository",
+    "AcceptedJobIntentSourceProvenance",
+    "AcceptedJobIntentSourceType",
     "AcceptedJobIntentWriteResult",
     "AcceptedJobIntentWriteStatus",
     "PrivateHomeAcceptedJobIntentRepository",

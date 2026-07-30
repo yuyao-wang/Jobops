@@ -10,12 +10,26 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Mapping,
+    Protocol,
+    runtime_checkable,
+)
 
 from .application_plan import (
     ApplicationPlan,
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
+)
+from .application_preparation_orchestrator import (
+    TAILORED_RESUME_DRAFT_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    TailoredResumeDraftStopReason,
 )
 from .candidate_evidence import (
     CandidateEvidenceScope,
@@ -44,6 +58,11 @@ from .source_resume_projection import (
     SourceResumeProjectionReadStatus,
     SourceResumeProjectionRepository,
 )
+if TYPE_CHECKING:
+    from .unsupported_claim_correction import (
+        UnsupportedClaimCorrectionConstraint,
+        UnsupportedClaimCorrectionDirectiveProvider,
+    )
 
 
 RESUME_TAILORING_CONTRACT_VERSION = "resume-tailoring-v1"
@@ -59,6 +78,10 @@ Instruction priority (highest first):
     2. The current ApplicationPlan's user preparation instructions.
     3. Alignment with the trusted job description.
     4. Default writing style.
+
+Correction directives are constraints, never new facts or evidence. REMOVE
+means omit the identified unsupported claim. REWRITE may use only the supplied
+CandidateEvidence and must not treat the user's wording as evidence.
 
 Writing rules:
 - Prefer bullets shaped as action verb + what/how + result.
@@ -304,6 +327,9 @@ class ResumeTailoringContext:
     user_preparation_instructions: str | None
     agent_policy: str
     agent_policy_version: str
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +447,9 @@ def _tailoring_binding(
     projection: SourceResumeProjection,
     snapshot: CandidateEvidenceSnapshot,
     metadata: ResumeTailoringAgentMetadata,
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ] = (),
 ) -> str:
     return _canonical_hash(
         {
@@ -445,6 +474,14 @@ def _tailoring_binding(
             "source_projection_id": projection.projection_id,
             "source_resume_id": selection.source_resume_id,
             "subject_id": plan.subject_id,
+            "unsupported_claim_corrections": [
+                {
+                    "directive_hash": item.directive_hash,
+                    "directive_id": item.directive_id,
+                    "finding_id": item.finding_id,
+                }
+                for item in correction_constraints
+            ],
             "user_preparation_instructions_hash": (
                 plan.user_preparation_instructions_hash
             ),
@@ -1321,6 +1358,9 @@ async def tailor_resume(
     agent: ResumeTailoringAgentPort,
     metadata: ResumeTailoringAgentMetadata,
     draft_repository: TailoredResumeDraftRepository,
+    correction_provider: (
+        UnsupportedClaimCorrectionDirectiveProvider | None
+    ) = None,
 ) -> TailorResumeResult:
     """Create one evidence-bound tailored resume draft, at most one Agent call."""
 
@@ -1551,6 +1591,24 @@ async def tailor_resume(
             ResumeTailoringFailureReason.EVIDENCE_SNAPSHOT_BINDING_MISMATCH,
         )
 
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ] = ()
+    if correction_provider is not None:
+        correction_result = correction_provider.list_current(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            material_kind="RESUME",
+        )
+        if not correction_result.succeeded:
+            return _failure(
+                command,
+                ResumeTailoringFailureReason.DRAFT_INTEGRITY_FAILURE,
+            )
+        correction_constraints = tuple(
+            item.constraint for item in correction_result.directives
+        )
+
     binding = _tailoring_binding(
         plan=plan,
         job=job,
@@ -1558,6 +1616,7 @@ async def tailor_resume(
         projection=projection,
         snapshot=snapshot,
         metadata=metadata,
+        correction_constraints=correction_constraints,
     )
     draft_id = f"tailored-resume-draft-{binding}"
     try:
@@ -1632,6 +1691,7 @@ async def tailor_resume(
         user_preparation_instructions=plan.user_preparation_instructions,
         agent_policy=RESUME_TAILORING_AGENT_POLICY,
         agent_policy_version=RESUME_TAILORING_POLICY_VERSION,
+        correction_constraints=correction_constraints,
     )
     try:
         output = await agent.tailor(context)
@@ -1790,6 +1850,77 @@ async def tailor_resume(
     )
 
 
+_TAILORED_RESUME_FAILURE_REASON_MAP = {
+    reason: TailoredResumeDraftStopReason[reason.name]
+    for reason in ResumeTailoringFailureReason
+}
+
+
+def tailored_resume_draft_public_result(
+    result: TailorResumeResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a4c outcome to stage-result v2."""
+
+    if not isinstance(result, TailorResumeResult):
+        raise TypeError("result must be a tailored-resume result")
+    stage = ApplicationPreparationStage.RESUME_TAILORING
+    if result.status in {
+        ResumeTailoringStatus.CREATED,
+        ResumeTailoringStatus.UNCHANGED,
+    }:
+        if result.draft is None:
+            raise ValueError("successful tailoring has no draft")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeTailoringStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.draft.draft_id,
+            result_content_hash=result.draft.draft_content_hash,
+            outputs={"tailored_resume_draft_id": result.draft.draft_id},
+        )
+    if (
+        result.status
+        is ResumeTailoringStatus.DEFERRED_INSUFFICIENT_EVIDENCE
+    ):
+        reason = TailoredResumeDraftStopReason.INSUFFICIENT_EVIDENCE
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped tailoring has no authoritative reason")
+        try:
+            reason = _TAILORED_RESUME_FAILURE_REASON_MAP[result.reason_code]
+        except KeyError as error:
+            raise ValueError("unmapped tailoring stop reason") from error
+        outcome = (
+            PreparationStageOutcome.DEFERRED
+            if result.status is ResumeTailoringStatus.DEFERRED_NEEDS_HUMAN
+            else PreparationStageOutcome.FAILED
+        )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=TAILORED_RESUME_DRAFT_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.tailoring_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status is ResumeTailoringStatus.DEFERRED_NEEDS_HUMAN
+        ),
+    )
+
+
 __all__ = [
     "MAX_TAILORED_BULLET_CHARS",
     "PrivateHomeTailoredResumeDraftRepository",
@@ -1821,4 +1952,5 @@ __all__ = [
     "TailoredSectionProposal",
     "WEAK_LEADING_VERBS",
     "tailor_resume",
+    "tailored_resume_draft_public_result",
 ]

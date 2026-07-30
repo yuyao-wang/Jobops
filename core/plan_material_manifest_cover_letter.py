@@ -11,6 +11,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    COVER_LETTER_MANIFEST_ENTRY_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CoverLetterManifestEntryStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .plan_material_manifest import (
     PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION,
     RESUME_MEDIA_TYPE,
@@ -655,9 +663,93 @@ def include_cover_letter_in_plan_material_manifest(
     )
 
 
+_COVER_LETTER_MANIFEST_NOT_READY_REASON_MAP = {
+    reason: CoverLetterManifestEntryStopReason[reason.name]
+    for reason in PlanMaterialManifestNotReadyReason
+    if reason.name in CoverLetterManifestEntryStopReason.__members__
+}
+_COVER_LETTER_MANIFEST_FAILURE_REASON_MAP = {
+    reason: CoverLetterManifestEntryStopReason[reason.name]
+    for reason in PlanMaterialManifestFailureReason
+    if reason.name in CoverLetterManifestEntryStopReason.__members__
+}
+
+
+def cover_letter_manifest_entry_public_result(
+    result: IncludeCoverLetterInPlanMaterialManifestResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b2e outcome to stage-result v2."""
+
+    if not isinstance(result, IncludeCoverLetterInPlanMaterialManifestResult):
+        raise TypeError("result must be a cover-letter manifest result")
+    stage = ApplicationPreparationStage.COVER_LETTER_MANIFEST
+    if result.status in {
+        PlanMaterialManifestStatus.CREATED,
+        PlanMaterialManifestStatus.UNCHANGED,
+    }:
+        if result.manifest is None:
+            raise ValueError("successful manifest operation has no manifest")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is PlanMaterialManifestStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.manifest.manifest_id,
+            result_content_hash=result.manifest.manifest_content_hash,
+            outputs={
+                "plan_material_manifest_id": result.manifest.manifest_id
+            },
+        )
+    if result.status is PlanMaterialManifestStatus.NOT_READY:
+        if result.not_ready_reason is None:
+            raise ValueError("not-ready manifest operation has no reason")
+        try:
+            reason = _COVER_LETTER_MANIFEST_NOT_READY_REASON_MAP[
+                result.not_ready_reason
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter manifest not-ready reason"
+            ) from error
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("failed manifest operation has no reason")
+        try:
+            reason = _COVER_LETTER_MANIFEST_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter manifest failure reason"
+            ) from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=(
+            COVER_LETTER_MANIFEST_ENTRY_STOP_REASON_CONTRACT_VERSION
+        ),
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "COVER_LETTER_MEDIA_TYPE",
     "IncludeCoverLetterInPlanMaterialManifestCommand",
     "IncludeCoverLetterInPlanMaterialManifestResult",
+    "cover_letter_manifest_entry_public_result",
     "include_cover_letter_in_plan_material_manifest",
 ]

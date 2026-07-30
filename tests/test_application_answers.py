@@ -32,7 +32,12 @@ from core.application_answers import (
     PrivateHomePreparedApplicationAnswerSetRepository,
     UnresolvedAnswerReason,
     UnresolvedDefaultHandling,
+    application_answers_public_result,
     prepare_application_answers,
+)
+from core.application_preparation_orchestrator import (
+    ApplicationAnswersStopReason,
+    PreparationStageOutcome,
 )
 from core.application_plan import (
     ApplicationPlan,
@@ -482,6 +487,12 @@ def test_no_typed_trusted_facts_defers_without_writing(
         PreparedApplicationAnswerSetStatus.DEFERRED_NO_TRUSTED_FACTS
     )
     assert result.answer_set is None
+    public = application_answers_public_result(result)
+    assert public.outcome is PreparationStageOutcome.DEFERRED
+    assert (
+        public.stop_reason.code
+        is ApplicationAnswersStopReason.NO_TRUSTED_FACTS
+    )
     assert not tuple(
         home.paths.prepared_application_answer_sets.rglob("*.json")
     )
@@ -834,6 +845,15 @@ def test_deferred_needs_human_is_available_without_fake_answers(
         PreparedApplicationAnswerSetStatus.DEFERRED_NEEDS_HUMAN
     )
     assert result.answer_set is None
+    assert result.unresolved_reasons == (
+        UnresolvedAnswerReason.REQUIRES_ATTESTATION,
+    )
+    public = application_answers_public_result(result)
+    assert public.outcome is PreparationStageOutcome.DEFERRED
+    assert (
+        public.stop_reason.code
+        is ApplicationAnswersStopReason.USER_ATTESTATION_REQUIRED
+    )
 
 
 def test_normal_profile_candidate_summary_and_execution_surfaces_are_unused(

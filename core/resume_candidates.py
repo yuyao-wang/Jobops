@@ -478,6 +478,18 @@ def _validate_artifact_content(
     return _validate_docx(content)
 
 
+def detect_resume_artifact_type(content: bytes) -> ResumeArtifactType:
+    """Detect one supported ResumeCandidate type from bytes, not its name."""
+
+    if not isinstance(content, bytes):
+        raise TypeError("resume artifact content must be bytes")
+    if _validate_artifact_content(content, ResumeArtifactType.PDF):
+        return ResumeArtifactType.PDF
+    if _validate_artifact_content(content, ResumeArtifactType.DOCX):
+        return ResumeArtifactType.DOCX
+    raise ValueError("resume artifact type is unsupported")
+
+
 def _artifact_type_from_path(path: Path, content: bytes) -> ResumeArtifactType:
     suffix = path.suffix.casefold()
     if suffix == ".pdf":
@@ -912,4 +924,5 @@ __all__ = [
     "ResumeSummarySource",
     "ResumeSummaryTrust",
     "register_resume_candidate",
+    "detect_resume_artifact_type",
 ]

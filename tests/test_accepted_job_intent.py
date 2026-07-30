@@ -10,10 +10,13 @@ import pytest
 
 from core.accepted_job_intent import (
     ACCEPTED_JOB_INTENT_CONTRACT_VERSION,
+    ACCEPTED_JOB_INTENT_V1_CONTRACT_VERSION,
     AcceptedJobIntent,
     AcceptedJobIntentFailureReason,
     AcceptedJobIntentReadResult,
     AcceptedJobIntentReadStatus,
+    AcceptedJobIntentSourceProvenance,
+    AcceptedJobIntentSourceType,
     AcceptedJobIntentWriteResult,
     AcceptedJobIntentWriteStatus,
     PrivateHomeAcceptedJobIntentRepository,
@@ -65,6 +68,10 @@ def _record(
         intake_proposal_id=proposal_id,
         discovery_run_id=run_id,
         recorded_at=recorded_at,
+        provenance=AcceptedJobIntentSourceProvenance(
+            source_type=AcceptedJobIntentSourceType.CONVERSATIONAL_INTAKE,
+            source_id=proposal_id,
+        ),
     )
 
 

@@ -17,6 +17,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CandidateEvidenceSnapshotStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .private_home import PrivateHome, PrivateHomeError
 from .resume_candidates import (
     ResumeCandidate,
@@ -1373,6 +1381,70 @@ def create_candidate_evidence_snapshot(
     )
 
 
+_CANDIDATE_EVIDENCE_FAILURE_REASON_MAP = {
+    reason: CandidateEvidenceSnapshotStopReason[reason.name]
+    for reason in CandidateEvidenceFailureReason
+}
+
+
+def candidate_evidence_snapshot_public_result(
+    result: CreateCandidateEvidenceSnapshotResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a4b outcome to stage-result v2."""
+
+    if not isinstance(result, CreateCandidateEvidenceSnapshotResult):
+        raise TypeError("result must be a CandidateEvidence result")
+    stage = ApplicationPreparationStage.RESUME_EVIDENCE
+    if result.status in {
+        CandidateEvidenceSnapshotStatus.CREATED,
+        CandidateEvidenceSnapshotStatus.UNCHANGED,
+    }:
+        if result.snapshot is None:
+            raise ValueError("successful evidence operation has no snapshot")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is CandidateEvidenceSnapshotStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.snapshot.snapshot_id,
+            result_content_hash=result.snapshot.snapshot_content_hash,
+            outputs={
+                "resume_evidence_snapshot_id": result.snapshot.snapshot_id
+            },
+        )
+    if result.status is CandidateEvidenceSnapshotStatus.DEFERRED_NO_EVIDENCE:
+        reason = CandidateEvidenceSnapshotStopReason.NO_USABLE_EVIDENCE
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped evidence operation has no reason")
+        try:
+            reason = _CANDIDATE_EVIDENCE_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError("unmapped CandidateEvidence stop reason") from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "CANDIDATE_EVIDENCE_CONTRACT_VERSION",
     "CandidateEvidenceFailureReason",
@@ -1393,5 +1465,6 @@ __all__ = [
     "PrivateHomeCandidateEvidenceSnapshotRepository",
     "candidate_evidence_id",
     "candidate_evidence_snapshot_id",
+    "candidate_evidence_snapshot_public_result",
     "create_candidate_evidence_snapshot",
 ]

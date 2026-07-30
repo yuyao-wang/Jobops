@@ -14,6 +14,9 @@ from core.application_plan import (
     ApplicationPlan,
     PrivateHomeApplicationPlanRepository,
 )
+from core.application_preparation_orchestrator import (
+    PreparationStageOutcome,
+)
 from core.cover_letter_draft import (
     COVER_LETTER_DRAFT_CONTRACT_VERSION,
     COVER_LETTER_DRAFT_POLICY_VERSION,
@@ -67,6 +70,7 @@ from core.prepared_cover_letter_material import (
     escape_cover_letter_latex_text,
     expected_cover_letter_text_projection,
     publish_prepared_cover_letter,
+    prepared_cover_letter_publication_public_result,
     render_cover_letter_latex,
     validate_managed_cover_letter_template,
 )
@@ -681,6 +685,18 @@ def test_not_ready_bindings_never_compile_or_publish(
         PreparedCoverLetterMaterialNotReadyReason.FACT_QA_NOT_PASSED,
         PreparedCoverLetterMaterialNotReadyReason.DRAFT_BINDING_MISMATCH,
     }
+    if mode in {"blocked", "missing"}:
+        assert result.stopped_source_lineage is not None
+        assert (
+            result.stopped_source_lineage.source_result_id
+            == (
+                command.cover_letter_fact_qa_result_id
+                if command is not None
+                else parts["qa"].result_id
+            )
+        )
+    else:
+        assert result.stopped_source_lineage is None
     assert parts["compiler"].describe_calls == 0
     assert parts["compiler"].compile_calls == []
     assert not _material_records(parts)
@@ -758,6 +774,11 @@ def test_multi_page_pdf_defers_overflow_without_publishing_pdf(
     assert result.reason_code is (
         PreparedCoverLetterMaterialFailureReason.LAYOUT_OVERFLOW
     )
+    assert result.stopped_source_lineage is not None
+    assert (
+        result.stopped_source_lineage.source_artifact_content_hash
+        is not None
+    )
     assert result.compiler_started
     assert not _material_records(parts)
     assert not _pdf_artifacts(parts)
@@ -827,6 +848,14 @@ def test_completed_binding_replays_without_compiling_and_preserves_time(
     assert replay.material is not None
     assert replay.material.material_id == first.material.material_id
     assert replay.material.published_at == NOW
+    assert (
+        prepared_cover_letter_publication_public_result(first).outcome
+        is PreparationStageOutcome.COMPLETED
+    )
+    assert (
+        prepared_cover_letter_publication_public_result(replay).outcome
+        is PreparationStageOutcome.UNCHANGED
+    )
     assert len(parts["compiler"].compile_calls) == 1
     assert len(_material_records(parts)) == 1
     assert len(_pdf_artifacts(parts)) == 1

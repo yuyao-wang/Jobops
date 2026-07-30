@@ -16,6 +16,8 @@ from core.accepted_job_intent import (
     AcceptedJobIntentFailureReason,
     AcceptedJobIntentReadResult,
     AcceptedJobIntentReadStatus,
+    AcceptedJobIntentSourceProvenance,
+    AcceptedJobIntentSourceType,
 )
 from core.current_priority_queue import (
     CurrentPriorityItemStatus,
@@ -387,13 +389,18 @@ def _intent(
     subject_id: str = SUBJECT,
     value: JobIntakeIntent = JobIntakeIntent.REQUEST_APPLICATION,
 ) -> AcceptedJobIntent:
+    proposal_id = f"intake-{subject_id}-{job_id}-{value.value}"
     return AcceptedJobIntent.create(
         subject_id=subject_id,
         job_id=job_id,
         intent=value,
-        intake_proposal_id=f"intake-{subject_id}-{job_id}-{value.value}",
+        intake_proposal_id=proposal_id,
         discovery_run_id=f"run-{subject_id}-{job_id}-{value.value}",
         recorded_at=NOW,
+        provenance=AcceptedJobIntentSourceProvenance(
+            source_type=AcceptedJobIntentSourceType.CONVERSATIONAL_INTAKE,
+            source_id=proposal_id,
+        ),
     )
 
 

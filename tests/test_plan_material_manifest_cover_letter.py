@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import core.plan_material_manifest_cover_letter as inclusion_module
+from core.application_preparation_orchestrator import (
+    PreparationStageOutcome,
+)
 from core.plan_material_manifest import (
     PlanMaterialAssemblyState,
     PlanMaterialManifestFailureReason,
@@ -19,6 +22,7 @@ from core.plan_material_manifest import (
 )
 from core.plan_material_manifest_cover_letter import (
     IncludeCoverLetterInPlanMaterialManifestCommand,
+    cover_letter_manifest_entry_public_result,
     include_cover_letter_in_plan_material_manifest,
 )
 from core.prepared_cover_letter_material import (
@@ -188,6 +192,14 @@ def test_replay_is_unchanged_and_preserves_assembled_at(
     assert replay.status is PlanMaterialManifestStatus.UNCHANGED
     assert replay.manifest == first.manifest
     assert replay.manifest.assembled_at == NOW
+    assert (
+        cover_letter_manifest_entry_public_result(first).outcome
+        is PreparationStageOutcome.COMPLETED
+    )
+    assert (
+        cover_letter_manifest_entry_public_result(replay).outcome
+        is PreparationStageOutcome.UNCHANGED
+    )
     assert len(_records(parts)) == 2
 
 

@@ -15,6 +15,10 @@ from core.application_plan import (
     ApplicationPlan,
     PrivateHomeApplicationPlanRepository,
 )
+from core.application_preparation_orchestrator import (
+    CoverLetterFactQAStopReason,
+    PreparationStageOutcome,
+)
 from core.cover_letter_draft import (
     CoverLetterAgentMetadata,
     CoverLetterAgentOutput,
@@ -53,6 +57,7 @@ from core.cover_letter_fact_qa import (
     CoverLetterFactQAVerdict,
     PrivateHomeCoverLetterFactQARepository,
     RunCoverLetterFactQACommand,
+    cover_letter_fact_qa_public_result,
     review_cover_letter_fact_qa,
 )
 from core.job_discovery import JobPosting
@@ -648,6 +653,13 @@ async def test_unknown_evidence_reference_blocks_deterministically(
     assert result.status is CoverLetterFactQAStatus.BLOCKED_UNSUPPORTED_CLAIM
     assert result.result is not None
     assert result.result.verdict is CoverLetterFactQAVerdict.BLOCKED
+    public = cover_letter_fact_qa_public_result(result)
+    assert public.outcome is PreparationStageOutcome.DEFERRED
+    assert (
+        public.stop_reason.code
+        is CoverLetterFactQAStopReason.UNSUPPORTED_CLAIM
+    )
+    assert public.result_id == result.result.result_id
     types = {item.finding_type for item in result.result.findings}
     assert "UNKNOWN_EVIDENCE_REFERENCE" in types
     assert agent.contexts == []

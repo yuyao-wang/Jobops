@@ -45,6 +45,7 @@ _CONTENT_HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
 class DiscoveryTrigger(str, Enum):
     CONVERSATIONAL = "CONVERSATIONAL"
+    MANUAL_LIBRARY_REFRESH = "MANUAL_LIBRARY_REFRESH"
 
 
 class JobIntakeIntent(str, Enum):

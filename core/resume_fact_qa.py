@@ -17,6 +17,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    RESUME_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    ResumeFactQAStopReason,
+)
 from .candidate_evidence import (
     CandidateEvidenceScope,
     CandidateEvidenceSnapshot,
@@ -2059,6 +2067,99 @@ async def run_resume_fact_qa(
     )
 
 
+_RESUME_FACT_QA_FAILURE_REASON_MAP = {
+    reason: ResumeFactQAStopReason[reason.name]
+    for reason in ResumeFactQAFailureReason
+}
+
+
+def resume_fact_qa_public_result(
+    result: RunResumeFactQAResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a5 outcome to stage-result v2."""
+
+    if not isinstance(result, RunResumeFactQAResult):
+        raise TypeError("result must be a Resume Fact QA result")
+    stage = ApplicationPreparationStage.RESUME_FACT_QA
+    if result.status in {
+        ResumeFactQAStatus.CREATED,
+        ResumeFactQAStatus.UNCHANGED,
+    }:
+        if result.qa_result is None:
+            raise ValueError("successful fact QA has no result")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeFactQAStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.qa_result.qa_result_id,
+            result_content_hash=result.qa_result.qa_content_hash,
+            outputs={
+                "resume_fact_qa_result_id": result.qa_result.qa_result_id
+            },
+        )
+    if result.reason_code is None:
+        raise ValueError("stopped fact QA has no authoritative reason")
+    try:
+        reason = _RESUME_FACT_QA_FAILURE_REASON_MAP[result.reason_code]
+    except KeyError as error:
+        raise ValueError("unmapped Resume Fact QA stop reason") from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if result.status
+        in {
+            ResumeFactQAStatus.BLOCKED_UNSUPPORTED_CLAIM,
+            ResumeFactQAStatus.DEFERRED_NEEDS_HUMAN,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=RESUME_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.qa_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        result_id=(
+            result.qa_result.qa_result_id
+            if result.qa_result is not None
+            else None
+        ),
+        result_content_hash=(
+            result.qa_result.qa_content_hash
+            if result.qa_result is not None
+            else None
+        ),
+        outputs=(
+            {
+                "resume_fact_qa_result_id": (
+                    result.qa_result.qa_result_id
+                )
+            }
+            if result.qa_result is not None
+            else None
+        ),
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status
+            in {
+                ResumeFactQAStatus.BLOCKED_UNSUPPORTED_CLAIM,
+                ResumeFactQAStatus.DEFERRED_NEEDS_HUMAN,
+            }
+        ),
+    )
+
+
 __all__ = [
     "ADVISORY_FINDING_TYPES",
     "AGENT_FINDING_TYPES",
@@ -2094,4 +2195,5 @@ __all__ = [
     "RunResumeFactQAResult",
     "resume_fact_qa_finding_id",
     "run_resume_fact_qa",
+    "resume_fact_qa_public_result",
 ]

@@ -1,5 +1,5 @@
 """
-MR.Jobs Dashboard — FastAPI server with REST API and WebSocket support.
+JobOps Dashboard — FastAPI server with REST API and WebSocket support.
 Serves a local web dashboard at http://localhost:8080.
 
 Architecture notes:
@@ -23,8 +23,17 @@ from typing import Optional
 
 logger = logging.getLogger("dashboard.server")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -49,6 +58,79 @@ from utils.tracker import (
     get_ignored_count,
 )
 from utils.events import EventBus
+from core.authenticated_subject import AuthenticatedSubjectContext
+from dashboard.authentication import AuthenticatedSubjectDependency
+from dashboard.automation_cycle import (
+    ContinueAutomationUICommand,
+    ContinueAutomationUIController,
+)
+from dashboard.job_library_refresh import (
+    RefreshJobLibraryUICommand,
+    RefreshJobLibraryUIController,
+)
+from dashboard.human_attention_inbox import (
+    HumanAttentionInboxUIController,
+)
+from dashboard.material_correction_target import (
+    MaterialCorrectionTargetUIController,
+)
+from dashboard.input_replacement_target import (
+    InputReplacementTargetUIController,
+)
+from dashboard.input_replacement_resolution import (
+    InputReplacementResolutionUIController,
+)
+from dashboard.new_resume_candidate_replacement import (
+    NewResumeCandidateReplacementUIController,
+)
+from dashboard.new_base_latex_version_replacement import (
+    NewBaseLatexVersionReplacementUIController,
+)
+from dashboard.resume_layout_correction_preview import (
+    ResumeLayoutCorrectionPreviewUIController,
+)
+from dashboard.cover_letter_overflow_preview import (
+    CoverLetterOverflowPreviewUIController,
+)
+from dashboard.cover_letter_overflow_correction import (
+    CoverLetterOverflowCorrectionUICommand,
+    CoverLetterOverflowCorrectionUIController,
+)
+from dashboard.resume_layout_correction import (
+    ResumeLayoutCorrectionUIController,
+)
+from dashboard.unsupported_claim_correction import (
+    UnsupportedClaimCorrectionUIController,
+)
+from dashboard.latex_compilation_correction import (
+    LatexCompilationCorrectionUIController,
+)
+from core.unsupported_claim_correction import (
+    UnsupportedClaimCorrectionAction,
+)
+from core.latex_compilation_correction import (
+    LatexCompilationCorrectionAction,
+)
+from core.resume_layout_correction import (
+    ResumeLayoutCorrectionAction,
+    ResumeLayoutVisualIssue,
+)
+from core.cover_letter_overflow_correction import (
+    CoverLetterOverflowCorrectionAction,
+)
+from core.input_replacement_resolution import InputReplacementAction
+from core.new_resume_candidate_replacement import (
+    NEW_RESUME_UPLOAD_MAX_BYTES,
+)
+from core.new_base_latex_version_replacement import (
+    NEW_BASE_LATEX_UPLOAD_MAX_BYTES,
+)
+from dashboard.application_answer_resolution import (
+    ApplicationAnswerResolutionUIController,
+)
+from dashboard.version_choice_resolution import (
+    VersionChoiceResolutionUIController,
+)
 
 BASE_DIR = Path(__file__).parent
 RESUMES_DIR = BASE_DIR.parent / "resumes"
@@ -73,7 +155,295 @@ async def lifespan(app):
     except Exception:
         pass
 
-app = FastAPI(title="MR.Jobs", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="JobOps", version="1.0.0", lifespan=lifespan)
+
+
+def configure_job_library_refresh_ui(
+    *,
+    controller: RefreshJobLibraryUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3b UI boundary from the composition root."""
+
+    if not isinstance(controller, RefreshJobLibraryUIController):
+        raise TypeError("controller must be a RefreshJobLibraryUIController")
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.job_library_refresh_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_automation_cycle_ui(
+    *,
+    controller: ContinueAutomationUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated P2c10a UI boundary."""
+
+    if not isinstance(controller, ContinueAutomationUIController):
+        raise TypeError("controller must be a ContinueAutomationUIController")
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.automation_cycle_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_human_attention_inbox_ui(
+    *,
+    controller: HumanAttentionInboxUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated, read-only P2b5 Inbox boundary."""
+
+    if not isinstance(controller, HumanAttentionInboxUIController):
+        raise TypeError(
+            "controller must be a HumanAttentionInboxUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.human_attention_inbox_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_material_correction_target_ui(
+    *,
+    controller: MaterialCorrectionTargetUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated, read-only P2b5c target boundary."""
+
+    if not isinstance(controller, MaterialCorrectionTargetUIController):
+        raise TypeError(
+            "controller must be a MaterialCorrectionTargetUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.material_correction_target_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_input_replacement_target_ui(
+    *,
+    controller: InputReplacementTargetUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated, read-only P2b5f target boundary."""
+
+    if not isinstance(controller, InputReplacementTargetUIController):
+        raise TypeError(
+            "controller must be an InputReplacementTargetUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.input_replacement_target_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_input_replacement_resolution_ui(
+    *,
+    controller: InputReplacementResolutionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g5 existing-input replacement boundary."""
+
+    if not isinstance(controller, InputReplacementResolutionUIController):
+        raise TypeError(
+            "controller must be an InputReplacementResolutionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.input_replacement_resolution_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_new_resume_candidate_replacement_ui(
+    *,
+    controller: NewResumeCandidateReplacementUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g5b1 upload-and-replace boundary."""
+
+    if not isinstance(
+        controller, NewResumeCandidateReplacementUIController
+    ):
+        raise TypeError(
+            "controller must be a NewResumeCandidateReplacementUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.new_resume_candidate_replacement_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_new_base_latex_version_replacement_ui(
+    *,
+    controller: NewBaseLatexVersionReplacementUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g5b2 upload-and-replace boundary."""
+
+    if not isinstance(
+        controller, NewBaseLatexVersionReplacementUIController
+    ):
+        raise TypeError(
+            "controller must be a "
+            "NewBaseLatexVersionReplacementUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.new_base_latex_version_replacement_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_resume_layout_correction_preview_ui(
+    *,
+    controller: ResumeLayoutCorrectionPreviewUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated, read-only P2b5e1 preview boundary."""
+
+    if not isinstance(
+        controller, ResumeLayoutCorrectionPreviewUIController
+    ):
+        raise TypeError(
+            "controller must be a ResumeLayoutCorrectionPreviewUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.resume_layout_correction_preview_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_cover_letter_overflow_preview_ui(
+    *,
+    controller: CoverLetterOverflowPreviewUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated, read-only P2b5e2 preview boundary."""
+
+    if not isinstance(controller, CoverLetterOverflowPreviewUIController):
+        raise TypeError(
+            "controller must be a CoverLetterOverflowPreviewUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.cover_letter_overflow_preview_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_cover_letter_overflow_correction_ui(
+    *,
+    controller: CoverLetterOverflowCorrectionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g4d correction boundary."""
+
+    if not isinstance(controller, CoverLetterOverflowCorrectionUIController):
+        raise TypeError(
+            "controller must be a CoverLetterOverflowCorrectionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.cover_letter_overflow_correction_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_resume_layout_correction_ui(
+    *,
+    controller: ResumeLayoutCorrectionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g4c correction boundary."""
+
+    if not isinstance(controller, ResumeLayoutCorrectionUIController):
+        raise TypeError(
+            "controller must be a ResumeLayoutCorrectionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.resume_layout_correction_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_unsupported_claim_correction_ui(
+    *,
+    controller: UnsupportedClaimCorrectionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g4a typed correction boundary."""
+
+    if not isinstance(controller, UnsupportedClaimCorrectionUIController):
+        raise TypeError(
+            "controller must be an UnsupportedClaimCorrectionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.unsupported_claim_correction_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_latex_compilation_correction_ui(
+    *,
+    controller: LatexCompilationCorrectionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g4b correction boundary."""
+
+    if not isinstance(controller, LatexCompilationCorrectionUIController):
+        raise TypeError(
+            "controller must be a LatexCompilationCorrectionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.latex_compilation_correction_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_application_answer_resolution_ui(
+    *,
+    controller: ApplicationAnswerResolutionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g1 conversational boundary."""
+
+    if not isinstance(controller, ApplicationAnswerResolutionUIController):
+        raise TypeError(
+            "controller must be an ApplicationAnswerResolutionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.application_answer_resolution_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_version_choice_resolution_ui(
+    *,
+    controller: VersionChoiceResolutionUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated S3g2 choice-resolution boundary."""
+
+    if not isinstance(controller, VersionChoiceResolutionUIController):
+        raise TypeError(
+            "controller must be a VersionChoiceResolutionUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.version_choice_resolution_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+async def _authenticated_dashboard_subject(
+    request: Request,
+) -> AuthenticatedSubjectContext:
+    dependency = getattr(
+        request.app.state, "authenticated_subject_dependency", None
+    )
+    if dependency is None:
+        raise HTTPException(
+            status_code=503, detail="Authenticated session is unavailable."
+        )
+    return await dependency(request)
 
 
 @app.get("/api/health")
@@ -171,6 +541,719 @@ EventBus.subscribe(_on_event)
 async def dashboard(request: Request) -> HTMLResponse:
     """Serve the single-page dashboard."""
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.post("/api/job-library/refresh")
+async def refresh_job_library_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Run exactly one authenticated S3b refresh invocation."""
+
+    controller = getattr(
+        request.app.state, "job_library_refresh_controller", None
+    )
+    if not isinstance(controller, RefreshJobLibraryUIController):
+        raise HTTPException(
+            status_code=503, detail="Job library refresh is unavailable."
+        )
+    try:
+        command = RefreshJobLibraryUICommand(
+            invocation_id=body.get("invocation_id", ""),
+            max_reprioritizations=body.get("max_reprioritizations"),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid refresh request."
+        ) from None
+    result = await controller.refresh(context=context, command=command)
+    return result.to_dict()
+
+
+@app.post("/api/automation-cycle/run")
+async def continue_automatic_application_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Run exactly one authenticated P2c10a invocation."""
+
+    controller = getattr(
+        request.app.state, "automation_cycle_controller", None
+    )
+    if not isinstance(controller, ContinueAutomationUIController):
+        raise HTTPException(
+            status_code=503, detail="Automatic application is unavailable."
+        )
+    try:
+        command = ContinueAutomationUICommand(
+            invocation_id=body.get("invocation_id", "")
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid automation request."
+        ) from None
+    result = await controller.run(context=context, command=command)
+    return result.to_dict()
+
+
+@app.get("/api/human-attention-inbox")
+async def human_attention_inbox_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Read one current authenticated P2b5 snapshot without writes."""
+
+    controller = getattr(
+        request.app.state, "human_attention_inbox_controller", None
+    )
+    if not isinstance(controller, HumanAttentionInboxUIController):
+        raise HTTPException(
+            status_code=503, detail="Human attention inbox is unavailable."
+        )
+    result = await controller.load(context=context)
+    return result.to_dict()
+
+
+@app.post("/api/human-attention-inbox/{attention_item_id}/resolve")
+async def resolve_application_answer_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Resolve one current USER application-answer item."""
+
+    controller = getattr(
+        request.app.state,
+        "application_answer_resolution_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ApplicationAnswerResolutionUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Application answer resolution is unavailable.",
+        )
+    message = body.get("message", "")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(
+            status_code=422, detail="A clear response is required."
+        )
+    result = await controller.resolve(
+        context=context,
+        attention_item_id=attention_item_id,
+        user_message=message,
+    )
+    return result.to_dict()
+
+
+@app.get(
+    "/api/human-attention-inbox/{attention_item_id}/correction-target"
+)
+async def material_correction_target_ui(
+    attention_item_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Read one current correction target without exposing private identity."""
+
+    controller = getattr(
+        request.app.state, "material_correction_target_controller", None
+    )
+    if not isinstance(controller, MaterialCorrectionTargetUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Material correction target is unavailable.",
+        )
+    try:
+        result = await controller.get(
+            context=context, attention_item_id=attention_item_id
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid correction target request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get(
+    "/api/human-attention-inbox/{attention_item_id}/replacement-target"
+)
+async def input_replacement_target_ui(
+    attention_item_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Read one current replacement target without exposing private identity."""
+
+    controller = getattr(
+        request.app.state, "input_replacement_target_controller", None
+    )
+    if not isinstance(controller, InputReplacementTargetUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Input replacement target is unavailable.",
+        )
+    try:
+        result = await controller.get(
+            context=context, attention_item_id=attention_item_id
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid replacement target request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get(
+    "/api/human-attention-inbox/{attention_item_id}/replacement-options"
+)
+async def input_replacement_options_ui(
+    attention_item_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """List exact registered alternatives for one current replacement item."""
+
+    controller = getattr(
+        request.app.state, "input_replacement_resolution_controller", None
+    )
+    if not isinstance(controller, InputReplacementResolutionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Input replacement resolution is unavailable.",
+        )
+    try:
+        return await controller.options(
+            context=context, attention_item_id=attention_item_id
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid replacement options request."
+        ) from None
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/replace-input"
+)
+async def resolve_input_replacement_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Select one exact registered replacement and rerun preparation once."""
+
+    controller = getattr(
+        request.app.state, "input_replacement_resolution_controller", None
+    )
+    if not isinstance(controller, InputReplacementResolutionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Input replacement resolution is unavailable.",
+        )
+    try:
+        result = await controller.resolve(
+            context=context,
+            attention_item_id=attention_item_id,
+            action=InputReplacementAction(body.get("action", "")),
+            replacement_option_id=str(body.get("replacement_option_id", "")),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid input replacement."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "register-and-replace-resume"
+)
+async def register_and_replace_resume_ui(
+    attention_item_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    invocation_id: str = Form(...),
+    display_name: str = Form(...),
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Register one bounded uploaded resume and delegate replacement."""
+
+    controller = getattr(
+        request.app.state,
+        "new_resume_candidate_replacement_controller",
+        None,
+    )
+    if not isinstance(
+        controller, NewResumeCandidateReplacementUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="New ResumeCandidate replacement is unavailable.",
+        )
+    try:
+        content = await file.read(NEW_RESUME_UPLOAD_MAX_BYTES + 1)
+        await file.close()
+        result = await controller.replace(
+            context=context,
+            attention_item_id=attention_item_id,
+            invocation_id=invocation_id,
+            uploaded_content=content,
+            display_name=display_name,
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid resume replacement upload."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "register-and-replace-base-latex"
+)
+async def register_and_replace_base_latex_ui(
+    attention_item_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    invocation_id: str = Form(...),
+    display_label: str = Form(...),
+    version_note: str | None = Form(None),
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Register one bounded strict Base LaTeX source and delegate replacement."""
+
+    controller = getattr(
+        request.app.state,
+        "new_base_latex_version_replacement_controller",
+        None,
+    )
+    if not isinstance(
+        controller, NewBaseLatexVersionReplacementUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="New Base LaTeX replacement is unavailable.",
+        )
+    try:
+        content = await file.read(NEW_BASE_LATEX_UPLOAD_MAX_BYTES + 1)
+        await file.close()
+        result = await controller.replace(
+            context=context,
+            attention_item_id=attention_item_id,
+            invocation_id=invocation_id,
+            uploaded_content=content,
+            display_label=display_label,
+            version_note=version_note,
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid Base LaTeX replacement upload."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.get("/api/resume-layout-correction-previews/targets/{target_id}")
+async def resume_layout_correction_preview_ui(
+    target_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Create or reuse one current, immutable Resume preview."""
+
+    controller = getattr(
+        request.app.state,
+        "resume_layout_correction_preview_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ResumeLayoutCorrectionPreviewUIController
+    ):
+        raise HTTPException(
+            status_code=503, detail="Resume preview is unavailable."
+        )
+    try:
+        result = await controller.get_or_create(
+            context=context, target_id=target_id
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid Resume preview request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get(
+    "/api/resume-layout-correction-previews/{opaque_reference}/"
+    "pages/{page_number}"
+)
+async def resume_layout_correction_preview_page_ui(
+    opaque_reference: str,
+    page_number: int,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> Response:
+    """Return one authenticated PNG page without revealing storage paths."""
+
+    controller = getattr(
+        request.app.state,
+        "resume_layout_correction_preview_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ResumeLayoutCorrectionPreviewUIController
+    ):
+        raise HTTPException(
+            status_code=503, detail="Resume preview is unavailable."
+        )
+    try:
+        content = controller.read_page(
+            context=context,
+            opaque_preview_reference=opaque_reference,
+            page_number=page_number,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        content = None
+    if content is None:
+        raise HTTPException(status_code=404, detail="Preview unavailable.")
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get(
+    "/api/cover-letter-overflow-previews/targets/{target_id}"
+)
+async def cover_letter_overflow_preview_ui(
+    target_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Create or reuse one current, immutable Cover Letter preview."""
+
+    controller = getattr(
+        request.app.state,
+        "cover_letter_overflow_preview_controller",
+        None,
+    )
+    if not isinstance(controller, CoverLetterOverflowPreviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Cover Letter preview is unavailable."
+        )
+    try:
+        result = await controller.get_or_create(
+            context=context, target_id=target_id
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid Cover Letter preview request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get(
+    "/api/cover-letter-overflow-previews/{opaque_reference}/"
+    "pages/{page_number}"
+)
+async def cover_letter_overflow_preview_page_ui(
+    opaque_reference: str,
+    page_number: int,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> Response:
+    """Return one authenticated PNG page without exposing private paths."""
+
+    controller = getattr(
+        request.app.state,
+        "cover_letter_overflow_preview_controller",
+        None,
+    )
+    if not isinstance(controller, CoverLetterOverflowPreviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Cover Letter preview is unavailable."
+        )
+    try:
+        content = controller.read_page(
+            context=context,
+            opaque_preview_reference=opaque_reference,
+            page_number=page_number,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        content = None
+    if content is None:
+        raise HTTPException(status_code=404, detail="Preview unavailable.")
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "correct-cover-letter-overflow"
+)
+async def correct_cover_letter_overflow_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Record one explicit format-only Cover Letter correction."""
+
+    controller = getattr(
+        request.app.state,
+        "cover_letter_overflow_correction_controller",
+        None,
+    )
+    if not isinstance(
+        controller, CoverLetterOverflowCorrectionUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Cover Letter correction is unavailable.",
+        )
+    try:
+        if set(body) != {"action"}:
+            raise ValueError("only the typed action is accepted")
+        command = CoverLetterOverflowCorrectionUICommand(
+            attention_item_id=attention_item_id,
+            action=CoverLetterOverflowCorrectionAction(body["action"]),
+        )
+        result = await controller.resolve(
+            context=context, command=command
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid Cover Letter correction."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "correct-resume-layout"
+)
+async def correct_resume_layout_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Record one explicit bounded Resume layout revision directive."""
+
+    controller = getattr(
+        request.app.state, "resume_layout_correction_controller", None
+    )
+    if not isinstance(controller, ResumeLayoutCorrectionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Resume layout correction is unavailable.",
+        )
+    try:
+        action = ResumeLayoutCorrectionAction(body.get("action", ""))
+        raw_issues = body.get("visual_issues", [])
+        if not isinstance(raw_issues, list) or len(raw_issues) > 5:
+            raise ValueError("visual issues are invalid")
+        issues = tuple(ResumeLayoutVisualIssue(item) for item in raw_issues)
+        result = await controller.correct(
+            context=context,
+            attention_item_id=attention_item_id,
+            action=action,
+            visual_issues=issues,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid Resume layout correction."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "correct-unsupported-claim"
+)
+async def correct_unsupported_claim_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Record one explicit REMOVE or REWRITE directive."""
+
+    controller = getattr(
+        request.app.state,
+        "unsupported_claim_correction_controller",
+        None,
+    )
+    if not isinstance(controller, UnsupportedClaimCorrectionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Unsupported claim correction is unavailable.",
+        )
+    try:
+        action = UnsupportedClaimCorrectionAction(body.get("action", ""))
+        instruction = body.get("instruction")
+        if instruction is not None and not isinstance(instruction, str):
+            raise ValueError("instruction must be text")
+        result = await controller.correct(
+            context=context,
+            attention_item_id=attention_item_id,
+            action=action,
+            instruction=instruction,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid unsupported claim correction."
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/"
+    "correct-latex-compilation"
+)
+async def correct_latex_compilation_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Record one explicit regenerate-and-retry directive."""
+
+    controller = getattr(
+        request.app.state,
+        "latex_compilation_correction_controller",
+        None,
+    )
+    if not isinstance(controller, LatexCompilationCorrectionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="LaTeX Compilation correction is unavailable.",
+        )
+    try:
+        action = LatexCompilationCorrectionAction(body.get("action", ""))
+        result = await controller.correct(
+            context=context,
+            attention_item_id=attention_item_id,
+            action=action,
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid LaTeX Compilation correction.",
+        ) from None
+    return {
+        "message": result.message,
+        "reason_code": result.reason_code,
+        "status": result.status.value,
+    }
+
+
+@app.post(
+    "/api/human-attention-inbox/{attention_item_id}/resolve-version-choice"
+)
+async def resolve_version_choice_ui(
+    attention_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Resolve one current ResumeCandidate or LaTeX choice."""
+
+    controller = getattr(
+        request.app.state, "version_choice_resolution_controller", None
+    )
+    if not isinstance(controller, VersionChoiceResolutionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Version choice resolution is unavailable.",
+        )
+    message = body.get("message", "")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(
+            status_code=422, detail="A clear version choice is required."
+        )
+    result = await controller.resolve(
+        context=context,
+        attention_item_id=attention_item_id,
+        user_message=message,
+    )
+    return result.to_dict()
 
 
 # ===========================================================================

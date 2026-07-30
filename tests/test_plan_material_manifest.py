@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 import core.plan_material_manifest as manifest_module
+from core.application_preparation_orchestrator import (
+    PreparationStageOutcome,
+)
 from core.plan_material_manifest import (
     PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION,
     RESUME_MEDIA_TYPE,
@@ -23,6 +26,7 @@ from core.plan_material_manifest import (
     PrivateHomePlanMaterialManifestRepository,
     assemble_plan_material_manifest,
     prepared_material_content_hash,
+    resume_manifest_entry_public_result,
 )
 from core.prepared_resume_material import (
     PreparedResumeMaterialStatus,
@@ -369,6 +373,14 @@ def test_replay_returns_unchanged_without_duplicates(
     assert replay.status is PlanMaterialManifestStatus.UNCHANGED
     assert replay.manifest == first.manifest
     assert replay.manifest.assembled_at == NOW
+    assert (
+        resume_manifest_entry_public_result(first).outcome
+        is PreparationStageOutcome.COMPLETED
+    )
+    assert (
+        resume_manifest_entry_public_result(replay).outcome
+        is PreparationStageOutcome.UNCHANGED
+    )
     assert len(_manifests(parts)) == 1
 
 

@@ -24,6 +24,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    COVER_LETTER_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CoverLetterFactQAStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .cover_letter_draft import (
     CoverLetterDraft,
     CoverLetterDraftReadStatus,
@@ -1847,6 +1855,96 @@ async def review_cover_letter_fact_qa(
     )
 
 
+_COVER_LETTER_FACT_QA_FAILURE_REASON_MAP = {
+    reason: CoverLetterFactQAStopReason[reason.name]
+    for reason in CoverLetterFactQAFailureReason
+}
+
+
+def cover_letter_fact_qa_public_result(
+    result: RunCoverLetterFactQAResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b2c outcome to stage-result v2."""
+
+    if not isinstance(result, RunCoverLetterFactQAResult):
+        raise TypeError("result must be a cover-letter Fact QA result")
+    stage = ApplicationPreparationStage.COVER_LETTER_FACT_QA
+    if result.status in {
+        CoverLetterFactQAStatus.CREATED,
+        CoverLetterFactQAStatus.UNCHANGED,
+    }:
+        if result.result is None:
+            raise ValueError("successful Fact QA has no result")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is CoverLetterFactQAStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.result.result_id,
+            result_content_hash=result.result.result_content_hash,
+            outputs={
+                "cover_letter_fact_qa_result_id": result.result.result_id
+            },
+        )
+    if result.status is CoverLetterFactQAStatus.BLOCKED_UNSUPPORTED_CLAIM:
+        reason = CoverLetterFactQAStopReason.UNSUPPORTED_CLAIM
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped Fact QA has no authoritative reason")
+        try:
+            reason = _COVER_LETTER_FACT_QA_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter Fact QA stop reason"
+            ) from error
+        outcome = (
+            PreparationStageOutcome.DEFERRED
+            if result.status
+            is CoverLetterFactQAStatus.DEFERRED_NEEDS_HUMAN
+            else PreparationStageOutcome.FAILED
+        )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=COVER_LETTER_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.result_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        result_id=result.result.result_id if result.result is not None else None,
+        result_content_hash=(
+            result.result.result_content_hash
+            if result.result is not None
+            else None
+        ),
+        outputs=(
+            {"cover_letter_fact_qa_result_id": result.result.result_id}
+            if result.result is not None
+            else None
+        ),
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status
+            in {
+                CoverLetterFactQAStatus.BLOCKED_UNSUPPORTED_CLAIM,
+                CoverLetterFactQAStatus.DEFERRED_NEEDS_HUMAN,
+            }
+        ),
+    )
+
+
 __all__ = [
     "AGENT_ELIGIBLE_FINDING_TYPES",
     "COVER_LETTER_FACT_QA_AGENT_POLICY",
@@ -1881,4 +1979,5 @@ __all__ = [
     "RunCoverLetterFactQACommand",
     "RunCoverLetterFactQAResult",
     "review_cover_letter_fact_qa",
+    "cover_letter_fact_qa_public_result",
 ]

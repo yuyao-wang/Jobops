@@ -16,6 +16,15 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 import pdfplumber
 from pdfminer.pdfparser import PDFSyntaxError
 
+from .application_preparation_orchestrator import (
+    RESUME_VISUAL_QA_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    PublicStageDirective,
+    ResumeVisualQAStopReason,
+)
 from .pdf_page_renderer import (
     PdfPageRendererPort,
     PdfRendererDescription,
@@ -1957,6 +1966,102 @@ async def review_resume_visual_qa(
     )
 
 
+_RESUME_VISUAL_QA_FAILURE_REASON_MAP = {
+    reason: ResumeVisualQAStopReason[reason.name]
+    for reason in ResumeVisualQAFailureReason
+}
+
+
+def resume_visual_qa_public_result(
+    result: ReviewResumeVisualQAResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a8a outcome to stage-result v2."""
+
+    if not isinstance(result, ReviewResumeVisualQAResult):
+        raise TypeError("result must be a resume Visual QA result")
+    stage = ApplicationPreparationStage.RESUME_VISUAL_QA
+    replayed_defer = (
+        result.status is ResumeVisualQAStatus.UNCHANGED
+        and result.result is not None
+        and result.result.verdict is ResumeVisualQAVerdict.DEFERRED
+    )
+    if result.status in {
+        ResumeVisualQAStatus.CREATED,
+        ResumeVisualQAStatus.UNCHANGED,
+    } and not replayed_defer:
+        if result.result is None:
+            raise ValueError("successful Visual QA has no result")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeVisualQAStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        directive = (
+            PublicStageDirective.PASSED
+            if result.result.verdict is ResumeVisualQAVerdict.PASSED
+            else PublicStageDirective.REVISION_REQUIRED
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.result.result_id,
+            result_content_hash=result.result.result_content_hash,
+            outputs={"visual_qa_result_id": result.result.result_id},
+            directive=directive,
+        )
+    if replayed_defer:
+        reason = ResumeVisualQAStopReason.AGENT_OUTPUT_UNRELIABLE
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped Visual QA has no authoritative reason")
+        try:
+            reason = _RESUME_VISUAL_QA_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError("unmapped Visual QA stop reason") from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if replayed_defer
+        or result.status
+        in {
+            ResumeVisualQAStatus.DEFERRED_RENDERER_UNAVAILABLE,
+            ResumeVisualQAStatus.DEFERRED_NEEDS_HUMAN,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=RESUME_VISUAL_QA_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.visual_qa_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    persisted = result.result
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        result_id=persisted.result_id if persisted is not None else None,
+        result_content_hash=(
+            persisted.result_content_hash if persisted is not None else None
+        ),
+        outputs=(
+            {"visual_qa_result_id": persisted.result_id}
+            if persisted is not None
+            else None
+        ),
+        retryable=result.retryable,
+        human_attention_required=(
+            replayed_defer
+            or result.status is ResumeVisualQAStatus.DEFERRED_NEEDS_HUMAN
+        ),
+    )
+
+
 __all__ = [
     "ADVISORY_FINDING_TYPES",
     "AGENT_FINDING_TYPES",
@@ -1994,5 +2099,6 @@ __all__ = [
     "VisualBoundingBox",
     "deterministic_visual_findings",
     "resume_visual_qa_finding_id",
+    "resume_visual_qa_public_result",
     "review_resume_visual_qa",
 ]

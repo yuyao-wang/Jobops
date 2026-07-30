@@ -22,13 +22,23 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    COVER_LETTER_PUBLICATION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CoverLetterPublicationStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .cover_letter_draft import (
     CoverLetterDraft,
     CoverLetterDraftReadStatus,
     CoverLetterDraftRepository,
 )
 from .cover_letter_fact_qa import (
+    COVER_LETTER_FACT_QA_CONTRACT_VERSION,
     CoverLetterFactQAReadStatus,
+    CoverLetterFactQAFindingSeverity,
     CoverLetterFactQARepository,
     CoverLetterFactQAResult,
     CoverLetterFactQAVerdict,
@@ -48,6 +58,13 @@ from .latex_compiler import (
     LatexCompilerUnavailableError,
 )
 from .private_home import PrivateHome, PrivateHomeError
+from .publication_stopped_lineage import (
+    PublicationBlockingDirective,
+    PublicationMaterialKind,
+    PublicationStoppedSourceKind,
+    PublicationStoppedSourceLineage,
+    create_publication_stopped_source_lineage,
+)
 
 
 PREPARED_COVER_LETTER_MATERIAL_CONTRACT_VERSION = (
@@ -187,6 +204,96 @@ class PreparedCoverLetterMaterialFailureReason(str, Enum):
     ARTIFACT_PERSISTENCE_FAILED = "ARTIFACT_PERSISTENCE_FAILED"
     MATERIAL_PERSISTENCE_FAILED = "MATERIAL_PERSISTENCE_FAILED"
     MATERIAL_INTEGRITY_FAILURE = "MATERIAL_INTEGRITY_FAILURE"
+
+
+class CoverLetterOverflowCorrectionConstraintStatus(str, Enum):
+    FOUND = "FOUND"
+    NOT_FOUND = "NOT_FOUND"
+    INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
+
+
+@dataclass(frozen=True, slots=True)
+class CoverLetterOverflowCorrectionConstraint:
+    directive_id: str
+    directive_version: int
+    directive_hash: str
+    subject_id: str
+    application_plan_id: str
+    correction_target_id: str
+    correction_target_hash: str
+    safe_preview_id: str
+    safe_preview_hash: str
+    publication_result_id: str
+    overflow_evaluation_id: str
+    overflow_evaluation_version: str
+    source_record_id: str
+    source_version: str
+    source_content_hash: str
+    correction_mode: str
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("directive_id", self.directive_id),
+            ("subject_id", self.subject_id),
+            ("application_plan_id", self.application_plan_id),
+            ("correction_target_id", self.correction_target_id),
+            ("safe_preview_id", self.safe_preview_id),
+            ("publication_result_id", self.publication_result_id),
+            ("overflow_evaluation_id", self.overflow_evaluation_id),
+            ("source_record_id", self.source_record_id),
+            ("source_version", self.source_version),
+        ):
+            _clean_text(name, value, maximum=300)
+        if type(self.directive_version) is not int or not 1 <= self.directive_version <= 3:
+            raise ValueError("Cover Letter format profile is outside its bound")
+        for name in (
+            "directive_hash",
+            "correction_target_hash",
+            "safe_preview_hash",
+            "source_content_hash",
+        ):
+            _require_hash(name, getattr(self, name))
+        if (
+            self.overflow_evaluation_version
+            != PREPARED_COVER_LETTER_MATERIAL_CONTRACT_VERSION
+            or self.correction_mode != "REFORMAT_EXISTING_CONTENT"
+            or self.source_record_id
+            != f"cover-letter-latex-source-{self.source_content_hash}"
+        ):
+            raise ValueError("Cover Letter correction constraint is invalid")
+
+    def identity_dict(self) -> dict[str, str]:
+        return {
+            "application_plan_id": self.application_plan_id,
+            "correction_mode": self.correction_mode,
+            "correction_target_hash": self.correction_target_hash,
+            "correction_target_id": self.correction_target_id,
+            "directive_hash": self.directive_hash,
+            "directive_id": self.directive_id,
+            "directive_version": str(self.directive_version),
+            "overflow_evaluation_id": self.overflow_evaluation_id,
+            "overflow_evaluation_version": self.overflow_evaluation_version,
+            "publication_result_id": self.publication_result_id,
+            "safe_preview_hash": self.safe_preview_hash,
+            "safe_preview_id": self.safe_preview_id,
+            "source_content_hash": self.source_content_hash,
+            "source_record_id": self.source_record_id,
+            "source_version": self.source_version,
+            "subject_id": self.subject_id,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CoverLetterOverflowCorrectionConstraintReadResult:
+    status: CoverLetterOverflowCorrectionConstraintStatus
+    constraint: CoverLetterOverflowCorrectionConstraint | None
+
+
+@runtime_checkable
+class CoverLetterOverflowCorrectionDirectiveProvider(Protocol):
+    def get_current(
+        self, *, subject_id: str, application_plan_id: str
+    ) -> CoverLetterOverflowCorrectionConstraintReadResult: ...
 
 
 def _clean_text(name: str, value: Any, *, maximum: int) -> str:
@@ -455,6 +562,82 @@ def validate_rendered_cover_letter_latex(
         positions.append(source.index(block))
     if positions != sorted(positions):
         raise ValueError("paragraph order changed during rendering")
+
+
+_FORMAT_ONLY_PROFILES = (
+    (
+        (r"\setlength{\topmargin}{-0.55in}", r"\setlength{\topmargin}{-0.70in}"),
+        (r"\setlength{\textheight}{9.6in}", r"\setlength{\textheight}{9.9in}"),
+        (r"\setlength{\parskip}{0.75em}", r"\setlength{\parskip}{0.45em}"),
+    ),
+    (
+        (r"\setlength{\topmargin}{-0.70in}", r"\setlength{\topmargin}{-0.80in}"),
+        (r"\setlength{\textheight}{9.9in}", r"\setlength{\textheight}{10.1in}"),
+        (r"\setlength{\parskip}{0.45em}", r"\setlength{\parskip}{0.30em}"),
+    ),
+    (
+        (r"\setlength{\topmargin}{-0.80in}", r"\setlength{\topmargin}{-0.85in}"),
+        (r"\setlength{\textheight}{10.1in}", r"\setlength{\textheight}{10.2in}"),
+        (r"\setlength{\parskip}{0.30em}", r"\setlength{\parskip}{0.20em}"),
+    ),
+)
+
+
+def reformat_cover_letter_latex(
+    source: str,
+    draft: CoverLetterDraft,
+    constraint: CoverLetterOverflowCorrectionConstraint,
+) -> str:
+    """Apply one closed format profile while preserving the document body."""
+
+    if (
+        not isinstance(source, str)
+        or not isinstance(draft, CoverLetterDraft)
+        or not isinstance(
+            constraint, CoverLetterOverflowCorrectionConstraint
+        )
+    ):
+        raise TypeError("format-only correction inputs must be typed")
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    if (
+        source_hash != constraint.source_content_hash
+        or constraint.source_record_id
+        != f"cover-letter-latex-source-{source_hash}"
+    ):
+        raise ValueError("format-only correction source binding drifted")
+    begin = r"\begin{document}"
+    if source.count(begin) != 1:
+        raise ValueError("Cover Letter document body is ambiguous")
+    preamble, body = source.split(begin, 1)
+    reformatted_preamble = preamble
+    profile = _FORMAT_ONLY_PROFILES[constraint.directive_version - 1]
+    for current, replacement in profile:
+        if reformatted_preamble.count(current) != 1:
+            raise ValueError("managed layout parameter is unavailable")
+        reformatted_preamble = reformatted_preamble.replace(
+            current, replacement
+        )
+    directive_marker = (
+        "% JOBOPS_FORMAT_DIRECTIVE "
+        f"{constraint.directive_id} {constraint.directive_hash}\n"
+    )
+    corrected = reformatted_preamble + directive_marker + begin + body
+    if corrected.split(begin, 1)[1] != body:
+        raise ValueError("Cover Letter text region changed")
+    validate_rendered_cover_letter_latex(corrected, draft)
+    if expected_cover_letter_text_projection(draft) != (
+        normalize_cover_letter_text_projection(
+            " ".join(
+                (
+                    draft.greeting,
+                    *(paragraph.text for paragraph in draft.paragraphs),
+                    draft.closing,
+                )
+            )
+        )
+    ):
+        raise ValueError("Cover Letter canonical text identity changed")
+    return corrected
 
 
 def normalize_cover_letter_text_projection(text: str) -> str:
@@ -1190,6 +1373,7 @@ class PublishPreparedCoverLetterResult:
     compiler_started: bool
     retryable: bool
     message: str
+    stopped_source_lineage: PublicationStoppedSourceLineage | None = None
 
     def __post_init__(self) -> None:
         status = PreparedCoverLetterMaterialStatus(self.status)
@@ -1214,6 +1398,23 @@ class PublishPreparedCoverLetterResult:
             raise TypeError("retryable must be a boolean")
         if not isinstance(self.message, str) or not self.message:
             raise ValueError("message must be non-empty")
+        if (
+            self.stopped_source_lineage is not None
+            and (
+                not isinstance(
+                    self.stopped_source_lineage,
+                    PublicationStoppedSourceLineage,
+                )
+                or self.stopped_source_lineage.subject_id != self.subject_id
+                or self.stopped_source_lineage.application_plan_id
+                != self.application_plan_id
+                or self.stopped_source_lineage.publication_stage
+                is not ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+                or self.stopped_source_lineage.material_kind
+                is not PublicationMaterialKind.COVER_LETTER
+            )
+        ):
+            raise ValueError("stopped source lineage does not match publication")
         if status in {
             PreparedCoverLetterMaterialStatus.CREATED,
             PreparedCoverLetterMaterialStatus.UNCHANGED,
@@ -1230,6 +1431,7 @@ class PublishPreparedCoverLetterResult:
                 or self.reason_code is not None
                 or self.not_ready_reason is not None
                 or self.retryable
+                or self.stopped_source_lineage is not None
             ):
                 raise ValueError("successful publication result is invalid")
         elif status is PreparedCoverLetterMaterialStatus.NOT_READY:
@@ -1261,6 +1463,7 @@ def _failure(
     compiler_started: bool = False,
     retryable: bool = False,
     detail: str | None = None,
+    stopped_source_lineage: PublicationStoppedSourceLineage | None = None,
 ) -> PublishPreparedCoverLetterResult:
     return PublishPreparedCoverLetterResult(
         status=status,
@@ -1281,6 +1484,7 @@ def _failure(
         compiler_started=compiler_started,
         retryable=retryable,
         message=detail or f"Cover-letter publication failed: {reason.value}.",
+        stopped_source_lineage=stopped_source_lineage,
     )
 
 
@@ -1289,6 +1493,7 @@ def _not_ready(
     reason: PreparedCoverLetterMaterialNotReadyReason,
     *,
     detail: str,
+    stopped_source_lineage: PublicationStoppedSourceLineage | None = None,
 ) -> PublishPreparedCoverLetterResult:
     return PublishPreparedCoverLetterResult(
         status=PreparedCoverLetterMaterialStatus.NOT_READY,
@@ -1301,6 +1506,7 @@ def _not_ready(
         compiler_started=False,
         retryable=False,
         message=f"The cover letter is not ready: {detail}",
+        stopped_source_lineage=stopped_source_lineage,
     )
 
 
@@ -1399,6 +1605,9 @@ def publish_prepared_cover_letter(
     compiler: LatexCompilerPort,
     material_repository: PreparedCoverLetterMaterialRepository,
     home: PrivateHome | None = None,
+    correction_provider: (
+        CoverLetterOverflowCorrectionDirectiveProvider | None
+    ) = None,
 ) -> PublishPreparedCoverLetterResult:
     """Render, compile, validate and publish exactly one cover-letter binding."""
 
@@ -1500,10 +1709,35 @@ def publish_prepared_cover_letter(
             .FACT_QA_INTEGRITY_FAILURE,
         )
     if qa_read.status is CoverLetterFactQAReadStatus.NOT_FOUND:
+        missing_hash = _canonical_hash(
+            {
+                "application_plan_id": plan.plan_id,
+                "expected_fact_qa_result_id": qa_result_id,
+                "subject_id": subject_id,
+            }
+        )
+        lineage = create_publication_stopped_source_lineage(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            publication_stage=(
+                ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+            ),
+            material_kind=PublicationMaterialKind.COVER_LETTER,
+            source_kind=PublicationStoppedSourceKind.FACT_QA_BLOCKER,
+            source_stage=ApplicationPreparationStage.COVER_LETTER_FACT_QA,
+            source_result_id=qa_result_id,
+            source_outcome=PreparationStageOutcome.DEFERRED,
+            source_contract_version=COVER_LETTER_FACT_QA_CONTRACT_VERSION,
+            source_result_content_hash=missing_hash,
+            source_directive=(
+                PublicationBlockingDirective.FACT_QA_RESULT_MISSING
+            ),
+        )
         return _not_ready(
             command,
             PreparedCoverLetterMaterialNotReadyReason.FACT_QA_NOT_PASSED,
             detail="no completed Fact QA result is available.",
+            stopped_source_lineage=lineage,
         )
     if (
         qa_read.status is not CoverLetterFactQAReadStatus.FOUND
@@ -1530,12 +1764,36 @@ def publish_prepared_cover_letter(
             detail="Fact QA does not belong to the current plan and job.",
         )
     if fact_qa.verdict is not CoverLetterFactQAVerdict.PASSED:
+        lineage = create_publication_stopped_source_lineage(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            publication_stage=(
+                ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+            ),
+            material_kind=PublicationMaterialKind.COVER_LETTER,
+            source_kind=PublicationStoppedSourceKind.FACT_QA_BLOCKER,
+            source_stage=ApplicationPreparationStage.COVER_LETTER_FACT_QA,
+            source_result_id=fact_qa.result_id,
+            source_outcome=PreparationStageOutcome.COMPLETED,
+            source_contract_version=COVER_LETTER_FACT_QA_CONTRACT_VERSION,
+            source_result_content_hash=fact_qa.result_content_hash,
+            source_directive=PublicationBlockingDirective.FACT_QA_BLOCKED,
+            source_artifact_id=fact_qa.cover_letter_draft_id,
+            source_artifact_content_hash=fact_qa.draft_content_hash,
+            blocking_lineage_ids=tuple(
+                finding.finding_id
+                for finding in fact_qa.findings
+                if finding.severity
+                is CoverLetterFactQAFindingSeverity.BLOCKING
+            ),
+        )
         return _not_ready(
             command,
             PreparedCoverLetterMaterialNotReadyReason.FACT_QA_NOT_PASSED,
             detail=(
                 f"Fact QA returned {fact_qa.verdict.value} rather than PASSED."
             ),
+            stopped_source_lineage=lineage,
         )
 
     try:
@@ -1583,11 +1841,92 @@ def publish_prepared_cover_letter(
             detail="Draft, evidence, Fact QA and plan bindings differ.",
         )
 
+    correction_constraint = None
+    if correction_provider is not None:
+        try:
+            correction_read = correction_provider.get_current(
+                subject_id=subject_id,
+                application_plan_id=plan.plan_id,
+            )
+            if not isinstance(
+                correction_read,
+                CoverLetterOverflowCorrectionConstraintReadResult,
+            ):
+                raise TypeError("correction provider returned an invalid value")
+            if (
+                correction_read.status
+                is CoverLetterOverflowCorrectionConstraintStatus
+                .INTEGRITY_FAILURE
+            ):
+                raise ValueError("correction directive integrity failed")
+            if (
+                correction_read.status
+                is CoverLetterOverflowCorrectionConstraintStatus.FOUND
+            ):
+                if (
+                    not isinstance(
+                        correction_read.constraint,
+                        CoverLetterOverflowCorrectionConstraint,
+                    )
+                    or correction_read.constraint.subject_id != subject_id
+                    or correction_read.constraint.application_plan_id
+                    != plan.plan_id
+                ):
+                    raise ValueError("correction directive binding failed")
+                correction_constraint = correction_read.constraint
+            elif (
+                correction_read.status
+                is not CoverLetterOverflowCorrectionConstraintStatus.NOT_FOUND
+                or correction_read.constraint is not None
+            ):
+                raise ValueError("correction directive result is invalid")
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failure(
+                command,
+                PreparedCoverLetterMaterialFailureReason.TEMPLATE_INVALID,
+                detail="The format-only correction directive is invalid.",
+            )
+
     try:
         template = template_provider.get()
         if not isinstance(template, ManagedCoverLetterTemplate):
             raise TypeError("template provider returned an invalid value")
-        source = render_cover_letter_latex(draft, template)
+        base_source = render_cover_letter_latex(draft, template)
+        source = base_source
+        if correction_constraint is not None:
+            if (
+                correction_constraint.source_version
+                != template.template_version
+            ):
+                raise ValueError("correction source version drifted")
+            source_reference = cover_letter_source_reference(
+                subject_id=subject_id,
+                source_sha256=correction_constraint.source_content_hash,
+            )
+            source_path = active_home.contained_path(source_reference)
+            if source_path.is_symlink() or not source_path.is_file():
+                raise ValueError("correction source is unavailable")
+            source_bytes = source_path.read_bytes()
+            if (
+                hashlib.sha256(source_bytes).hexdigest()
+                != correction_constraint.source_content_hash
+            ):
+                raise ValueError("correction source integrity drifted")
+            source = source_bytes.decode("utf-8")
+            validate_rendered_cover_letter_latex(source, draft)
+            begin = r"\begin{document}"
+            if (
+                source.count(begin) != 1
+                or base_source.count(begin) != 1
+                or source.split(begin, 1)[1]
+                != base_source.split(begin, 1)[1]
+            ):
+                raise ValueError(
+                    "correction source changed approved Cover Letter text"
+                )
+            source = reformat_cover_letter_latex(
+                source, draft, correction_constraint
+            )
         source_bytes = source.encode("utf-8")
         source_hash = hashlib.sha256(source_bytes).hexdigest()
     except (OSError, RuntimeError, TypeError, UnicodeError, ValueError):
@@ -1777,6 +2116,48 @@ def publish_prepared_cover_letter(
         )
     page_count, projection = inspected
     if page_count > 1:
+        overflow_content = {
+            "application_plan_id": plan.plan_id,
+            "compiler_engine": description.engine,
+            "compiler_version": description.compiler_version,
+            "page_count": page_count,
+            "policy_version": COVER_LETTER_PUBLICATION_POLICY_VERSION,
+            "source_sha256": source_hash,
+            "subject_id": subject_id,
+            "template_id": template.template_id,
+            "template_version": template.template_version,
+        }
+        overflow_hash = _canonical_hash(overflow_content)
+        lineage = create_publication_stopped_source_lineage(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            publication_stage=(
+                ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+            ),
+            material_kind=PublicationMaterialKind.COVER_LETTER,
+            source_kind=(
+                PublicationStoppedSourceKind
+                .COVER_LETTER_LAYOUT_OVERFLOW
+            ),
+            source_stage=(
+                ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+            ),
+            source_result_id=(
+                f"cover-letter-overflow-evaluation-{overflow_hash}"
+            ),
+            source_outcome=PreparationStageOutcome.DEFERRED,
+            source_contract_version=(
+                PREPARED_COVER_LETTER_MATERIAL_CONTRACT_VERSION
+            ),
+            source_result_content_hash=overflow_hash,
+            source_directive=(
+                PublicationBlockingDirective
+                .COVER_LETTER_LAYOUT_OVERFLOW
+            ),
+            source_artifact_id=f"cover-letter-latex-source-{source_hash}",
+            source_artifact_version=template.template_version,
+            source_artifact_content_hash=source_hash,
+        )
         return _failure(
             command,
             PreparedCoverLetterMaterialFailureReason.LAYOUT_OVERFLOW,
@@ -1788,6 +2169,7 @@ def publish_prepared_cover_letter(
                 "The cover letter exceeds the fixed one-page publication "
                 "policy; its text and layout were not modified."
             ),
+            stopped_source_lineage=lineage,
         )
     expected_projection = expected_cover_letter_text_projection(draft)
     if (
@@ -1907,8 +2289,126 @@ def publish_prepared_cover_letter(
     )
 
 
+_COVER_LETTER_PUBLICATION_NOT_READY_REASON_MAP = {
+    reason: CoverLetterPublicationStopReason[reason.name]
+    for reason in PreparedCoverLetterMaterialNotReadyReason
+}
+_COVER_LETTER_PUBLICATION_FAILURE_REASON_MAP = {
+    reason: CoverLetterPublicationStopReason[reason.name]
+    for reason in PreparedCoverLetterMaterialFailureReason
+}
+_COVER_LETTER_DEFERRED_PUBLICATION_STATUSES = {
+    PreparedCoverLetterMaterialStatus.DEFERRED_COMPILER_UNAVAILABLE,
+    PreparedCoverLetterMaterialStatus.DEFERRED_COMPILATION_ERROR,
+    PreparedCoverLetterMaterialStatus.DEFERRED_LAYOUT_OVERFLOW,
+}
+
+
+def prepared_cover_letter_publication_public_result(
+    result: PublishPreparedCoverLetterResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b2d outcome to stage-result v2."""
+
+    if not isinstance(result, PublishPreparedCoverLetterResult):
+        raise TypeError(
+            "result must be a prepared-cover-letter publication result"
+        )
+    stage = ApplicationPreparationStage.COVER_LETTER_PUBLICATION
+    if result.status in {
+        PreparedCoverLetterMaterialStatus.CREATED,
+        PreparedCoverLetterMaterialStatus.UNCHANGED,
+    }:
+        if result.material is None:
+            raise ValueError("successful publication has no material")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is PreparedCoverLetterMaterialStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.material.material_id,
+            result_content_hash=result.material.material_content_hash,
+            outputs={
+                "prepared_cover_letter_material_id": (
+                    result.material.material_id
+                )
+            },
+        )
+    if result.status is PreparedCoverLetterMaterialStatus.NOT_READY:
+        if result.not_ready_reason is None:
+            raise ValueError("not-ready publication has no reason")
+        try:
+            reason = _COVER_LETTER_PUBLICATION_NOT_READY_REASON_MAP[
+                result.not_ready_reason
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter not-ready reason"
+            ) from error
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped publication has no reason")
+        try:
+            reason = _COVER_LETTER_PUBLICATION_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter publication reason"
+            ) from error
+        outcome = (
+            PreparationStageOutcome.DEFERRED
+            if result.status in _COVER_LETTER_DEFERRED_PUBLICATION_STATUSES
+            else PreparationStageOutcome.FAILED
+        )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=(
+            COVER_LETTER_PUBLICATION_STOP_REASON_CONTRACT_VERSION
+        ),
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    lineage = result.stopped_source_lineage
+    targeted_stop = (
+        result.not_ready_reason
+        is PreparedCoverLetterMaterialNotReadyReason.FACT_QA_NOT_PASSED
+        or result.reason_code
+        is PreparedCoverLetterMaterialFailureReason.LAYOUT_OVERFLOW
+    )
+    if targeted_stop and lineage is None:
+        raise ValueError(
+            "targeted cover-letter publication stop lacks source lineage"
+        )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        result_id=(
+            lineage.publication_result_id if lineage is not None else None
+        ),
+        result_content_hash=(
+            lineage.lineage_content_hash if lineage is not None else None
+        ),
+        outputs=(
+            lineage.output_references() if lineage is not None else {}
+        ),
+    )
+
+
 __all__ = [
     "COVER_LETTER_PUBLICATION_POLICY_VERSION",
+    "CoverLetterOverflowCorrectionConstraint",
+    "CoverLetterOverflowCorrectionConstraintReadResult",
+    "CoverLetterOverflowCorrectionConstraintStatus",
+    "CoverLetterOverflowCorrectionDirectiveProvider",
     "DefaultManagedCoverLetterTemplateProvider",
     "MANAGED_COVER_LETTER_TEMPLATE_ID",
     "MANAGED_COVER_LETTER_TEMPLATE_SOURCE",
@@ -1938,7 +2438,9 @@ __all__ = [
     "inspect_cover_letter_pdf",
     "normalize_cover_letter_text_projection",
     "prepared_cover_letter_material_id",
+    "prepared_cover_letter_publication_public_result",
     "publish_prepared_cover_letter",
+    "reformat_cover_letter_latex",
     "render_cover_letter_latex",
     "validate_managed_cover_letter_template",
     "validate_rendered_cover_letter_latex",

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MR.Jobs — Job Intelligence</title>
+    <title>JobOps — Job Intelligence</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -27,7 +27,7 @@
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 
-<body x-data="mrjobs()" x-init="init()" x-cloak>
+<body x-data="jobops()" x-init="init()" x-cloak>
 
     <!-- ===================================================================
          FIRST-RUN SETUP WIZARD
@@ -37,8 +37,8 @@
         <!-- Logo + Title -->
         <div class="text-center mb-8">
           <div class="inline-flex items-center gap-3 mb-4">
-            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-xl font-bold">MR</div>
-            <span class="text-3xl font-bold text-white tracking-tight" style="font-family: var(--font-display);">MR.Jobs</span>
+            <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-xs font-bold">JobOps</div>
+            <span class="text-3xl font-bold text-white tracking-tight" style="font-family: var(--font-display);">JobOps</span>
           </div>
           <p class="text-[#64748b] text-sm" style="font-family: var(--font-mono);">First-time setup — let's configure your job search</p>
         </div>
@@ -190,7 +190,7 @@
           <!-- Step 4: Review -->
           <div x-show="wizardStep === 4">
             <h2 class="text-lg font-semibold text-white mb-1">Review & Launch</h2>
-            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">Confirm your settings and start MR.Jobs</p>
+            <p class="text-[#64748b] text-xs mb-6" style="font-family: var(--font-mono);">Confirm your settings and start JobOps</p>
 
             <div class="space-y-4 text-sm">
               <div class="p-3 rounded-lg bg-[#0a0e17] border border-[#1e293b]">
@@ -223,7 +223,7 @@
             <div x-show="wizardStep === 1"></div>
             <button x-show="wizardStep < 4" @click="wizardNext()" class="cmd-btn primary">Next</button>
             <button x-show="wizardStep === 4" @click="wizardSubmit()" class="cmd-btn primary" style="background: rgba(16, 185, 129, 0.15); color: #10b981; border-color: rgba(16, 185, 129, 0.4);">
-              Launch MR.Jobs
+              Launch JobOps
             </button>
           </div>
         </div>
@@ -244,7 +244,7 @@
                         </svg>
                     </div>
                     <div>
-                        <h1 class="text-sm font-bold tracking-tight text-white" style="font-family:var(--font-display)">MR.Jobs</h1>
+                        <h1 class="text-sm font-bold tracking-tight text-white" style="font-family:var(--font-display)">JobOps</h1>
                         <p class="text-[0.55rem] font-mono tracking-[0.15em] uppercase text-[#64748b] -mt-0.5">Job Intelligence Dashboard</p>
                     </div>
                 </div>
@@ -414,6 +414,172 @@
             <!-- LEFT: Activity Feed + Scheduler -->
             <div class="lg:col-span-3 space-y-4">
 
+                <!-- Authenticated Manual Job Library Refresh -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--cyan);box-shadow:0 0 6px rgba(34,211,238,0.4)"></span>
+                        职位库
+                    </div>
+                    <div class="p-3 space-y-3">
+                        <div>
+                            <button @click="refreshJobLibrary()"
+                                    :disabled="jobLibraryRefresh.status === 'RUNNING'"
+                                    class="cmd-btn primary w-full">
+                                <span x-show="jobLibraryRefresh.status !== 'RUNNING'">刷新职位库</span>
+                                <span x-show="jobLibraryRefresh.status === 'RUNNING'">正在刷新...</span>
+                            </button>
+                            <p class="mt-2 text-[0.62rem] font-mono text-[#64748b] leading-relaxed">
+                                扫描所有已启用的职位来源并更新优先级
+                            </p>
+                        </div>
+
+                        <div x-show="jobLibraryRefresh.status !== 'IDLE'"
+                             class="border-t border-[#1e293b] pt-3 space-y-2">
+                            <div class="flex items-center justify-between text-[0.65rem] font-mono">
+                                <span class="text-[#64748b]">状态</span>
+                                <span :class="jobLibraryRefresh.status === 'COMPLETED' ? 'text-emerald-400' :
+                                              jobLibraryRefresh.status === 'PARTIAL_FAILURE' ? 'text-amber-400' :
+                                              jobLibraryRefresh.status === 'NOOP' ? 'text-slate-400' :
+                                              jobLibraryRefresh.status === 'RUNNING' ? 'text-cyan-400 animate-pulse' :
+                                              'text-rose-400'"
+                                      x-text="jobLibraryRefresh.status"></span>
+                            </div>
+                            <div x-show="jobLibraryRefresh.summary"
+                                 class="grid grid-cols-2 gap-x-3 gap-y-1 text-[0.62rem] font-mono">
+                                <span class="text-[#64748b]">已启用来源</span>
+                                <span class="text-right text-[#cbd5e1]" x-text="jobLibraryRefresh.summary?.enabled_profiles ?? 0"></span>
+                                <span class="text-[#64748b]">发现候选</span>
+                                <span class="text-right text-[#cbd5e1]" x-text="jobLibraryRefresh.summary?.candidates_found ?? 0"></span>
+                                <span class="text-[#64748b]">新增 / 更新</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="`${jobLibraryRefresh.summary?.jobs_created ?? 0} / ${jobLibraryRefresh.summary?.jobs_updated ?? 0}`"></span>
+                                <span class="text-[#64748b]">未变 / 失败跳过</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="`${jobLibraryRefresh.summary?.jobs_unchanged ?? 0} / ${(jobLibraryRefresh.summary?.jobs_failed ?? 0) + (jobLibraryRefresh.summary?.jobs_skipped ?? 0)}`"></span>
+                                <span class="text-[#64748b]">优先级刷新</span>
+                                <span class="text-right text-[#cbd5e1]" x-text="jobLibraryRefresh.summary?.priorities_refreshed ?? 0"></span>
+                            </div>
+                            <p x-show="jobLibraryRefresh.message"
+                               class="text-[0.62rem] font-mono text-amber-300"
+                               x-text="jobLibraryRefresh.message"></p>
+                            <ul x-show="jobLibraryRefresh.sourceFailures.length"
+                                class="space-y-1 text-[0.6rem] font-mono text-rose-300">
+                                <template x-for="failure in jobLibraryRefresh.sourceFailures" :key="failure">
+                                    <li class="leading-relaxed" x-text="failure"></li>
+                                </template>
+                            </ul>
+                            <button x-show="jobLibraryRefresh.status === 'FAILED' && jobLibraryRefresh.invocationId"
+                                    @click="retryJobLibraryRefresh()"
+                                    class="cmd-btn secondary w-full text-[0.58rem]">
+                                使用同一请求重试
+                            </button>
+                            <div x-show="jobLibraryRefresh.lastCompletedRefreshTime"
+                                 class="text-[0.55rem] font-mono text-[#475569]">
+                                最近完成：
+                                <span x-text="jobLibraryRefresh.lastCompletedRefreshTime ?
+                                  new Date(jobLibraryRefresh.lastCompletedRefreshTime).toLocaleString() : ''"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Authenticated End-to-end Automation Cycle -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header">
+                        <span class="dot" style="background:var(--emerald);box-shadow:0 0 6px rgba(16,185,129,0.4)"></span>
+                        自动申请
+                    </div>
+                    <div class="p-3 space-y-3">
+                        <div>
+                            <button @click="continueAutomaticApplication()"
+                                    :disabled="automationCycle.status === 'RUNNING'"
+                                    class="cmd-btn w-full"
+                                    style="background:rgba(16,185,129,0.15);color:#34d399;border-color:rgba(16,185,129,0.3);">
+                                <span x-show="automationCycle.status !== 'RUNNING'">继续自动申请</span>
+                                <span x-show="automationCycle.status === 'RUNNING'">正在自动处理...</span>
+                            </button>
+                            <p class="mt-2 text-[0.62rem] font-mono text-[#64748b] leading-relaxed">
+                                处理已进入职位库且符合当前策略的岗位；可能准备材料并提交已获授权的申请。
+                            </p>
+                        </div>
+
+                        <div x-show="automationCycle.status !== 'IDLE'"
+                             class="border-t border-[#1e293b] pt-3 space-y-2">
+                            <div class="flex items-center justify-between text-[0.65rem] font-mono">
+                                <span class="text-[#64748b]">本轮状态</span>
+                                <span :class="automationCycle.status === 'COMPLETED' || automationCycle.status === 'UNCHANGED' ? 'text-emerald-400' :
+                                              automationCycle.status === 'PARTIAL_FAILURE' ? 'text-amber-400' :
+                                              automationCycle.status === 'NOOP' ? 'text-slate-400' :
+                                              automationCycle.status === 'RUNNING' ? 'text-cyan-400 animate-pulse' :
+                                              'text-rose-400'"
+                                      x-text="automationCycle.status"></span>
+                            </div>
+
+                            <div x-show="automationCycle.summary"
+                                 class="grid grid-cols-2 gap-x-3 gap-y-1 text-[0.61rem] font-mono">
+                                <span class="text-[#64748b]">Plan 新建 / 复用</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="`${automationCycle.summary?.plans_created ?? 0} / ${automationCycle.summary?.plans_reused ?? 0}`"></span>
+                                <span class="text-[#64748b]">准备 完成 / 延后 / 失败</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="`${automationCycle.summary?.preparation_completed ?? 0} / ${automationCycle.summary?.preparation_deferred ?? 0} / ${automationCycle.summary?.preparation_failed ?? 0}`"></span>
+                                <span class="text-[#64748b]">执行 完成 / 延后 / 失败</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="`${automationCycle.summary?.execution_completed ?? 0} / ${automationCycle.summary?.execution_deferred ?? 0} / ${automationCycle.summary?.execution_failed ?? 0}`"></span>
+                                <span class="text-[#64748b]">人工事项跳过</span>
+                                <span class="text-right text-[#cbd5e1]"
+                                      x-text="automationCycle.summary?.human_attention_skipped ?? 0"></span>
+                            </div>
+
+                            <div x-show="automationCycle.stages.length"
+                                 class="space-y-1 border-t border-[#1e293b] pt-2">
+                                <template x-for="stage in automationCycle.stages" :key="stage.stage">
+                                    <div class="flex items-center justify-between text-[0.58rem] font-mono">
+                                        <span class="text-[#64748b]" x-text="automationStageLabel(stage.stage)"></span>
+                                        <span :class="stage.status === 'FAILED' ? 'text-rose-400' :
+                                                      stage.status === 'PARTIAL_FAILURE' ? 'text-amber-400' :
+                                                      'text-[#94a3b8]'"
+                                              x-text="`${stage.status} · ${stage.actual_processed}/${stage.budget}`"></span>
+                                    </div>
+                                </template>
+                            </div>
+
+                            <p x-show="automationCycle.summary?.human_attention_skipped > 0"
+                               class="text-[0.6rem] font-mono text-amber-300">
+                                需要人工处理的职位已跳过。
+                            </p>
+                            <p x-show="(automationCycle.summary?.preparation_deferred ?? 0) + (automationCycle.summary?.execution_deferred ?? 0) > 0"
+                               class="text-[0.6rem] font-mono text-amber-300">
+                                延后项不会阻塞其他职位。
+                            </p>
+                            <p x-show="automationCycle.summary?.execution_uncertain > 0"
+                               class="text-[0.6rem] font-mono text-rose-300">
+                                SUBMISSION_UNCERTAIN 不会自动重试。
+                            </p>
+                            <p x-show="automationCycle.message"
+                               class="text-[0.6rem] font-mono text-amber-300"
+                               x-text="automationCycle.message"></p>
+                            <ul x-show="automationCycle.stageFailures.length"
+                                class="space-y-1 text-[0.6rem] font-mono text-rose-300">
+                                <template x-for="failure in automationCycle.stageFailures" :key="failure">
+                                    <li x-text="failure"></li>
+                                </template>
+                            </ul>
+                            <button x-show="automationCycle.status === 'FAILED' && automationCycle.invocationId"
+                                    @click="retryAutomationCycleRequest()"
+                                    class="cmd-btn secondary w-full text-[0.58rem]">
+                                使用同一请求重试
+                            </button>
+                            <div x-show="automationCycle.completedAt"
+                                 class="text-[0.55rem] font-mono text-[#475569]">
+                                最近完成：
+                                <span x-text="automationCycle.completedAt ?
+                                  new Date(automationCycle.completedAt).toLocaleString() : ''"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Activity Feed -->
                 <div class="mc-panel">
                     <div class="mc-panel-header">
@@ -486,6 +652,313 @@
 
             <!-- CENTER: Jobs Table (main content) -->
             <div class="lg:col-span-6 space-y-4">
+
+                <!-- Read-only Human Attention Inbox -->
+                <div class="mc-panel">
+                    <div class="mc-panel-header flex items-center">
+                        <span class="dot" style="background:var(--amber);box-shadow:0 0 6px rgba(245,158,11,0.4)"></span>
+                        HUMAN ATTENTION INBOX
+                        <span class="ml-2 text-amber-400"
+                              x-text="humanAttentionInbox.itemCount + ' items · ' + humanAttentionInbox.affectedPlanCount + ' plans'"></span>
+                        <button @click="fetchHumanAttentionInbox()"
+                                :disabled="humanAttentionInbox.status === 'LOADING'"
+                                class="cmd-btn secondary ml-auto text-[0.55rem] py-1 px-2">
+                            <span x-show="humanAttentionInbox.status !== 'LOADING'">刷新待处理事项</span>
+                            <span x-show="humanAttentionInbox.status === 'LOADING'">读取中...</span>
+                        </button>
+                    </div>
+
+                    <div x-show="humanAttentionInbox.status === 'LOADING'"
+                         class="p-6 text-center text-[0.68rem] font-mono text-cyan-400 animate-pulse">
+                        正在读取当前待处理事项...
+                    </div>
+                    <div x-show="humanAttentionInbox.status === 'EMPTY'"
+                         class="p-6 text-center text-[0.68rem] font-mono text-[#64748b]"
+                         x-text="humanAttentionInbox.message || '目前没有需要你处理的事项。'"></div>
+                    <div x-show="humanAttentionInbox.status === 'FAILED'"
+                         class="p-4 text-[0.68rem] font-mono text-rose-300">
+                        <p x-text="humanAttentionInbox.message || '暂时无法读取待处理事项。'"></p>
+                        <p class="mt-1 text-[#64748b]">现有列表未被当作空队列处理。</p>
+                    </div>
+
+                    <div x-show="humanAttentionInbox.status === 'READY'"
+                         class="p-3 space-y-4">
+                        <section>
+                            <h3 class="text-[0.68rem] font-mono font-bold tracking-wider text-amber-300 mb-2">
+                                需要你处理
+                                <span class="text-[#64748b] font-normal"
+                                      x-text="'(' + humanAttentionInbox.userItems.length + ')'"></span>
+                            </h3>
+                            <div class="space-y-2">
+                                <template x-for="item in humanAttentionInbox.userItems" :key="item.item_id">
+                                    <article class="rounded border border-amber-500/20 bg-amber-500/5 p-3">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span class="text-[0.6rem] font-mono font-bold text-amber-300"
+                                                  x-text="item.attention_label"></span>
+                                            <span class="text-[0.55rem] font-mono text-cyan-300"
+                                                  x-text="item.priority"></span>
+                                            <span x-show="item.blocking"
+                                                  class="text-[0.52rem] font-mono text-rose-300">BLOCKING</span>
+                                            <span class="ml-auto text-[0.58rem] font-mono text-[#94a3b8]"
+                                                  x-text="'Job ' + item.job_id"></span>
+                                        </div>
+                                        <p class="mt-2 text-[0.68rem] text-[#cbd5e1]"
+                                           x-text="item.required_action"></p>
+                                        <div class="mt-2 text-[0.55rem] font-mono text-[#64748b] space-y-0.5">
+                                            <p x-text="'来源阶段：' + item.source_stage"></p>
+                                            <p class="break-all" x-text="'Item ID：' + item.item_id"></p>
+                                        </div>
+                                        <div x-show="item.source_stage === 'APPLICATION_ANSWERS'"
+                                             class="mt-3 space-y-2">
+                                            <textarea x-model="attentionReplies[item.item_id]"
+                                                      rows="2"
+                                                      class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.65rem] text-[#e2e8f0]"
+                                                      placeholder="直接回复事实、选择或本人确认"></textarea>
+                                            <button @click="resolveHumanAttention(item)"
+                                                    :disabled="resolvingAttentionItemId !== null"
+                                                    class="cmd-btn secondary text-[0.58rem]">
+                                                <span x-show="resolvingAttentionItemId !== item.item_id">提交回复</span>
+                                                <span x-show="resolvingAttentionItemId === item.item_id">正在安全处理...</span>
+                                            </button>
+                                        </div>
+                                        <div x-show="['BASE_RESUME_SELECTION', 'BASE_LATEX_SELECTION'].includes(item.source_stage)"
+                                             class="mt-3 space-y-2">
+                                            <textarea x-model="attentionReplies[item.item_id]"
+                                                      rows="2"
+                                                      class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.65rem] text-[#e2e8f0]"
+                                                      placeholder="输入当前可选 ResumeCandidate / LaTeX Version ID 或唯一名称"></textarea>
+                                            <button @click="resolveVersionChoice(item)"
+                                                    :disabled="resolvingAttentionItemId !== null"
+                                                    class="cmd-btn secondary text-[0.58rem]">
+                                                <span x-show="resolvingAttentionItemId !== item.item_id">确认版本选择</span>
+                                                <span x-show="resolvingAttentionItemId === item.item_id">正在安全处理...</span>
+                                            </button>
+                                        </div>
+                                        <div x-show="item.resolution_capability === 'REPLACE_INPUT'"
+                                             class="mt-3 space-y-1 rounded border border-sky-500/20 bg-[#0f172a] px-2 py-1.5">
+                                            <p class="text-[0.62rem] text-[#cbd5e1]"
+                                               x-text="item.replacementTarget?.target?.required_action || item.replacementTarget?.message || '正在读取需要替换的输入…'"></p>
+                                            <p x-show="item.replacementTarget?.status === 'AVAILABLE'"
+                                               class="text-[0.55rem] font-mono text-[#94a3b8]"
+                                               x-text="(item.replacementTarget?.target?.input_kind || '') + ' · ' + (item.replacementTarget?.target?.display_name || '') + ' · ' + (item.replacementTarget?.target?.version || '')"></p>
+                                            <p x-show="item.replacementTarget?.status === 'AVAILABLE'"
+                                               class="text-[0.52rem] font-mono text-[#64748b]"
+                                               x-text="'可用后续方式：' + (item.replacementTarget?.target?.replacement_methods || []).join(' / ')"></p>
+                                            <div x-show="item.replacementOptions?.status === 'AVAILABLE'"
+                                                 class="space-y-2 pt-1">
+                                                <select x-model="replacementSelections[item.item_id]"
+                                                        class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#e2e8f0]">
+                                                    <option value="">选择一个已注册的替代输入</option>
+                                                    <template x-for="option in (item.replacementOptions?.options || [])"
+                                                              :key="option.option_id">
+                                                        <option :value="option.option_id"
+                                                                x-text="option.display_name + ' · ' + option.option_version"></option>
+                                                    </template>
+                                                </select>
+                                                <button @click="replaceExistingInput(item)"
+                                                        :disabled="resolvingAttentionItemId !== null || !replacementSelections[item.item_id]"
+                                                        class="cmd-btn secondary text-[0.58rem]">
+                                                    <span x-show="resolvingAttentionItemId !== item.item_id">使用所选输入并重新准备</span>
+                                                    <span x-show="resolvingAttentionItemId === item.item_id">正在安全处理...</span>
+                                                </button>
+                                            </div>
+                                            <p x-show="item.replacementOptions?.status === 'NO_EXISTING_REPLACEMENT'"
+                                               class="text-[0.55rem] text-amber-300">
+                                                当前没有其他已注册输入；需要后续新输入注册能力。
+                                            </p>
+                                            <div x-show="item.replacementTarget?.target?.target_kind === 'SOURCE_RESUME' && (item.replacementTarget?.target?.replacement_methods || []).includes('REGISTER_NEW_RESUME_CANDIDATE')"
+                                                 class="space-y-2 border-t border-[#334155] pt-2">
+                                                <input type="text"
+                                                       x-model="replacementUploadNames[item.item_id]"
+                                                       maxlength="120"
+                                                       placeholder="新简历的安全显示名称"
+                                                       class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#e2e8f0]">
+                                                <input type="file"
+                                                       accept=".pdf,.docx"
+                                                       @change="replacementUploads[item.item_id] = $event.target.files[0] || null"
+                                                       class="w-full text-[0.58rem] text-[#94a3b8]">
+                                                <button @click="registerAndReplaceResume(item)"
+                                                        :disabled="resolvingAttentionItemId !== null || !replacementUploads[item.item_id] || !(replacementUploadNames[item.item_id] || '').trim()"
+                                                        class="cmd-btn secondary text-[0.58rem]">
+                                                    <span x-show="resolvingAttentionItemId !== item.item_id">注册新简历并替换</span>
+                                                    <span x-show="resolvingAttentionItemId === item.item_id">正在安全上传...</span>
+                                                </button>
+                                            </div>
+                                            <div x-show="item.replacementTarget?.target?.target_kind === 'BASE_LATEX_VERSION' && (item.replacementTarget?.target?.replacement_methods || []).includes('REGISTER_NEW_LATEX_VERSION')"
+                                                 class="space-y-2 border-t border-[#334155] pt-2">
+                                                <input type="text"
+                                                       x-model="replacementUploadNames[item.item_id]"
+                                                       maxlength="120"
+                                                       placeholder="新 Base LaTeX Version 的安全显示名称"
+                                                       class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#e2e8f0]">
+                                                <textarea x-model="replacementUploadNotes[item.item_id]"
+                                                          maxlength="500"
+                                                          rows="2"
+                                                          placeholder="可选：版本说明（不进入 source identity）"
+                                                          class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#e2e8f0]"></textarea>
+                                                <input type="file"
+                                                       accept=".tex,text/plain"
+                                                       @change="replacementUploads[item.item_id] = $event.target.files[0] || null"
+                                                       class="w-full text-[0.58rem] text-[#94a3b8]">
+                                                <button @click="registerAndReplaceBaseLatex(item)"
+                                                        :disabled="resolvingAttentionItemId !== null || !replacementUploads[item.item_id] || !(replacementUploadNames[item.item_id] || '').trim()"
+                                                        class="cmd-btn secondary text-[0.58rem]">
+                                                    <span x-show="resolvingAttentionItemId !== item.item_id">注册新模板并替换</span>
+                                                    <span x-show="resolvingAttentionItemId === item.item_id">正在安全上传...</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div x-show="item.unsupported_claim_correction_supported"
+                                             class="mt-3 space-y-2">
+                                            <p class="rounded border border-amber-500/20 bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#cbd5e1]"
+                                               x-text="item.correctionTarget?.target?.summary || item.correctionTarget?.message || '正在读取需要修正的陈述…'"></p>
+                                            <div x-show="item.correctionTarget?.status === 'AVAILABLE'"
+                                                 class="space-y-2">
+                                                <textarea x-model="correctionInstructions[item.item_id]"
+                                                          rows="2"
+                                                          class="w-full rounded border border-[#334155] bg-[#0f172a] px-2 py-1.5 text-[0.65rem] text-[#e2e8f0]"
+                                                          placeholder="可选：仅说明如何使用现有证据重新措辞；不要在这里补充新事实"></textarea>
+                                                <div class="flex flex-wrap gap-2">
+                                                    <button @click="correctUnsupportedClaim(item, 'REMOVE_UNSUPPORTED_CLAIM')"
+                                                            :disabled="resolvingAttentionItemId !== null"
+                                                            class="cmd-btn secondary text-[0.58rem]">
+                                                        删除不受支持的陈述
+                                                    </button>
+                                                    <button @click="correctUnsupportedClaim(item, 'REWRITE_USING_EXISTING_EVIDENCE')"
+                                                            :disabled="resolvingAttentionItemId !== null"
+                                                            class="cmd-btn secondary text-[0.58rem]">
+                                                        仅用现有证据改写
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div x-show="item.latex_compilation_correction_supported"
+                                             class="mt-3 space-y-2">
+                                            <p class="rounded border border-cyan-500/20 bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#cbd5e1]"
+                                               x-text="item.correctionTarget?.target?.summary || item.correctionTarget?.message || '正在读取需要重新生成的 LaTeX 来源…'"></p>
+                                            <button x-show="item.correctionTarget?.status === 'AVAILABLE'"
+                                                    @click="correctLatexCompilation(item)"
+                                                    :disabled="resolvingAttentionItemId !== null"
+                                                    class="cmd-btn secondary text-[0.58rem]">
+                                                <span x-show="resolvingAttentionItemId !== item.item_id">重新生成并重试</span>
+                                                <span x-show="resolvingAttentionItemId === item.item_id">正在重新生成...</span>
+                                            </button>
+                                        </div>
+                                        <div x-show="item.correctionTarget?.target?.target_kind === 'RESUME_VISUAL_LAYOUT'"
+                                             class="mt-3 space-y-2">
+                                            <p class="rounded border border-violet-500/20 bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#cbd5e1]"
+                                               x-text="item.layoutPreview?.message || '正在准备当前 Resume 的安全预览…'"></p>
+                                            <div x-show="['AVAILABLE', 'UNCHANGED'].includes(item.layoutPreview?.status)"
+                                                 class="space-y-2">
+                                                <p class="text-[0.55rem] font-mono text-[#94a3b8]"
+                                                   x-text="'只读预览 · ' + (item.layoutPreview?.preview?.page_count || 0) + ' 页'"></p>
+                                                <template x-for="pageNumber in (item.layoutPreview?.preview?.page_count || 0)"
+                                                          :key="pageNumber">
+                                                    <a :href="resumeLayoutPreviewPageUrl(item, pageNumber)"
+                                                       target="_blank"
+                                                       rel="noopener noreferrer"
+                                                       @click="item.previewViewed = true"
+                                                       class="cmd-btn secondary inline-block text-[0.58rem]"
+                                                       x-text="'查看当前版本 · 第 ' + pageNumber + ' 页'"></a>
+                                                </template>
+                                                <div class="flex flex-wrap gap-1.5">
+                                                    <template x-for="issue in [
+                                                        ['OVERFLOW_OR_CLIPPING', '溢出或裁切'],
+                                                        ['ELEMENT_OVERLAP', '元素重叠'],
+                                                        ['POOR_READABILITY', '可读性较差'],
+                                                        ['EXCESS_WHITESPACE', '空白过多'],
+                                                        ['PAGE_COUNT_MISMATCH', '页数不匹配']
+                                                    ]" :key="issue[0]">
+                                                        <button type="button"
+                                                                @click="toggleLayoutIssue(item, issue[0])"
+                                                                :class="(layoutIssueSelections[item.item_id] || []).includes(issue[0]) ? 'border-violet-400 text-violet-200' : ''"
+                                                                class="rounded border border-[#334155] px-2 py-1 text-[0.55rem] text-[#94a3b8]"
+                                                                x-text="issue[1]"></button>
+                                                    </template>
+                                                </div>
+                                                <button @click="correctResumeLayout(item)"
+                                                        :disabled="resolvingAttentionItemId !== null || !item.previewViewed"
+                                                        class="cmd-btn secondary text-[0.58rem]">
+                                                    <span x-show="!item.previewViewed">请先查看当前版本</span>
+                                                    <span x-show="item.previewViewed && resolvingAttentionItemId !== item.item_id">重新调整排版</span>
+                                                    <span x-show="resolvingAttentionItemId === item.item_id">正在启动有界修正...</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div x-show="item.correctionTarget?.target?.target_kind === 'COVER_LETTER_LAYOUT'"
+                                             class="mt-3 space-y-2">
+                                            <p class="rounded border border-cyan-500/20 bg-[#0f172a] px-2 py-1.5 text-[0.62rem] text-[#cbd5e1]"
+                                               x-text="item.coverLetterOverflowPreview?.message || '正在准备当前 Cover Letter 的安全预览…'"></p>
+                                            <div x-show="['AVAILABLE', 'UNCHANGED'].includes(item.coverLetterOverflowPreview?.status)"
+                                                 class="space-y-2">
+                                                <p class="text-[0.55rem] font-mono text-[#94a3b8]"
+                                                   x-text="'只读预览 · ' + (item.coverLetterOverflowPreview?.preview?.page_count || 0) + ' 页 · 预览不代表溢出已解决'"></p>
+                                                <template x-for="pageNumber in (item.coverLetterOverflowPreview?.preview?.page_count || 0)"
+                                                          :key="pageNumber">
+                                                    <a :href="coverLetterOverflowPreviewPageUrl(item, pageNumber)"
+                                                       target="_blank"
+                                                       rel="noopener noreferrer"
+                                                       @click="item.coverLetterPreviewViewed = true"
+                                                       class="cmd-btn secondary inline-block text-[0.58rem]"
+                                                       x-text="'查看当前 Cover Letter · 第 ' + pageNumber + ' 页'"></a>
+                                                </template>
+                                                <button @click="correctCoverLetterOverflow(item)"
+                                                        :disabled="resolvingAttentionItemId !== null || !item.coverLetterPreviewViewed"
+                                                        class="cmd-btn secondary text-[0.58rem]">
+                                                    <span x-show="!item.coverLetterPreviewViewed">请先查看当前 Cover Letter</span>
+                                                    <span x-show="item.coverLetterPreviewViewed && resolvingAttentionItemId !== item.item_id">重新调整排版</span>
+                                                    <span x-show="resolvingAttentionItemId === item.item_id">正在启动格式重排...</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </article>
+                                </template>
+                                <p x-show="humanAttentionInbox.userItems.length === 0"
+                                   class="text-[0.62rem] font-mono text-[#64748b]">
+                                    当前没有需要用户处理的事项。
+                                </p>
+                            </div>
+                        </section>
+
+                        <section>
+                            <h3 class="text-[0.68rem] font-mono font-bold tracking-wider text-rose-300 mb-2">
+                                系统需要处理
+                                <span class="text-[#64748b] font-normal"
+                                      x-text="'(' + humanAttentionInbox.operatorItems.length + ')'"></span>
+                            </h3>
+                            <div class="space-y-2">
+                                <template x-for="item in humanAttentionInbox.operatorItems" :key="item.item_id">
+                                    <article class="rounded border border-rose-500/20 bg-rose-500/5 p-3">
+                                        <div class="flex flex-wrap items-center gap-2">
+                                            <span class="text-[0.6rem] font-mono font-bold text-rose-300"
+                                                  x-text="item.attention_label"></span>
+                                            <span class="text-[0.55rem] font-mono text-cyan-300"
+                                                  x-text="item.priority"></span>
+                                            <span class="ml-auto text-[0.58rem] font-mono text-[#94a3b8]"
+                                                  x-text="'Job ' + item.job_id"></span>
+                                        </div>
+                                        <p class="mt-2 text-[0.68rem] text-[#cbd5e1]"
+                                           x-text="item.required_action"></p>
+                                        <div class="mt-2 text-[0.55rem] font-mono text-[#64748b] space-y-0.5">
+                                            <p x-text="'来源阶段：' + item.source_stage"></p>
+                                            <p class="break-all" x-text="'Item ID：' + item.item_id"></p>
+                                        </div>
+                                    </article>
+                                </template>
+                                <p x-show="humanAttentionInbox.operatorItems.length === 0"
+                                   class="text-[0.62rem] font-mono text-[#64748b]">
+                                    当前没有系统运维事项。
+                                </p>
+                            </div>
+                        </section>
+
+                        <p class="border-t border-[#1e293b] pt-2 text-[0.56rem] font-mono text-[#475569]">
+                            此处仅展示当前事项，不会解决、忽略、重试或提交申请。
+                            <span x-show="humanAttentionInbox.refreshedAt"
+                                  x-text="' 最近刷新：' + new Date(humanAttentionInbox.refreshedAt).toLocaleString()"></span>
+                        </p>
+                    </div>
+                </div>
 
                 <!-- ===================================================================
                      ACTION REQUIRED — Follow-ups & Ghost Detection
@@ -1641,7 +2114,7 @@
 
     <footer class="max-w-[1600px] mx-auto px-4 py-4 text-center">
         <p class="text-[0.55rem] font-mono tracking-[0.2em] uppercase text-[#334155]">
-            MR.Jobs v1.0 — Real-time telemetry via WebSocket
+            JobOps v1.0 — Real-time telemetry via WebSocket
         </p>
     </footer>
 

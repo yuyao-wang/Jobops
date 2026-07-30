@@ -11,7 +11,14 @@ This document is the authority for component contracts and implementation eviden
 | `CanonicalApplicationAnswerKey` / shared taxonomy registry | Implemented P2b3a as the single versioned field-language contract for FormIR, SemanticMapper and ApplicationBundle |
 | `prepare_application_answers()` / `PreparedApplicationAnswerSet` | Implemented P2b3b as the immutable plan-scoped projection of trusted CandidateVault facts into prepared and unresolved canonical answers |
 | `run_application_preparation()` / `ApplicationPreparationRun` | Implemented P2b4 as strict serial composition of the existing public preparation Slices with typed lineage, defer/failure short-circuiting and completed zero-call replay |
+| `PreparationStageOutcome` / `PreparationStopReasonEnvelope` | Implemented P2b4a as the v2 closed stage-specific stop-reason foundation, with exact orchestration-v1 read compatibility, explicit `LEGACY_UNTYPED` adapters and a Base LaTeX sample migration |
+| Resume semantic stage stop-reason contracts | Implemented P2b4b for Base Resume Selection, Source Resume Projection, CandidateEvidence Snapshot, Tailored Resume Draft and Resume Fact QA, with exhaustive typed adapters and no new legacy writes from those stages |
+| Cover Letter / Application Answers stop-reason contracts | Implemented P2b4c for Cover Letter Evidence, Draft, Fact QA and Prepared Application Answers, including typed fact/choice/attestation deferrals and preserved QA blocker lineage |
+| Publication / Manifest stop-reason contracts | Implemented P2b4d for Prepared Resume Publication, Resume Manifest Entry, Prepared Cover Letter Publication and Cover Letter Manifest Entry, with four independent closed typed adapters and unchanged formal record identity/idempotency |
+| Technical preparation stage stop-reason contracts | Implemented P2b4e for LaTeX Construction, sandboxed Compilation, Resume Visual QA and bounded Layout Revision; all new production P2b4 stages now have closed typed contracts while historical v1 remains byte-stable |
 | `build_current_human_attention_queue()` / `HumanAttentionQueueResult` | Implemented P2b5 as a zero-write subject read model over current PreparationRuns and blocking AnswerSet unresolved items |
+| `HumanAttentionResolutionCapability` / typed deferred classification | Implemented P2b5a/P2b5a2 for all registered typed defers, including all 16 technical reasons and Layout child-compilation lineage dispatch; no reason grants approval without review-target identity |
+| `FactQAFindingAttentionRef` / `FactQABlockingFindingProvider` | Implemented P2b5d as the queue-v3 finding-level projection for direct and Publication-derived Resume/Cover Letter Fact QA blockers; mapping identity remains human-attention-mapping-v3 |
 | `run_selective_batch_preparation()` / `SelectiveBatchPreparationResult` | Implemented P2b6 as bounded serial P2b4 composition using one fixed P2b5 snapshot, deterministic Plan selection and per-Plan failure isolation |
 | `PlanMaterialManifest` v1/v2 / `ManagedArtifactReference` | Implemented P2c0 as exact v1 compatibility read, v2 PDF byte-size binding, and optional managed Cover Letter PDF support in the existing MaterialBundle |
 | `assemble_application_bundle()` / `ApplicationBundleAssemblyRecord` | Implemented P2c1 as the fail-closed plan-scoped handoff from a v2 Manifest and canonical AnswerSet into the existing ApplicationBundle |
@@ -23,9 +30,21 @@ This document is the authority for component contracts and implementation eviden
 | `issue_submission_permit()` / `SubmissionPermitRecord` | Implemented P2c5b as the offline issuance boundary that converts one exact `AUTHORIZED` Decision into a 300-second, plan/review/adapter/action-scoped Foundation Gate B permit while persisting only an opaque token reference |
 | `execute_authorized_submission()` / `AuthorizedSubmissionExecutionRecord` | Implemented P2c6 as the one-shot Browser/Engine bridge for a plan-scoped permit, with Review replay, adapter-callback point-of-no-return consumption, existing submission-intent/evidence reuse, immutable verified/uncertain outcomes and zero automatic retry |
 | `run_application_execution()` / `ApplicationExecutionRun` | Implemented P2c7 as strict serial composition of the four public P2c3–P2c6 stages, with typed ordered lineage, defer/block/failure short-circuiting, terminal uncertainty and completed/uncertain zero-call replay |
+| `build_current_application_execution_queue()` / `CurrentApplicationExecutionQueueResult` | Implemented P2c8 as the zero-write subject read model that combines deterministic current Assemblies with terminal/current ExecutionRuns into stable READY, DEFERRED, FAILED, SUBMISSION_UNCERTAIN and SUBMITTED items |
+| `run_selective_batch_execution()` / `SelectiveBatchExecutionResult` | Implemented P2c9 as one-snapshot, READY-only, bounded serial P2c7 composition with caller-order allowlists, terminal skips and per-Plan defer/failure/uncertainty isolation |
+| `run_automation_cycle()` / `AutomationCycleRun` | Implemented P2c10a as invocation-scoped immutable audit over one bounded serial P1d3 → P2a1b → P2b6 → P2c9 cycle |
 | `SemanticMapper.map_controls()` | Implemented as an in-process provider-neutral Protocol |
 | `AdapterRegistry.run()` / deterministic ATS lifecycle | Implemented |
 | `run_discovery(JobDiscoveryRequest)` | Implemented for typed conversational proposals and Private Home upsert |
+| `save_search_profile()` / `SearchProfileProvider` | Implemented S3a subject-scoped immutable search configuration with canonical JobSearchRequest, typed Greenhouse board source and deterministic current/enabled reads |
+| `refresh_job_library()` / `JobLibraryRefreshRun` | Implemented S3b manual all-enabled-profile Search → Public Read → formal ADD_JOB Discovery → optional explicit S3c intent decision → bounded P1d3 flow with canonical URL de-duplication and invocation replay |
+| `save_search_profile_intent_policy()` / `decide_search_profile_intent()` | Implemented S3c immutable subject/profile policy with default ADD_JOB_ONLY and explicit AUTO_REQUEST_APPLICATION |
+| `resolve_authenticated_subject()` / `AuthenticatedSubjectContext` | Implemented S3d0 as fixed-cookie, Keychain-backed server-side subject resolution with explicit-now expiry and a reusable FastAPI dependency |
+| `RefreshJobLibraryUIController.refresh()` / `/api/job-library/refresh` | Implemented S3d as the authenticated, one-invocation UI adapter over the injected S3b public callable with in-flight de-duplication and a bounded safe result projection |
+| `ContinueAutomationUIController.run()` / `/api/automation-cycle/run` | Implemented S3e as the authenticated, server-budgeted UI adapter over the injected P2c10a public callable with in-flight de-duplication and typed safe stage summaries |
+| `HumanAttentionInboxUIController.load()` / `/api/human-attention-inbox` | Implemented S3f as the authenticated, read-only UI projection of one injected P2b5 snapshot with order-preserving USER/OPERATOR groups |
+| `resolve_application_answer()` / `/api/human-attention-inbox/{item_id}/resolve` | Implemented S3g1 for current USER Application Answers items with one bounded parser call, deterministic taxonomy validation, authoritative fact or plan-scoped attestation writes, immutable receipts and one P2b4 rerun |
+| `resolve_version_choice()` / `/api/human-attention-inbox/{item_id}/resolve-version-choice` | Implemented S3g2 for current P2a3/P2a6b USER choice items with public selectable-option validation, deterministic or one-call parser resolution, immutable plan-scoped overrides/receipts and one P2b4 rerun |
 | `read_public_job(ReadJobRequest)` | Implemented provider-neutral entry with Greenhouse, Lever and bounded Generic JSON-LD branches |
 | `handle_conversational_url_intake(ConversationalIntakeRequest)` | Implemented I1 single-URL read ending at `WAITING_FOR_ACTION` |
 | `handle_conversational_intake(ConversationalIntakeRequest)` | Implemented S1b URL-first routing and named-job search ending at candidate selection |
@@ -45,13 +64,14 @@ This document is the authority for component contracts and implementation eviden
 | `selectively_reprioritize_jobs()` | Implemented P1d3 bounded serial composition of P1d2 selection and P1d1 execution |
 | `build_runnable_application_queue()` | Implemented P1d4 read-only preparation-admission view over one P1d2 snapshot and accepted intents |
 | `create_application_plan()` / `ApplicationPlan` | Implemented P2a1 immutable automation-first handoff from one selected RUNNABLE job |
+| `run_selective_batch_plan_creation()` | Implemented P2a1b bounded serial RUNNABLE-job handoff from one fixed P1d4 snapshot |
 | `register_resume_candidate()` / `ResumeCandidateProvider` | Implemented P2a2 explicit subject-scoped trusted artifact registry and typed selectable-candidate reads |
 | `select_base_resume()` / `ResumeSelectionDecision` | Implemented P2a3 bounded automatic base-resume selection with pre-Agent idempotency |
 | `create_source_resume_projection()` / `SourceResumeProjection` | Implemented P2a4a deterministic, hash-bound PDF/DOCX source projection |
 | `create_candidate_evidence_snapshot()` / `CandidateEvidenceSnapshot` | Implemented P2a4b subject-specific immutable source-resume evidence boundary |
 | `tailor_resume()` / `TailoredResumeDraft` | Implemented P2a4c evidence-bound tailoring draft with deterministic Agent-output validation |
 | `run_resume_fact_qa()` / `ResumeFactQAResult` | Implemented P2a5 independent fact gate with deterministic checks before any bounded QA Agent call |
-| `register_resume_latex_version()` / `ResumeLatexVersionProvider` | Implemented P2a6a trusted subject-scoped LaTeX version registry with managed sources and explicit lineage |
+| `register_resume_latex_version()` / `ResumeLatexVersionProvider` | Implemented P2a6a/P2a6a1 trusted subject-scoped LaTeX version registry with unchanged general-source admission plus an explicit strict single-file base-template profile |
 | `select_base_latex_version()` / `BaseLatexSelectionDecision` | Implemented P2a6b metadata-only base-version selection gated on a PASSED fact-QA result |
 | `construct_resume_latex_version()` / `ResumeLatexConstructionRecord` | Implemented P2a6c controlled-marker LaTeX construction with deterministic fidelity and stale-content validation |
 | `compile_resume_latex()` / `LatexCompilerPort` | Implemented P2a7 shell-free sandboxed compilation with deterministic PDF validation and managed artifacts |
@@ -183,13 +203,19 @@ save(AcceptedJobIntent) -> CREATED | UNCHANGED | typed failure
 get_current(subject_id, job_id) -> FOUND | NOT_FOUND | INTEGRITY_FAILURE
 ```
 
-Records live under Private Home `state/intake/accepted-job-intents/` and bind
-subject, formal job, add/apply value, intake proposal, Discovery run, recorded
-time and `accepted-job-intent-v1`. The immutable record ID hashes every binding
-except time. An existing ID with different content is an integrity conflict.
-Reads fail closed on corrupt records and use domain timestamp plus stable ID,
-with any explicit `REQUEST_APPLICATION` taking precedence over `ADD_JOB`.
-Neither value is a submission permit or Application Engine intent.
+Records live under Private Home `state/intake/accepted-job-intents/`. Explicit
+contract-version dispatch preserves v1 serialized bytes and identity without
+injecting compatibility fields. New `accepted-job-intent-v2` records add a
+typed `AcceptedJobIntentSourceProvenance`: `CONVERSATIONAL_INTAKE` binds its
+proposal source ID, while `SEARCH_PROFILE_REFRESH` can bind a stable,
+deduplicated ordering of one or more profile IDs and an optional source
+version. The v2 immutable ID hashes the original bindings plus the canonical
+provenance payload; time remains excluded. An existing ID with different
+content is an integrity conflict. Reads fail closed on corrupt records and use
+the unchanged domain timestamp/stable-ID selection, with any explicit
+`REQUEST_APPLICATION` taking precedence over `ADD_JOB`; provenance never
+affects precedence. Neither value is a submission permit or Application Engine
+intent.
 
 #### `run_discovery()`
 
@@ -288,6 +314,73 @@ Invariants:
 - results are stably ordered, capped at 10 and never auto-selected;
 - one board listing GET returns summaries only; search does not read details,
   persist, call Discovery, invoke models, browser or ATS execution.
+
+#### `save_search_profile()` / `SearchProfileProvider`
+
+```text
+save_search_profile(
+    SaveSearchProfileCommand(
+        subject_id,
+        optional existing profile_id,
+        display_name,
+        company,
+        title,
+        optional location,
+        SearchProfileSourceReference(
+            KNOWN_GREENHOUSE_BOARD,
+            board_token,
+        ),
+        enabled,
+        refresh_mode=MANUAL,
+        now,
+    ),
+    repository=SearchProfileRepository,
+) -> SaveSearchProfileResult
+
+SearchProfileProvider.list_current(subject_id)
+SearchProfileProvider.list_enabled(subject_id)
+```
+
+The persisted query is a real `JobSearchRequest`. Company and title/location
+use the same exported canonicalizers as Known Greenhouse Board Search, so
+case, whitespace and punctuation-equivalent queries replay `UNCHANGED`.
+Content changes append a new immutable version and retain the original
+`created_at`; time is excluded from content hash. `get()` and list reads parse
+and validate every selected record, fail closed on version corruption, isolate
+subjects and use display-name/profile-ID domain ordering. This contract has no
+JobSearchPort, network, Discovery, Priority or application capability.
+
+#### `refresh_job_library()`
+
+```text
+await refresh_job_library(
+    ManualJobLibraryRefreshCommand(
+        subject_id,
+        invocation_id,
+        now,
+        positive max_reprioritizations,
+    ),
+    profile_provider=SearchProfileProvider,
+    search_executor=SearchProfileSearchExecutor,
+    public_job_reader=PublicJobReader callable,
+    discovery=JobDiscoveryPort callable,
+    priority_refresh=P1d3 callable,
+    repository=JobLibraryRefreshRunRepository,
+) -> ManualJobLibraryRefreshResult
+```
+
+The service reads `list_enabled(subject_id)` once. It searches each profile
+once with the persisted `JobSearchRequest`, then uses public
+`normalized_job_url()` identity to group candidates across profiles. Each
+unique valid URL is read once and converted to one resolved
+`ADD_JOB / MANUAL_LIBRARY_REFRESH` Discovery request. Discovery alone writes
+or revises JobPosting and DiscoveryRun records.
+
+Failures are retained per profile/candidate and never stop later work. P1d3 is
+called once after candidate processing with the same subject/time and explicit
+bound, including after partial failures. Empty enabled snapshots are `NOOP`
+with no downstream call. Subject/invocation replay reads the immutable,
+hash-validated Private Home Run before every downstream dependency.
 
 #### Editable prioritization policy
 
@@ -532,6 +625,29 @@ uses atomic create-if-absent storage and typed FOUND/NOT_FOUND/INTEGRITY_FAILURE
 reads. P2a1 neither executes a stage nor imports Agent, materials, browser, ATS
 or Application Engine code.
 
+#### Selective Batch ApplicationPlan Creation
+
+```text
+run_selective_batch_plan_creation(
+    SelectiveBatchPlanCreationCommand(
+        subject_id,
+        now,
+        optional ordered job_ids,
+        optional positive max_jobs,
+        optional typed per-job preparation instructions,
+    ),
+    runnable_queue_reader=P1d4 public callable,
+    single_job_plan_creator=P2a1 public callable,
+) -> SelectiveBatchPlanCreationResult
+```
+
+P2a1b reads one P1d4 snapshot and invokes P2a1 at most once, serially, for
+each bounded `RUNNABLE` item. Explicit allowlists retain first-occurrence
+caller order; blocked and absent jobs remain typed result items without using
+the P2a1 call quota. Per-job exceptions and typed failures are isolated.
+`NOOP / COMPLETED / PARTIAL_FAILURE / FAILED` aggregate the actual calls, and
+replay delegates identity and persistence entirely to P2a1.
+
 #### `register_resume_candidate()` / `ResumeCandidateProvider`
 
 ```text
@@ -748,6 +864,7 @@ register_resume_latex_version(
         optional root_family_id,
         optional template / source resume / draft / fact-QA bindings,
         optional labels,
+        source_profile=GENERAL_SOURCE_V1
     ),
     home,
     repository,
@@ -762,6 +879,19 @@ Bytes are decoded as UTF-8, capability-scanned, hashed, then written to
 records live under the sibling `records/<subject-key>/`. Rejected
 capabilities are reported as a typed `ResumeLatexCapability` alongside
 `SOURCE_CAPABILITY_REJECTED`.
+
+`source_profile` is closed and versioned. `GENERAL_SOURCE_V1` is the default
+and preserves the original record bytes and relative-include behavior.
+Explicit `SINGLE_FILE_BASE_TEMPLATE_V1` additionally validates one document
+root, the empty ordered controlled region, the `JobopsSection` /
+`JobopsBullet` two-argument interface, the managed package set, and the
+absence of every external-file capability. Its immutable record and identity
+include `base-latex-template-v1`,
+`resume-latex-single-file-dependencies-v1`, and
+`resume-latex-source-safety-v1`. Structure failures,
+dependency-policy failures and unsafe capabilities are distinct typed
+registration failures. Historical records omit these fields and continue to
+decode as the general profile without being rewritten.
 
 `ResumeLatexVersionProvider.list_selectable(subject_id)` returns typed
 versions in stable version-ID order and treats an empty registry as
@@ -1335,6 +1465,39 @@ replays `UNCHANGED` with the original timestamp and no compiler or duplicate
 artifact. Repository reads re-hash and re-parse both managed artifacts and
 fail closed on conflicts, corruption, drift or cross-subject access.
 
+#### End-to-end automation cycle
+
+```text
+run_automation_cycle(
+    RunAutomationCycleCommand(
+        subject_id,
+        invocation_id,
+        now,
+        max_reprioritizations,
+        max_plan_creations,
+        max_preparations,
+        max_executions,
+        composition_binding,
+    ),
+    priority_refresh=P1d3 public callable,
+    plan_creation=P2a1b public callable,
+    preparation=P2b6 public callable,
+    execution=P2c9 public callable,
+    repository=AutomationCycleRunRepository,
+) -> RunAutomationCycleResult
+```
+
+The four public batch calls are strictly serial and receive the same subject
+and explicit timestamp. Zero-budget stages are typed skips. Every other stage
+is called at most once; batch failure, defer, Human Attention and uncertainty
+are summarized without stopping later stages or triggering retry.
+
+Cycle identity binds the caller-supplied invocation ID, four budgets,
+composition binding, four batch contract versions and the cycle contract
+version. Time is audit-only. A matching persisted invocation returns
+`UNCHANGED` before all batch calls. Private Home storage is subject-isolated,
+immutable and hash-validated.
+
 #### `SemanticMapper.map_controls()`
 
 ```python
@@ -1517,7 +1680,17 @@ These are sanitized fixture results, not live-site reliability claims.
 | Provider-neutral Lever public job read | Implemented C2 | 37 focused fake-HTTP/fixture mapping, routing, failure and boundary cases; no live-network claim |
 | Generic JSON-LD public job read | Implemented C3 | 45 focused fake-HTTP/fixture parsing, SSRF, redirect, size, failure and boundary cases; no live-network claim |
 | Conversational URL intake and action resolution | Implemented I1 + I2 + I2b | 45 synthetic reader/store/Discovery/intent-repository cases for extraction, conversion, atomic consumption, durable subject intent, replay, precedence, integrity failures and dependency boundaries; no network claim |
+| Accepted Job Intent Source Provenance | Implemented I2c | 3 focused cases preserve fixed v1 bytes/ID/hash and precedence, validate v2 conversational and ordered multi-SearchProfile provenance through restart reads and identity changes, and cover replay/immutable conflict behavior |
 | Known Greenhouse board candidate search | Implemented S1a | 43 fake-HTTP/fixture contract, allowlist, matching, ordering, failure and dependency-boundary cases; no live-network claim |
+| SearchProfile Contract | Implemented S3a | 4 focused cases cover typed Greenhouse profile creation, Private Home restart recovery, canonical query replay, immutable query/enabled version history, current/enabled deterministic ordering, subject isolation, invalid source/query/refresh rejection and zero side effects; 3 known-board JobSearchRequest compatibility variants pass |
+| Manual Full Job Library Refresh | Implemented S3b | 4 focused cases cover all-enabled one-call Search, cross-profile canonical-URL de-duplication with complete source lineage, one Public Read/Discovery per URL, explicit ADD_JOB manual trigger, isolated Search/Reader/Discovery failures, one final bounded P1d3 call, empty-profile NOOP, immutable restart replay with zero downstream calls, all-search-failed status and dependency/lifecycle boundaries |
+| SearchProfile Auto-application Intent Policy | Implemented S3c | 4 focused cases cover default zero-intent behavior, explicit auto intent only after successful Discovery, multi-profile one-write provenance, immutable policy replay/versioning, future-only add-only changes, subject isolation and zero planning/preparation/execution dependencies |
+| Authenticated Subject Session | Implemented S3d0 | 3 focused cases cover Keychain-backed cookie resolution, client subject-override rejection, typed context, missing/expired/hash-drift safe 401 behavior, credential redaction/storage hashing, legacy health-route compatibility and zero Search/Discovery/Automation/Browser/ATS dependencies |
+| Refresh Job Library UI Wiring | Implemented S3d | 3 focused cases cover authenticated subject forwarding, explicit-now/budget/invocation command construction, in-flight duplicate suppression, same-ID S3b replay, COMPLETED/PARTIAL_FAILURE/NOOP safe projections, disabled-running UI state and zero direct Search/Discovery/Priority/Automation/Browser dependencies |
+| Continue Automatic Application UI Wiring | Implemented S3e | 3 focused cases cover authenticated subject forwarding, explicit-now/invocation and versioned server-budget command construction, in-flight duplicate suppression, same-ID P2c10a replay, COMPLETED/PARTIAL_FAILURE/NOOP/UNCHANGED projections, Human Attention/defer/uncertain display, independent S3b/P2c10a requests and zero direct batch/Gate/permit/Browser/Engine dependencies |
+| Human Attention Inbox UI Wiring | Implemented S3f | 3 focused cases cover one authenticated P2b5 snapshot with concurrent read sharing, order-preserving USER/OPERATOR projection across multiple Plans, typed kind/action/stage/item-ID display, EMPTY/FAILED safe states, unsafe diagnostic redaction, one initial and one post-S3e refresh, no polling and zero write/Preparation/Automation/Browser dependencies; one P2b5 mapping regression passes |
+| Conversational Application Answer Resolution | Implemented S3g1 | 3 focused cases cover current USER fact persistence and one P2b4 rerun, plan-scoped attestation with ambiguous-input fail-closure, and immutable replay with zero queue/parser/write/rerun side effects; P2b5 and P2b4 focused regressions pass |
+| Conversational Resume / LaTeX Choice Resolution | Implemented S3g2 | 3 focused cases cover deterministic ResumeCandidate selection plus P2a3 override consumption, one-call safe-metadata LaTeX parsing plus P2a6b override consumption and invalid-option rejection, and ambiguous/defer/failure/replay behavior with preserved override/receipt history; 86 focused P2a3/P2a6b/P2b4/P2b5 regressions pass |
 | Conversational named-job search | Implemented S1b application boundary | 13 fake-extractor/search-port tests for URL priority, clues, 0/1/many results, TTL, failures and side-effect boundaries |
 | Candidate selection to pending action | Implemented S2 | 13 fake-reader/store cases for validation, atomic claim, replay/conflict, failure release and dependency boundaries |
 | Conversational/remaining connector Job Discovery | Partial | URL read, named search, candidate selection and add/apply entry exist; Lever search, SearchProfile and product-surface wiring remain |
@@ -1530,6 +1703,7 @@ These are sanitized fixture results, not live-site reliability claims.
 | Selective batch reprioritization | Implemented P1d3 | 16 synthetic and real-service composition cases for bounded selection, caller/P1d2 order, serial execution, exact-time forwarding, typed aggregation, failure isolation, NOOP and repeated-run zero-extra-Agent idempotency |
 | Runnable Application Queue read model | Implemented P1d4 | 17 synthetic cases for direct admission, accepted-intent isolation/integrity, every blocked state, same-snapshot policy use, order preservation and zero-write/zero-execution boundaries |
 | Automation-first ApplicationPlan | Implemented P2a1 | 16 synthetic cases for RUNNABLE-only creation, immutable bindings, exact instructions, stable identity/replay, changed inputs, restart reads, fail-closed persistence and zero-Agent/zero-execution boundaries |
+| Selective Batch ApplicationPlan Creation | Implemented P2a1b | 4 focused cases cover one fixed P1d4 snapshot, RUNNABLE-only snapshot-order selection, caller-order allowlist de-duplication, execution-count bounds excluding blocked/not-found items, maximum concurrency one, exact subject/time forwarding, explicit-only per-job instructions, isolated P2a1 failure, and P2a1 `UNCHANGED` replay |
 | Trusted Resume Candidate Registry | Implemented P2a2 | 15 synthetic cases for managed artifact validation, actual-byte hashing, immutable replay/conflict, subject isolation, trusted summaries, stable restart reads, fail-closed integrity and zero-selection/zero-execution boundaries |
 | Automatic Base Resume Selection | Implemented P2a3 | 21 synthetic cases for Plan/Job binding, zero-or-one Agent calls, safe context, deterministic/deferred outcomes, pre-Agent replay, changed bindings, subject isolation, immutable restart reads, conflicts and dependency boundaries |
 | Hash-bound Source Resume Projection | Implemented P2a4a | 12 synthetic cases for PDF/DOCX structure, faithful text, stable locators/IDs, replay/restart, parser/artifact changes, unsupported/unreadable documents, subject isolation, immutable conflicts and zero-Agent/OCR/execution boundaries |
@@ -1541,7 +1715,18 @@ These are sanitized fixture results, not live-site reliability claims.
 | Unified Canonical Application Answer Taxonomy | Implemented P2b3a | 11 synthetic contract cases for complete typed metadata, contact/legal/demographic/attestation distinctions, phone and vault alias normalization, fail-safe UNKNOWN, sensitive mapper review status, typed ApplicationBundle answers, out-of-taxonomy rejection, explicit legacy conversion, stable serialization/hash, shared caller types and zero candidate/execution capability |
 | Application Answers Preparation | Implemented P2b3b | 21 synthetic Private Home cases for authoritative fact metadata/snapshot identity, alias normalization, unsupported UNKNOWN, strict value types, no high-stakes inference, demographic choice/decline policy, immutable attestation boundaries, skip versus human-required states, Plan restrictions, salary confirmation, expired/job-scoped exclusion, conflicts without safe-answer loss, no-trusted-fact and human deferrals, subject/binding failures, replay, changed-binding history, restart/current reads, corruption, isolation and zero FormIR/SemanticMapper/Browser/ATS/Gate/ApplicationEngine capability |
 | Single-job Automated Application Preparation | Implemented P2b4 | 20 synthetic application-layer cases for exact serial order and common inputs, CREATED/UNCHANGED continuation, Visual-QA pass skip and revision-final-lineage publication, Resume and Cover-Letter defer short-circuiting, preserved completed roles, blocking-answer attention, typed/exception failures without rollback, completed zero-call replay, changed upstream binding history, immutable restart reads, corruption and subject isolation, missing-output contract failure, dependency-source boundary, plus one real P2b3b public-call composition |
-| Current Human Attention Queue Read Model | Implemented P2b5 | 16 synthetic read-model cases covering typed deferred items, clean completed omission, per-blocking AnswerSet expansion with optional skips excluded, attestation/fact/choice/manual/operator mappings, failed and unknown reasons forced to operator, superseded-item disappearance, repository current ordering, stable item/snapshot hashes across restart/mtime/reversed listing, priority/audience/kind ordering, subject isolation, missing/mismatched AnswerSet fail-closure, and byte/mtime-proven zero-write dependency boundaries |
+| Typed Preparation Stop Reason Contract Foundation | Implemented P2b4a | 4 focused cases cover typed completed/deferred/failed v2 round trips, closed stage/enum/version/outcome validation, unchanged v1 Run bytes/hash with explicit `LEGACY_UNTYPED` restart reads, Base LaTeX reason adaptation, and mixed typed/legacy P2b4 serial consumption; 72 focused P2b4/P2b5/Base-LaTeX/S3g regressions pass |
+| Resume Semantic Stage Stop Reason Migration | Implemented P2b4b | 4 focused cases cover exhaustive closed mappings for all five stage failure enums, distinct no-resume/no-evidence and unsafe-output deferrals, typed unsupported/unreadable projection stops, and separation of unsupported-claim safety blocks from QA integrity failures; affected stage and P2b4a compatibility suites pass |
+| Cover Letter / Application Answers Stop Reason Migration | Implemented P2b4c | 4 focused cases cover exhaustive closed mappings for all four stage failure enums, no-evidence and unsafe-output deferrals, distinct fact/choice/attestation answer blockers, unsupported-claim versus QA-integrity separation, and proof that the four adapters contain no legacy write path |
+| Publication / Manifest Stop Reason Migration | Implemented P2b4d | 4 focused cases exhaust all four stage adapter mappings, preserve publication compiler/layout deferrals versus binding/hash/version/persistence/integrity failures, reject plain-string/wrong-stage/version/outcome envelopes, and prove the four target modules have no legacy stop path; affected idempotency tests verify CREATED/UNCHANGED adaptation and mixed typed/legacy plus historical-v1 regressions pass |
+| Technical Stage Stop Reason Migration | Implemented P2b4e | 4 focused cases exhaust the four closed source-to-stage reason sets, adapt all Construction/Compilation stopped outcomes, preserve persisted Visual QA/Layout lineage, distinguish compiler content failure from unavailable/timeout infrastructure, keep renderer/Agent/layout/integrity boundaries separate, prove full-typed P2b4 composition, and retain exact historical-v1 reads; no nonexistent no-progress/duplicate branch was invented |
+| Layout Downstream Compilation Stop Lineage | Implemented P2b4e1 | 4 focused cases bind content-error and compiler-unavailable stops to distinct typed child result IDs/envelopes, fail closed on parent-child binding drift, preserve exact legacy-incomplete attempt reads without detail inference, and retain immutable replay |
+| Compilation Attempt Binding and Source Resolution Lineage | Implemented P2b4e2a | 4 focused cases prove one pre-run invocation binding is shared by all stage requests and the final Run, resolved Compilation stops bind exact Construction/LaTeX/source-hash identity, invalid/missing early sources use closed unresolved states without fabricated hashes, attempt/subject/Plan/state drift fails closed, and stage-result v3 round trips while historical v1/v2 remain explicit |
+| Compilation Stopped Source Lineage | Implemented P2b4e2 | 4 focused cases persist distinct resolved records for unmanaged dependencies and compilation errors, preserve resolved infrastructure stops and hash-free unresolved early stops, validate subject/Plan/invocation/attempt/reason/source/reference bindings, prove stage-result v3 references and immutable replay, and keep repository failures non-recursive while legacy/synthetic results receive no fabricated reference |
+| Publication Stopped Source Lineage | Implemented P2b4d1 | 4 focused contract cases plus affected publication regressions bind Resume/Cover Letter Fact QA, Resume Visual QA, Resume Layout Revision and Cover Letter overflow to distinct immutable source identities; stage/material/hash drift fails closed, deterministic replay is stable, public projection is bounded, and no path, stderr, diagnostic text or historical reconstruction participates |
+| Current Human Attention Queue Read Model | Implemented P2b5/P2b5a | Synthetic read-model cases cover typed deferred items, clean completed omission, per-blocking AnswerSet expansion with optional skips excluded, attestation/fact/choice/correction/replacement/operator mappings, failed and unclassified reasons forced to operator, superseded-item disappearance, repository current ordering, stable item/snapshot hashes across restart/mtime/reversed listing, priority/audience/kind ordering, subject isolation, missing/mismatched AnswerSet fail-closure, and byte/mtime-proven zero-write dependency boundaries |
+| Human Attention Semantic Classification | Implemented P2b5a/P2b5a2 | 4 focused cases prove complete 16/16 technical coverage, content-correction versus compiler/renderer/operator boundaries, Layout child-lineage classification with damaged-lineage fail-closure, zero approvable Visual QA mappings, mapping-v3 identity, and unchanged fact/choice/attestation plus legacy behavior |
+| Fact QA Finding-Level Attention Projection | Implemented P2b5d | 4 focused cases split direct Resume/Cover Letter and P2b4d1 Publication Fact QA blockers into one stable item per exact blocking finding, validate subject/Plan/material/result/hash/version/finding bindings as an atomic collection, preserve formal finding order and replay identity, and fail closed to one operator item without claim-text or index inference |
 | Selective Batch Application Preparation | Implemented P2b6 | 15 synthetic and real-composition cases covering P0-to-P3 subject Plan ordering, caller-order allowlists and de-duplication, positive execution bounds with attention skips excluded, one fixed attention snapshot, multi-item single-plan skip, subject/not-found isolation, strict maximum concurrency one, COMPLETED/UNCHANGED/deferred/failure aggregation, exception isolation, fatal queue/list reads, P2b4 replay, stable Plan listing and a real two-Plan P2b4 defer-then-continue path |
 | Preparation-to-Execution Material Contract Migration | Implemented P2c0 | 15 compatibility cases covering fixed v1 Resume-only and Resume+Cover Letter bytes/IDs/hashes, explicit unavailable-size projection, v1 restart reads without rewrite, v2 actual byte-size writes for both roles, byte-size identity/hash participation, invalid and missing-size fail-closure, v2 Resume preservation, typed v1-prior rejection, unchanged legacy MaterialBundle digest/text, typed managed Cover Letter PDF carriage through ApplicationBundle, strict reference validation and zero adapter/Engine selection behavior |
 | Plan-scoped Application Bundle Assembly | Implemented P2c1 | 20 synthetic cases covering execution-compatible bundle construction, exact canonical answers and managed material carriage, factory-bound prepared inputs, blocking and non-blocking unresolved handling, subject/job/Manifest/AnswerSet binding fail-closure, incomplete and v1 Manifest rejection, PDF absence/hash/size/signature/page-count/symlink/cross-subject failures, immutable replay and changed-AnswerSet history, restart and mtime-independent current reads, record corruption, factory drift rejection and zero Preparation/SemanticMapper/Browser/ATS/Gate/Engine imports |
@@ -1553,6 +1738,9 @@ These are sanitized fixture results, not live-site reliability claims.
 | Plan-scoped Submission Permit Issuance | Implemented P2c5b | 4 focused cases cover exact AUTHORIZED issuance with token-only opaque storage, unauthorized/binding/Gate-A/submission-state fail-closure, validator rejection after every plan-scoped binding mutation, zero-issue unexpired replay, v1 expiry requiring reauthorization, issuer/store/record failure isolation, and zero Browser/Engine/ATS/submission-intent/submit capability; 26 focused P2c3–P2c5b and Foundation Permit regressions pass |
 | Authorized Submission Execution and Evidence | Implemented P2c6 | 5 focused cases cover one verified submit with intent and bounded evidence, expired/consumed/binding/token rejection before Browser, changed-Review and runtime-input defer before consumption, adapter-callback point-of-no-return consumption, successful zero-call replay, consumed-but-unverified uncertainty with no retry, and bearer-token exclusion; 100 focused and affected P2c3–P2c6, Foundation Permit, Engine, shared-adapter and Workday regressions pass with 47 environment skips |
 | Single-job Automated Application Execution | Implemented P2c7 | 5 focused cases cover exact P2c3→P2c4→P2c5b→P2c6 order with one shared explicit timestamp and maximum concurrency one, Gate A and explicit-user authorization deferrals with zero later calls, failure prefix preservation, immutable restart recovery, terminal uncertainty with no retry, and completed/uncertain zero-call replay |
+| Current Application Execution Queue | Implemented P2c8 | 5 focused cases cover READY without a Run, permanent SUBMITTED across a newer Assembly, terminal uncertainty ahead of later nonterminal history, old deferred isolation from a new current Assembly, deterministic status/priority ordering, stable item/snapshot hashes across changed evaluation time, mtime and reversed repository reads, plus byte/mtime-proven zero writes; 25 Assembly-current and ExecutionRun repository regressions pass |
+| Selective Batch Application Execution | Implemented P2c9 | 4 focused cases cover READY-only snapshot-order execution with maximum concurrency one, deferred/failed/submitted/uncertain typed skips, per-Plan defer/failure/uncertainty isolation with later execution continuation, caller-order allowlist de-duplication, execution-count bounds that exclude skips/not-found, per-Plan Gate A inputs, one queue read per batch and P2c7 `UNCHANGED` replay; 3 focused P2c7/P2c8 terminal regressions pass |
+| End-to-end Automation Cycle | Implemented P2c10a | 4 focused cases cover exact P1d3→P2a1b→P2b6→P2c9 serial order, shared subject/time and independent budgets, stage failure/defer/uncertainty continuation, zero-budget typed skips, attention/uncertain NOOP aggregation, immutable restart recovery, time-excluded invocation replay with four zero-call public services, and direct-dependency boundary checks |
 | Cover Letter Evidence Snapshot | Implemented P2b2a | 16 synthetic cases for exact source lineage, `COVER_LETTER`-only scope, evidence-ID disjointness from resume-tailoring evidence, stable replay/restart, binding failures, missing locator, empty evidence, changed Plan/Selection/Projection, contract-version identity, subject isolation, immutable conflicts and zero-JD/Agent/tailoring/execution boundaries |
 | Plan-scoped Material Manifest Assembly | Implemented P2b1 | 19 synthetic cases for typed assembly, exactly one RESUME entry, entry provenance binding, refusal to claim completeness or Gate A, no placeholder entries, plan and subject mismatch, unknown prepared material, PDF drift, removal and page-count drift, artifact immutability, no legacy-directory fallback, replay, changed material, deterministic current-manifest resolution, conflicts, restart reads, subject isolation and separation from the legacy manifest |
 | Prepared Resume Material Publication | Implemented P2a9 | 25 synthetic cases for the direct and revision publication paths, distinct provenance per path, unapproved visual QA, unsuccessful and exhausted revision runs, blocked fact QA, draft and compilation binding mismatch, PDF drift, removal and page-count drift, never copying or regenerating the artifact, subject isolation, replay, changed chains, current-material resolution by publication time rather than mtime, conflicts, restart reads and zero-compiler/renderer/Agent boundaries |
@@ -1562,6 +1750,7 @@ These are sanitized fixture results, not live-site reliability claims.
 | TailoredDraft to LaTeX Construction | Implemented P2a6c | 25 synthetic fake-Agent cases for deterministic template render, marked-base region replacement, unmarked-base single Agent call, restricted Agent context, exactly-once section/bullet fidelity, omitted-bullet removal, eight unsafe-output deferrals, non-PASSED fact QA, base-selection drift, unreadable base without substitution, replay, changed template binding, restart lineage reads, corrupt records and zero-compilation/execution boundaries |
 | Automatic Base LaTeX Version Selection | Implemented P2a6b | 23 synthetic fake-Agent cases for managed-template fallback, single-candidate and source-resume determinism, one bounded Agent call, metadata-only Agent context, unusable Agent answers, explicit version requirements and unsatisfiable deferral, non-PASSED and drift-bound fact QA, candidate provenance verification, subject isolation, replay, candidate-set change, conflicts, restart reads and zero-compilation/Visual-QA/execution boundaries |
 | Trusted LaTeX Resume Version Registry | Implemented P2a6a | 47 synthetic cases for explicit-source registration, managed-byte hashing, survival after deleting the original input, coexisting versions and families, parent/child lineage, unknown or cross-subject parents, family conflicts, all five source kinds, replay and identity conflicts, nine rejected capabilities, unmanaged and non-UTF-8 sources, subject isolation, filesystem-independent ordering, artifact drift and record corruption, restart reads and zero-selection/compilation/Agent boundaries |
+| Single-file Base LaTeX Registration Contract | Implemented P2a6a1 | 4 focused tests cover strict registration/replay with versioned profile metadata, external dependency/unmanaged package/unsafe capability/broken interface rejection, unchanged GENERAL multi-file and historical record semantics, and profile-separated version/family identity over shared content-addressed bytes; P2a6a and P2a6c affected regressions remain green |
 | Evidence-bound Resume Fact QA | Implemented P2a5 | 31 synthetic fake-Agent cases for binding blocks, deterministic unsupported claims with zero Agent calls, altered unrewritten text, missing source coverage, advisory JD references, four semantic exaggerations, restricted Agent context, replay of passed and blocked results, invalid findings and uncertain verdicts, new results on version change, immutable conflicts, restart reads and zero-rendering/Visual-QA/browser/execution boundaries |
 | Evidence-bound Resume Tailoring Draft | Implemented P2a4c | 26 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, safe context, evidence/JD/verb validation, user-retention protection, deferred outcomes, immutable replay/restart, conflicts and zero-rendering/QA/browser/execution boundaries |
 | Material preparation workflow | Partial | material/bundle tests; end-to-end service not yet unified |
@@ -1604,3 +1793,109 @@ tests/test_job_search.py
 tests/test_conversational_named_search.py
 tests/test_semantic_mapper_contract.py
 ```
+
+### P2b5c Material Correction Target Contract
+
+Four focused cases prove closed 10/10 reason-to-target coverage, exact Fact QA
+finding binding, P2b4d1 Publication visual/layout/overflow lineage
+consumption, P2b4e2 Compilation stopped-source identity, immutable replay and
+current/stale/incomplete behavior, optional P2b5 target references, and safe
+output without paths, hashes, stderr, credentials, permits, exceptions, or
+Agent text.
+
+### S3g4a Unsupported Claim Correction Resolution
+
+Three focused cases cover direct Resume and Cover Letter finding targets,
+explicit REMOVE/REWRITE actions, exact target/finding/source binding,
+immutable directive versioning and replay, optional Draft-provider
+consumption without evidence mutation, one P2b4 call, retained directives on
+defer/failure, and fail-closed stale or unsupported targets. The affected
+Draft, Fact QA, P2b4, P2b5c/P2b5d, and S3f compatibility set passes without
+weakening evidence or QA rules.
+
+### S3g4b LaTeX Compilation Correction Resolution
+
+Three focused cases cover exact current target/stopped-source validation,
+reason-derived managed-dependency and compilable-LaTeX modes, immutable
+directive/receipt replay, P2a6c construction-identity consumption, a new
+managed immutable Construction result, one P2b4 call, stale and unsupported
+fail-closure, retained directives on defer/failure, disappeared-item replay,
+and zero automatic correction loop. Compatibility covers P2a6c, Compilation
+source resolution/stopped-source persistence, P2b5c targets, P2b4, and S3f.
+
+### P2b5e1 Resume Layout Correction Safe Preview Contract
+
+Three focused cases cover exact Visual QA target artifact binding, immutable
+preview creation and replay, opaque authenticated PNG reads, source/hash and
+cross-subject drift, renderer unavailability, unsafe media fail-closure, and
+safe S3f metadata without paths, source hashes, credentials, permits,
+exceptions, material writes, or P2b4 calls.
+
+### P2b5e2 Cover Letter Overflow Correction Safe Preview Contract
+
+Three focused cases cover exact Publication/evaluation/source binding,
+compiler-and-renderer-bound immutable preview creation and replay, closed
+source/evaluation drift, cross-subject reads, unavailable adapters, unsafe
+media, source and preview integrity failures, and opaque authenticated PNG
+reads. S3f exposes limited page metadata only; tests assert no paths, hashes,
+stderr, mutation, P2b4 call, or item resolution.
+
+### S3g4c Resume Layout Correction Resolution
+
+Three focused cases cover exact current target/preview binding, closed visual
+issues, origin-derived correction modes, immutable directive/receipt replay,
+one P2b4 call, missing/stale/unsupported fail-closure, authenticated Dashboard
+action wiring, P2a8b directive consumption into a new Layout run identity,
+unchanged attempt limits, and deterministic byte-identical Resume content
+preservation without automatic correction loops.
+
+### S3g4d Cover Letter Overflow Correction Resolution
+
+Three focused cases cover current target/preview/source/evaluation binding,
+immutable directive and receipt replay, one P2b4 call, invalid action,
+missing/stale/unsupported fail-closure, authenticated Dashboard wiring,
+optional Publication consumption into a new content-addressed source and
+Publication identity, and deterministic byte-identical Cover Letter document
+body preservation. Defer and failure retain the directive without Queue
+mutation, hidden retry or automatic correction loops.
+
+### P2b5f Input Replacement Target Contract
+
+Four focused cases prove closed 3/3 mapping coverage, exact ResumeCandidate
+binding for both Source Resume reasons, exact LaTeX Version/family/source
+binding, immutable target replay, Queue-v5 optional references, current/stale
+and incomplete behavior, and safe authenticated projection without paths,
+content hashes, credentials, permits, exceptions or internal diagnostics.
+Compatibility covers semantic classification, selection adapters, Source
+Resume/LaTeX contracts, S3f and S3g1/S3g2 item behavior.
+
+### S3g5 Existing Input Replacement Resolution
+
+Three focused cases cover exact ResumeCandidate and LaTeX Version selection,
+same-input and unlisted-option rejection, replacement provenance on the
+existing plan-scoped override v2 contract, single P2b4 invocation, immutable
+receipt retention, failed-rerun replay, and zero automatic replacement loops.
+S3g2 v1 override reads remain compatible; P2a3 and P2a6b additionally
+revalidate v2 replaced-input version/hash plus the selected typed option.
+
+### S3g5b1 New ResumeCandidate Registration and Replacement
+
+Three focused cases cover valid byte-detected PDF registration followed by
+one exact S3g5 delegation and deterministic child invocation; oversize,
+unsupported bytes and LaTeX-target rejection before registration; and
+invocation replay, P2a2 same-content `UNCHANGED` reuse, delegated partial
+failure, retained candidate identity and controlled staging cleanup.
+Compatibility exercises P2b5f Source Resume targets, P2a2 registration,
+S3g5 typed commands and the authenticated multipart route without trusting
+filename or browser media type.
+
+### S3g5b2 New Base LaTeX Version Registration and Replacement
+
+Three focused cases cover valid strict-profile registration in the exact
+target family with predecessor lineage followed by one S3g5 delegation;
+oversize, binary, unsafe, structurally invalid and wrong-target rejection
+without delegation; and invocation replay, P2a6a same-contract `UNCHANGED`
+reuse, deterministic child invocation, delegated partial failure and retained
+version identity. Compatibility exercises P2b5f Base LaTeX targets, P2a6a1
+single-file registration, S3g5 typed commands and the authenticated multipart
+route without accepting client family, parent, path, hash or media authority.

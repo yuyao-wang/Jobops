@@ -17,7 +17,22 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    PREPARED_RESUME_PUBLICATION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PreparedResumePublicationStopReason,
+    PublicPreparationStageResult,
+)
 from .private_home import PrivateHome, PrivateHomeError
+from .publication_stopped_lineage import (
+    PublicationBlockingDirective,
+    PublicationMaterialKind,
+    PublicationStoppedSourceKind,
+    PublicationStoppedSourceLineage,
+    create_publication_stopped_source_lineage,
+)
 from .resume_compilation import (
     ResumeCompilationReadStatus,
     ResumeCompilationRecord,
@@ -25,7 +40,9 @@ from .resume_compilation import (
     pdf_page_count,
 )
 from .resume_fact_qa import (
+    RESUME_FACT_QA_CONTRACT_VERSION,
     ResumeFactQAReadStatus,
+    ResumeFactQAFindingSeverity,
     ResumeFactQARepository,
     ResumeFactQAResult,
     ResumeFactQAVerdict,
@@ -36,6 +53,7 @@ from .resume_latex_versions import (
     ResumeLatexVersionRepository,
 )
 from .resume_layout_revision import (
+    RESUME_LAYOUT_REVISION_CONTRACT_VERSION,
     ResumeLayoutAttemptOutcome,
     ResumeLayoutRevisionReadStatus,
     ResumeLayoutRevisionRepository,
@@ -48,7 +66,9 @@ from .resume_tailoring import (
     TailoredResumeDraftRepository,
 )
 from .resume_visual_qa import (
+    RESUME_VISUAL_QA_CONTRACT_VERSION,
     ResumeVisualQAReadStatus,
+    ResumeVisualQAFindingSeverity,
     ResumeVisualQARepository,
     ResumeVisualQAResult,
     ResumeVisualQAVerdict,
@@ -838,6 +858,7 @@ class PublishPreparedResumeResult:
     not_ready_reason: PreparedResumeMaterialNotReadyReason | None
     retryable: bool
     message: str
+    stopped_source_lineage: PublicationStoppedSourceLineage | None = None
 
     def __post_init__(self) -> None:
         status = PreparedResumeMaterialStatus(self.status)
@@ -860,6 +881,23 @@ class PublishPreparedResumeResult:
             raise TypeError("retryable must be a boolean")
         if not isinstance(self.message, str) or not self.message:
             raise ValueError("message must be non-empty")
+        if (
+            self.stopped_source_lineage is not None
+            and (
+                not isinstance(
+                    self.stopped_source_lineage,
+                    PublicationStoppedSourceLineage,
+                )
+                or self.stopped_source_lineage.subject_id != self.subject_id
+                or self.stopped_source_lineage.application_plan_id
+                != self.application_plan_id
+                or self.stopped_source_lineage.publication_stage
+                is not ApplicationPreparationStage.RESUME_PUBLICATION
+                or self.stopped_source_lineage.material_kind
+                is not PublicationMaterialKind.RESUME
+            )
+        ):
+            raise ValueError("stopped source lineage does not match publication")
         if status in {
             PreparedResumeMaterialStatus.CREATED,
             PreparedResumeMaterialStatus.UNCHANGED,
@@ -875,6 +913,7 @@ class PublishPreparedResumeResult:
                 or self.reason_code is not None
                 or self.not_ready_reason is not None
                 or self.retryable
+                or self.stopped_source_lineage is not None
             ):
                 raise ValueError("successful publication result is invalid")
         elif status is PreparedResumeMaterialStatus.NOT_READY:
@@ -926,6 +965,7 @@ def _not_ready(
     reason: PreparedResumeMaterialNotReadyReason,
     *,
     detail: str,
+    stopped_source_lineage: PublicationStoppedSourceLineage | None = None,
 ) -> PublishPreparedResumeResult:
     return PublishPreparedResumeResult(
         status=PreparedResumeMaterialStatus.NOT_READY,
@@ -937,6 +977,7 @@ def _not_ready(
         not_ready_reason=reason,
         retryable=False,
         message=f"The prepared resume is not ready: {detail}",
+        stopped_source_lineage=stopped_source_lineage,
     )
 
 
@@ -1064,6 +1105,48 @@ def publish_prepared_resume(
             or run.attempts[-1].outcome
             is not ResumeLayoutAttemptOutcome.PASSED
         ):
+            final_attempt = run.attempts[-1] if run.attempts else None
+            source_artifact_id = (
+                final_attempt.output_latex_version_id
+                or final_attempt.input_latex_version_id
+                if final_attempt is not None
+                else run.final_latex_version_id
+            )
+            lineage = create_publication_stopped_source_lineage(
+                subject_id=subject_id,
+                application_plan_id=plan_id,
+                publication_stage=(
+                    ApplicationPreparationStage.RESUME_PUBLICATION
+                ),
+                material_kind=PublicationMaterialKind.RESUME,
+                source_kind=(
+                    PublicationStoppedSourceKind.LAYOUT_REVISION_STOP
+                ),
+                source_stage=(
+                    ApplicationPreparationStage.RESUME_LAYOUT_REVISION
+                ),
+                source_result_id=run.run_id,
+                source_outcome=PreparationStageOutcome.DEFERRED,
+                source_contract_version=(
+                    RESUME_LAYOUT_REVISION_CONTRACT_VERSION
+                ),
+                source_result_content_hash=run.run_content_hash,
+                source_directive=(
+                    PublicationBlockingDirective
+                    .LAYOUT_REVISION_NOT_SUCCESSFUL
+                ),
+                source_artifact_id=source_artifact_id,
+                source_artifact_version=(
+                    str(final_attempt.attempt_number)
+                    if final_attempt is not None
+                    else None
+                ),
+                blocking_lineage_ids=(
+                    final_attempt.blocking_finding_ids
+                    if final_attempt is not None
+                    else ()
+                ),
+            )
             return _not_ready(
                 command,
                 PreparedResumeMaterialNotReadyReason
@@ -1072,6 +1155,7 @@ def publish_prepared_resume(
                     "the layout revision run did not end in a passing "
                     f"visual QA ({run.final_status.value})."
                 ),
+                stopped_source_lineage=lineage,
             )
         visual_qa_id = run.final_visual_qa_result_id
 
@@ -1107,6 +1191,68 @@ def publish_prepared_resume(
             .VISUAL_QA_INTEGRITY_FAILURE,
         )
     if visual_qa.verdict is not ResumeVisualQAVerdict.PASSED:
+        try:
+            visual_draft_read = draft_repository.get(
+                subject_id=subject_id,
+                draft_id=visual_qa.tailored_resume_draft_id,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failure(
+                command,
+                PreparedResumeMaterialFailureReason.DRAFT_INTEGRITY_FAILURE,
+            )
+        if (
+            visual_draft_read.status
+            is not TailoredResumeDraftReadStatus.FOUND
+            or not isinstance(
+                visual_draft_read.draft, TailoredResumeDraft
+            )
+        ):
+            return _failure(
+                command,
+                PreparedResumeMaterialFailureReason.DRAFT_INTEGRITY_FAILURE,
+            )
+        visual_draft = visual_draft_read.draft
+        if (
+            visual_draft.subject_id != subject_id
+            or visual_draft.application_plan_id != plan.plan_id
+            or visual_draft.job_id != plan.job_id
+            or visual_draft.job_revision != plan.job_revision
+            or visual_draft.job_content_hash != plan.job_content_hash
+            or visual_draft.draft_id
+            != visual_qa.tailored_resume_draft_id
+            or visual_draft.draft_content_hash
+            != visual_qa.tailored_resume_draft_hash
+        ):
+            return _failure(
+                command,
+                PreparedResumeMaterialFailureReason
+                .VISUAL_QA_INTEGRITY_FAILURE,
+            )
+        lineage = create_publication_stopped_source_lineage(
+            subject_id=subject_id,
+            application_plan_id=plan_id,
+            publication_stage=ApplicationPreparationStage.RESUME_PUBLICATION,
+            material_kind=PublicationMaterialKind.RESUME,
+            source_kind=PublicationStoppedSourceKind.VISUAL_QA_DIRECTIVE,
+            source_stage=ApplicationPreparationStage.RESUME_VISUAL_QA,
+            source_result_id=visual_qa.result_id,
+            source_outcome=PreparationStageOutcome.COMPLETED,
+            source_contract_version=RESUME_VISUAL_QA_CONTRACT_VERSION,
+            source_result_content_hash=visual_qa.result_content_hash,
+            source_directive=(
+                PublicationBlockingDirective.VISUAL_QA_REVISION_REQUIRED
+            ),
+            source_artifact_id=visual_qa.compilation_record_id,
+            source_artifact_version=visual_qa.latex_version_id,
+            source_artifact_content_hash=visual_qa.pdf_sha256,
+            blocking_lineage_ids=tuple(
+                finding.finding_id
+                for finding in visual_qa.findings
+                if finding.severity
+                is ResumeVisualQAFindingSeverity.BLOCKING
+            ),
+        )
         return _not_ready(
             command,
             PreparedResumeMaterialNotReadyReason.VISUAL_QA_NOT_PASSED,
@@ -1114,6 +1260,7 @@ def publish_prepared_resume(
                 "visual QA returned "
                 f"{visual_qa.verdict.value} rather than PASSED."
             ),
+            stopped_source_lineage=lineage,
         )
     if run is not None and (
         run.final_visual_qa_result_id != visual_qa.result_id
@@ -1291,6 +1438,37 @@ def publish_prepared_resume(
             ),
         )
     if fact_qa.verdict is not ResumeFactQAVerdict.PASSED:
+        lineage = create_publication_stopped_source_lineage(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            publication_stage=ApplicationPreparationStage.RESUME_PUBLICATION,
+            material_kind=PublicationMaterialKind.RESUME,
+            source_kind=PublicationStoppedSourceKind.FACT_QA_BLOCKER,
+            source_stage=ApplicationPreparationStage.RESUME_FACT_QA,
+            source_result_id=fact_qa.qa_result_id,
+            source_outcome=PreparationStageOutcome.COMPLETED,
+            source_contract_version=RESUME_FACT_QA_CONTRACT_VERSION,
+            source_result_content_hash=fact_qa.qa_content_hash,
+            source_directive=PublicationBlockingDirective.FACT_QA_BLOCKED,
+            source_artifact_id=fact_qa.tailored_resume_draft_id,
+            source_artifact_content_hash=(
+                fact_qa.tailored_resume_draft_hash
+            ),
+            blocking_lineage_ids=tuple(
+                finding.finding_id
+                for finding in fact_qa.findings
+                if finding.severity is ResumeFactQAFindingSeverity.BLOCKING
+            )
+            or (
+                "resume-fact-qa-blocker-collection-"
+                + _canonical_hash(
+                    {
+                        "qa_content_hash": fact_qa.qa_content_hash,
+                        "qa_result_id": fact_qa.qa_result_id,
+                    }
+                ),
+            ),
+        )
         return _not_ready(
             command,
             PreparedResumeMaterialNotReadyReason.FACT_QA_NOT_PASSED,
@@ -1298,6 +1476,7 @@ def publish_prepared_resume(
                 "fact QA returned "
                 f"{fact_qa.verdict.value} rather than PASSED."
             ),
+            stopped_source_lineage=lineage,
         )
 
     try:
@@ -1393,6 +1572,111 @@ def publish_prepared_resume(
     )
 
 
+_PREPARED_RESUME_NOT_READY_REASON_MAP = {
+    reason: PreparedResumePublicationStopReason[reason.name]
+    for reason in PreparedResumeMaterialNotReadyReason
+    if reason.name in PreparedResumePublicationStopReason.__members__
+}
+_PREPARED_RESUME_FAILURE_REASON_MAP = {
+    reason: PreparedResumePublicationStopReason[reason.name]
+    for reason in PreparedResumeMaterialFailureReason
+}
+
+
+def prepared_resume_publication_public_result(
+    result: PublishPreparedResumeResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a9 outcome to stage-result v2."""
+
+    if not isinstance(result, PublishPreparedResumeResult):
+        raise TypeError("result must be a prepared-resume publication result")
+    stage = ApplicationPreparationStage.RESUME_PUBLICATION
+    if result.status in {
+        PreparedResumeMaterialStatus.CREATED,
+        PreparedResumeMaterialStatus.UNCHANGED,
+    }:
+        if result.material is None:
+            raise ValueError("successful publication has no material")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is PreparedResumeMaterialStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.material.material_id,
+            result_content_hash=_canonical_hash(
+                result.material.content_dict()
+            ),
+            outputs={
+                "prepared_resume_material_id": result.material.material_id
+            },
+        )
+    if result.status is PreparedResumeMaterialStatus.NOT_READY:
+        if result.not_ready_reason is None:
+            raise ValueError("not-ready publication has no reason")
+        try:
+            reason = _PREPARED_RESUME_NOT_READY_REASON_MAP[
+                result.not_ready_reason
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped prepared-resume not-ready reason"
+            ) from error
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("failed publication has no reason")
+        try:
+            reason = _PREPARED_RESUME_FAILURE_REASON_MAP[result.reason_code]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped prepared-resume failure reason"
+            ) from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=(
+            PREPARED_RESUME_PUBLICATION_STOP_REASON_CONTRACT_VERSION
+        ),
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    lineage = result.stopped_source_lineage
+    targeted_reasons = {
+        PreparedResumeMaterialNotReadyReason.FACT_QA_NOT_PASSED,
+        PreparedResumeMaterialNotReadyReason.VISUAL_QA_NOT_PASSED,
+        PreparedResumeMaterialNotReadyReason.REVISION_RUN_NOT_SUCCESSFUL,
+    }
+    if (
+        result.status is PreparedResumeMaterialStatus.NOT_READY
+        and result.not_ready_reason in targeted_reasons
+        and lineage is None
+    ):
+        raise ValueError(
+            "targeted resume publication stop lacks source lineage"
+        )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        result_id=(
+            lineage.publication_result_id if lineage is not None else None
+        ),
+        result_content_hash=(
+            lineage.lineage_content_hash if lineage is not None else None
+        ),
+        outputs=(
+            lineage.output_references() if lineage is not None else {}
+        ),
+    )
+
+
 __all__ = [
     "PREPARED_RESUME_MATERIAL_CONTRACT_VERSION",
     "PreparedMaterialRole",
@@ -1409,5 +1693,6 @@ __all__ = [
     "PublishPreparedResumeCommand",
     "PublishPreparedResumeResult",
     "prepared_resume_material_id",
+    "prepared_resume_publication_public_result",
     "publish_prepared_resume",
 ]

@@ -17,6 +17,18 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    DOWNSTREAM_PREPARATION_STOP_LINEAGE_CONTRACT_VERSION,
+    LATEX_COMPILATION_STOP_REASON_CONTRACT_VERSION,
+    RESUME_LAYOUT_REVISION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    DownstreamPreparationStopLineage,
+    LatexCompilationStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    ResumeLayoutRevisionStopReason,
+)
 from .pdf_page_renderer import (
     PdfPageRendererPort,
     PdfRendererUnavailableError,
@@ -29,6 +41,7 @@ from .resume_compilation import (
     ResumeCompilationRecord,
     ResumeCompilationRepository,
     ResumeCompilationStatus,
+    resume_compilation_public_result,
     unmanaged_file_dependencies,
 )
 from .resume_latex_construction import (
@@ -342,6 +355,8 @@ class ResumeLayoutRevisionContext:
     layout_revision_policy: Mapping[str, Any]
     user_preparation_instructions: str | None
     agent_policy: str
+    correction_mode: str | None = None
+    visual_issue_selections: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +600,8 @@ class ResumeLayoutRevisionAttempt:
     output_visual_qa_result_id: str | None
     outcome: ResumeLayoutAttemptOutcome
     detail: str
+    downstream_stop_lineage: DownstreamPreparationStopLineage | None = None
+    legacy_incomplete_downstream_lineage: bool = False
 
     def __post_init__(self) -> None:
         if type(self.attempt_number) is not int or self.attempt_number < 1:
@@ -612,6 +629,25 @@ class ResumeLayoutRevisionAttempt:
         outcome = ResumeLayoutAttemptOutcome(self.outcome)
         object.__setattr__(self, "outcome", outcome)
         _clean_text("detail", self.detail, maximum=2_000)
+        if type(self.legacy_incomplete_downstream_lineage) is not bool:
+            raise TypeError(
+                "legacy_incomplete_downstream_lineage must be boolean"
+            )
+        if outcome is ResumeLayoutAttemptOutcome.COMPILATION_STOPPED:
+            if self.downstream_stop_lineage is None:
+                if not self.legacy_incomplete_downstream_lineage:
+                    raise ValueError(
+                        "new compilation-stopped attempt needs typed lineage"
+                    )
+            elif self.legacy_incomplete_downstream_lineage:
+                raise ValueError("typed lineage cannot be marked incomplete")
+        elif (
+            self.downstream_stop_lineage is not None
+            or self.legacy_incomplete_downstream_lineage
+        ):
+            raise ValueError(
+                "only compilation-stopped attempts carry child lineage"
+            )
         if outcome in {
             ResumeLayoutAttemptOutcome.PASSED,
             ResumeLayoutAttemptOutcome.REVISION_REQUIRED,
@@ -623,7 +659,7 @@ class ResumeLayoutRevisionAttempt:
             raise ValueError("a reviewed attempt must record all outputs")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "attempt_number": self.attempt_number,
             "input_latex_version_id": self.input_latex_version_id,
             "input_compilation_record_id": (
@@ -644,6 +680,13 @@ class ResumeLayoutRevisionAttempt:
             "outcome": self.outcome.value,
             "detail": self.detail,
         }
+        if not self.legacy_incomplete_downstream_lineage:
+            value["downstream_stop_lineage"] = (
+                self.downstream_stop_lineage.to_dict()
+                if self.downstream_stop_lineage is not None
+                else None
+            )
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,6 +770,18 @@ class ResumeLayoutRevisionRun:
             range(1, len(self.attempts) + 1)
         ):
             raise ValueError("attempts must be numbered contiguously")
+        if any(
+            item.downstream_stop_lineage is not None
+            and (
+                item.downstream_stop_lineage.subject_id != self.subject_id
+                or item.downstream_stop_lineage.application_plan_id
+                != self.application_plan_id
+            )
+            for item in self.attempts
+        ):
+            raise ValueError(
+                "downstream lineage does not match its parent run"
+            )
         for name in (
             "final_latex_version_id",
             "final_compilation_record_id",
@@ -883,8 +938,81 @@ class ResumeLayoutRevisionRecordRepository(Protocol):
         """Read one revision record as LaTeX build provenance."""
 
 
-def _attempt_from_dict(value: Any) -> ResumeLayoutRevisionAttempt:
+def _downstream_stop_lineage_from_dict(
+    value: Any,
+) -> DownstreamPreparationStopLineage:
     expected = {
+        "application_plan_id",
+        "child_outcome",
+        "child_result_lineage_id",
+        "child_stage",
+        "child_stage_result_hash",
+        "child_stage_result_id",
+        "child_stop_reason",
+        "contract_version",
+        "lineage_id",
+        "parent_attempt_id",
+        "parent_stage",
+        "subject_id",
+    }
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise ValueError("persisted downstream stop lineage is invalid")
+    stop_value = value["child_stop_reason"]
+    stop_expected = {
+        "code",
+        "contract_version",
+        "diagnostic_code",
+        "outcome",
+        "stage",
+        "upstream_lineage_id",
+    }
+    if not isinstance(stop_value, Mapping) or set(stop_value) != stop_expected:
+        raise ValueError("persisted downstream stop reason is invalid")
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=ApplicationPreparationStage(stop_value["stage"]),
+        code=LatexCompilationStopReason(stop_value["code"]),
+        contract_version=stop_value["contract_version"],
+        outcome=PreparationStageOutcome(stop_value["outcome"]),
+        diagnostic_code=stop_value["diagnostic_code"],
+        upstream_lineage_id=stop_value["upstream_lineage_id"],
+    )
+    lineage = DownstreamPreparationStopLineage(
+        lineage_id=value["lineage_id"],
+        contract_version=value["contract_version"],
+        parent_stage=ApplicationPreparationStage(value["parent_stage"]),
+        parent_attempt_id=value["parent_attempt_id"],
+        subject_id=value["subject_id"],
+        application_plan_id=value["application_plan_id"],
+        child_stage=ApplicationPreparationStage(value["child_stage"]),
+        child_stage_result_id=value["child_stage_result_id"],
+        child_stage_result_hash=value["child_stage_result_hash"],
+        child_outcome=PreparationStageOutcome(value["child_outcome"]),
+        child_stop_reason=stop_reason,
+        child_result_lineage_id=value["child_result_lineage_id"],
+    )
+    _validate_layout_compilation_lineage(lineage)
+    return lineage
+
+
+def _validate_layout_compilation_lineage(
+    lineage: DownstreamPreparationStopLineage,
+) -> None:
+    if (
+        lineage.parent_stage
+        is not ApplicationPreparationStage.RESUME_LAYOUT_REVISION
+        or lineage.child_stage
+        is not ApplicationPreparationStage.RESUME_COMPILATION
+        or _RECORD_ID_PATTERN.fullmatch(lineage.parent_attempt_id) is None
+        or type(lineage.child_stop_reason.code)
+        is not LatexCompilationStopReason
+        or lineage.child_stop_reason.contract_version
+        != LATEX_COMPILATION_STOP_REASON_CONTRACT_VERSION
+    ):
+        raise ValueError("layout compilation stop lineage is invalid")
+
+
+def _attempt_from_dict(value: Any) -> ResumeLayoutRevisionAttempt:
+    legacy_expected = {
         "attempt_number",
         "input_latex_version_id",
         "input_compilation_record_id",
@@ -899,12 +1027,16 @@ def _attempt_from_dict(value: Any) -> ResumeLayoutRevisionAttempt:
         "outcome",
         "detail",
     }
+    current_expected = legacy_expected | {"downstream_stop_lineage"}
     if (
         not isinstance(value, Mapping)
-        or set(value) != expected
+        or frozenset(value)
+        not in {frozenset(legacy_expected), frozenset(current_expected)}
         or not isinstance(value["blocking_finding_ids"], list)
     ):
         raise ValueError("persisted revision attempt is invalid")
+    is_legacy = set(value) == legacy_expected
+    outcome = ResumeLayoutAttemptOutcome(value["outcome"])
     return ResumeLayoutRevisionAttempt(
         attempt_number=value["attempt_number"],
         input_latex_version_id=value["input_latex_version_id"],
@@ -919,8 +1051,19 @@ def _attempt_from_dict(value: Any) -> ResumeLayoutRevisionAttempt:
             "output_compilation_record_id"
         ],
         output_visual_qa_result_id=value["output_visual_qa_result_id"],
-        outcome=ResumeLayoutAttemptOutcome(value["outcome"]),
+        outcome=outcome,
         detail=value["detail"],
+        downstream_stop_lineage=(
+            None
+            if is_legacy or value["downstream_stop_lineage"] is None
+            else _downstream_stop_lineage_from_dict(
+                value["downstream_stop_lineage"]
+            )
+        ),
+        legacy_incomplete_downstream_lineage=(
+            is_legacy
+            and outcome is ResumeLayoutAttemptOutcome.COMPILATION_STOPPED
+        ),
     )
 
 
@@ -1296,6 +1439,121 @@ class ReviseResumeLayoutCommand:
     subject_id: str
     resume_visual_qa_result_id: str
     now: datetime
+    application_plan_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeLayoutCorrectionConstraint:
+    directive_id: str
+    directive_hash: str
+    subject_id: str
+    application_plan_id: str
+    source_visual_qa_result_id: str
+    source_artifact_id: str
+    source_artifact_content_hash: str
+    source_latex_version_id: str
+    source_latex_content_hash: str
+    preview_id: str
+    preview_hash: str
+    correction_mode: str
+    visual_issue_selections: tuple[str, ...]
+    previous_layout_run_id: str | None
+    previous_final_attempt_id: str | None
+
+    def __post_init__(self) -> None:
+        for name, value, maximum in (
+            ("directive_id", self.directive_id, 240),
+            ("subject_id", self.subject_id, 160),
+            ("application_plan_id", self.application_plan_id, 180),
+            (
+                "source_visual_qa_result_id",
+                self.source_visual_qa_result_id,
+                240,
+            ),
+            ("source_artifact_id", self.source_artifact_id, 240),
+            ("source_latex_version_id", self.source_latex_version_id, 240),
+            ("preview_id", self.preview_id, 240),
+            ("correction_mode", self.correction_mode, 100),
+        ):
+            _clean_text(name, value, maximum=maximum)
+        for name in (
+            "directive_hash",
+            "source_artifact_content_hash",
+            "source_latex_content_hash",
+            "preview_hash",
+        ):
+            _require_hash(name, getattr(self, name))
+        if self.correction_mode not in {
+            "REVISE_FROM_VISUAL_QA_DIRECTIVE",
+            "RESTART_BOUNDED_LAYOUT_REVISION",
+        }:
+            raise ValueError("layout correction mode is invalid")
+        if (
+            not isinstance(self.visual_issue_selections, tuple)
+            or tuple(sorted(set(self.visual_issue_selections)))
+            != self.visual_issue_selections
+        ):
+            raise ValueError("visual issues must be unique and ordered")
+        for issue in self.visual_issue_selections:
+            if issue not in {
+                "ELEMENT_OVERLAP",
+                "EXCESS_WHITESPACE",
+                "OVERFLOW_OR_CLIPPING",
+                "PAGE_COUNT_MISMATCH",
+                "POOR_READABILITY",
+            }:
+                raise ValueError("visual issue is unsupported")
+        if (self.previous_layout_run_id is None) != (
+            self.previous_final_attempt_id is None
+        ):
+            raise ValueError("previous Layout lineage is incomplete")
+        if self.previous_layout_run_id is not None:
+            _clean_text(
+                "previous_layout_run_id",
+                self.previous_layout_run_id,
+                maximum=240,
+            )
+            _clean_text(
+                "previous_final_attempt_id",
+                self.previous_final_attempt_id,
+                maximum=300,
+            )
+
+    def identity_dict(self) -> dict[str, Any]:
+        return {
+            "application_plan_id": self.application_plan_id,
+            "correction_mode": self.correction_mode,
+            "directive_hash": self.directive_hash,
+            "directive_id": self.directive_id,
+            "preview_hash": self.preview_hash,
+            "preview_id": self.preview_id,
+            "previous_final_attempt_id": self.previous_final_attempt_id,
+            "previous_layout_run_id": self.previous_layout_run_id,
+            "source_artifact_content_hash": (
+                self.source_artifact_content_hash
+            ),
+            "source_artifact_id": self.source_artifact_id,
+            "source_latex_content_hash": self.source_latex_content_hash,
+            "source_latex_version_id": self.source_latex_version_id,
+            "source_visual_qa_result_id": (
+                self.source_visual_qa_result_id
+            ),
+            "subject_id": self.subject_id,
+            "visual_issue_selections": list(self.visual_issue_selections),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeLayoutCorrectionConstraintReadResult:
+    succeeded: bool
+    constraint: ResumeLayoutCorrectionConstraint | None
+
+
+@runtime_checkable
+class ResumeLayoutCorrectionDirectiveProvider(Protocol):
+    def get_current(
+        self, *, subject_id: str, application_plan_id: str
+    ) -> ResumeLayoutCorrectionConstraintReadResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1388,6 +1646,7 @@ def _run_binding(
     draft: TailoredResumeDraft,
     policy: ResumeLayoutRevisionPolicy,
     metadata: ResumeLayoutRevisionAgentMetadata,
+    correction: ResumeLayoutCorrectionConstraint | None = None,
 ) -> str:
     return _canonical_hash(
         {
@@ -1415,6 +1674,9 @@ def _run_binding(
             "tailored_resume_draft_hash": draft.draft_content_hash,
             "tailored_resume_draft_id": draft.draft_id,
             "visual_qa_policy_version": visual_qa.policy_version,
+            "layout_correction": (
+                correction.identity_dict() if correction is not None else None
+            ),
         }
     )
 
@@ -1439,6 +1701,7 @@ async def revise_resume_layout(
     revision_repository: ResumeLayoutRevisionRepository,
     policy: ResumeLayoutRevisionPolicy | None = None,
     home: PrivateHome | None = None,
+    correction_provider: ResumeLayoutCorrectionDirectiveProvider | None = None,
 ) -> ReviseResumeLayoutResult:
     """Retry typography a bounded number of times, serially, then pass or defer."""
 
@@ -1454,6 +1717,15 @@ async def revise_resume_layout(
             maximum=160,
         )
         started = _require_aware("now", command.now)
+        requested_plan_id = (
+            _clean_text(
+                "application_plan_id",
+                command.application_plan_id,
+                maximum=180,
+            )
+            if command.application_plan_id is not None
+            else None
+        )
         if not isinstance(active_policy, ResumeLayoutRevisionPolicy):
             raise TypeError("policy must be a ResumeLayoutRevisionPolicy")
         if not isinstance(metadata, ResumeLayoutRevisionAgentMetadata):
@@ -1462,6 +1734,35 @@ async def revise_resume_layout(
         return _failure(
             command, ResumeLayoutRevisionFailureReason.INVALID_REQUEST
         )
+
+    correction: ResumeLayoutCorrectionConstraint | None = None
+    if correction_provider is not None and requested_plan_id is not None:
+        try:
+            correction_read = correction_provider.get_current(
+                subject_id=subject_id,
+                application_plan_id=requested_plan_id,
+            )
+            if (
+                not isinstance(
+                    correction_read,
+                    ResumeLayoutCorrectionConstraintReadResult,
+                )
+                or not correction_read.succeeded
+            ):
+                raise ValueError("layout correction provider failed")
+            correction = correction_read.constraint
+            if correction is not None and (
+                correction.subject_id != subject_id
+                or correction.application_plan_id != requested_plan_id
+            ):
+                raise ValueError("layout correction binding drifted")
+            if correction is not None:
+                visual_qa_id = correction.source_visual_qa_result_id
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failure(
+                command,
+                ResumeLayoutRevisionFailureReason.RECORD_INTEGRITY_FAILURE,
+            )
 
     try:
         qa_read = visual_qa_repository.get(
@@ -1536,6 +1837,20 @@ async def revise_resume_layout(
         != initial_qa.compilation_binding
         or compilation.pdf_sha256 != initial_qa.pdf_sha256
         or compilation.latex_version_id != initial_qa.latex_version_id
+    ):
+        return _failure(
+            command,
+            ResumeLayoutRevisionFailureReason
+            .COMPILATION_BINDING_MISMATCH,
+        )
+    if correction is not None and (
+        compilation.record_id != correction.source_artifact_id
+        or compilation.pdf_sha256
+        != correction.source_artifact_content_hash
+        or compilation.latex_version_id
+        != correction.source_latex_version_id
+        or initial_qa.latex_source_sha256
+        != correction.source_latex_content_hash
     ):
         return _failure(
             command,
@@ -1676,6 +1991,18 @@ async def revise_resume_layout(
             .APPLICATION_PLAN_INTEGRITY_FAILURE,
         )
     plan = plan_read.plan
+    if (
+        requested_plan_id is not None
+        and (
+            plan.plan_id != requested_plan_id
+            or draft.application_plan_id != requested_plan_id
+        )
+    ):
+        return _failure(
+            command,
+            ResumeLayoutRevisionFailureReason
+            .APPLICATION_PLAN_INTEGRITY_FAILURE,
+        )
 
     binding = _run_binding(
         visual_qa=initial_qa,
@@ -1683,6 +2010,7 @@ async def revise_resume_layout(
         draft=draft,
         policy=active_policy,
         metadata=metadata,
+        correction=correction,
     )
     run_id = f"resume-layout-revision-run-{binding}"
     try:
@@ -1848,6 +2176,14 @@ async def revise_resume_layout(
                 plan.user_preparation_instructions
             ),
             agent_policy=RESUME_LAYOUT_REVISION_AGENT_POLICY,
+            correction_mode=(
+                correction.correction_mode if correction is not None else None
+            ),
+            visual_issue_selections=(
+                correction.visual_issue_selections
+                if correction is not None
+                else ()
+            ),
         )
         try:
             output = await agent.revise(context)
@@ -2026,6 +2362,25 @@ async def revise_resume_layout(
             compiled.status is not ResumeCompilationStatus.CREATED
             and compiled.status is not ResumeCompilationStatus.UNCHANGED
         ):
+            try:
+                downstream_stop_lineage = (
+                    _downstream_compilation_stop_lineage(
+                        subject_id=subject_id,
+                        application_plan_id=plan.plan_id,
+                        parent_attempt_id=record.record_id,
+                        expected_latex_version_id=(
+                            revised_version.latex_version_id
+                        ),
+                        compiled=compiled,
+                    )
+                )
+            except (KeyError, TypeError, ValueError):
+                return _failure(
+                    command,
+                    ResumeLayoutRevisionFailureReason
+                    .RECORD_INTEGRITY_FAILURE,
+                    run_binding=binding,
+                )
             attempts.append(
                 _attempt(
                     attempt_number,
@@ -2042,6 +2397,7 @@ async def revise_resume_layout(
                         f"{compiled.status.value}."
                     ),
                     output_version_id=revised_version.latex_version_id,
+                    downstream_stop_lineage=downstream_stop_lineage,
                 )
             )
             stop_status = ResumeLayoutRevisionStatus.DEFERRED_NEEDS_HUMAN
@@ -2201,6 +2557,9 @@ def _attempt(
     output_version_id: str | None = None,
     output_compilation_id: str | None = None,
     output_qa_id: str | None = None,
+    downstream_stop_lineage: (
+        DownstreamPreparationStopLineage | None
+    ) = None,
 ) -> ResumeLayoutRevisionAttempt:
     return ResumeLayoutRevisionAttempt(
         attempt_number=attempt_number,
@@ -2216,7 +2575,74 @@ def _attempt(
         output_visual_qa_result_id=output_qa_id,
         outcome=outcome,
         detail=detail,
+        downstream_stop_lineage=downstream_stop_lineage,
     )
+
+
+def _downstream_compilation_stop_lineage(
+    *,
+    subject_id: str,
+    application_plan_id: str,
+    parent_attempt_id: str,
+    expected_latex_version_id: str,
+    compiled: CompileResumeLatexResult,
+) -> DownstreamPreparationStopLineage:
+    child = resume_compilation_public_result(compiled)
+    if (
+        compiled.subject_id != subject_id
+        or compiled.source_construction_record_id != parent_attempt_id
+        or compiled.source_latex_version_id != expected_latex_version_id
+        or child.stage is not ApplicationPreparationStage.RESUME_COMPILATION
+        or child.outcome
+        not in {
+            PreparationStageOutcome.DEFERRED,
+            PreparationStageOutcome.FAILED,
+        }
+        or child.result_id is None
+        or child.result_content_hash is None
+        or child.stop_reason is None
+    ):
+        raise ValueError("downstream compilation binding is invalid")
+    content = {
+        "application_plan_id": application_plan_id,
+        "child_outcome": child.outcome.value,
+        "child_result_lineage_id": (
+            compiled.compilation_binding or None
+        ),
+        "child_stage": child.stage.value,
+        "child_stage_result_hash": child.result_content_hash,
+        "child_stage_result_id": child.result_id,
+        "child_stop_reason": child.stop_reason.to_dict(),
+        "contract_version": (
+            DOWNSTREAM_PREPARATION_STOP_LINEAGE_CONTRACT_VERSION
+        ),
+        "parent_attempt_id": parent_attempt_id,
+        "parent_stage": (
+            ApplicationPreparationStage.RESUME_LAYOUT_REVISION.value
+        ),
+        "subject_id": subject_id,
+    }
+    lineage_hash = _canonical_hash(content)
+    lineage = DownstreamPreparationStopLineage(
+        lineage_id=(
+            f"downstream-preparation-stop-lineage-{lineage_hash}"
+        ),
+        contract_version=(
+            DOWNSTREAM_PREPARATION_STOP_LINEAGE_CONTRACT_VERSION
+        ),
+        parent_stage=ApplicationPreparationStage.RESUME_LAYOUT_REVISION,
+        parent_attempt_id=parent_attempt_id,
+        subject_id=subject_id,
+        application_plan_id=application_plan_id,
+        child_stage=child.stage,
+        child_stage_result_id=child.result_id,
+        child_stage_result_hash=child.result_content_hash,
+        child_outcome=child.outcome,
+        child_stop_reason=child.stop_reason,
+        child_result_lineage_id=compiled.compilation_binding or None,
+    )
+    _validate_layout_compilation_lineage(lineage)
+    return lineage
 
 
 def _persist_run(
@@ -2310,8 +2736,196 @@ def _persist_run(
     )
 
 
+_RESUME_LAYOUT_REVISION_FAILURE_REASON_MAP = {
+    reason: ResumeLayoutRevisionStopReason[reason.name]
+    for reason in ResumeLayoutRevisionFailureReason
+}
+
+
+def _replayed_layout_stop_reason(
+    run: ResumeLayoutRevisionRun,
+) -> ResumeLayoutRevisionFailureReason | None:
+    if (
+        run.final_status
+        is ResumeLayoutRevisionStatus.DEFERRED_ATTEMPTS_EXHAUSTED
+    ):
+        return ResumeLayoutRevisionFailureReason.ATTEMPTS_EXHAUSTED
+    if run.final_status is not ResumeLayoutRevisionStatus.DEFERRED_NEEDS_HUMAN:
+        return None
+    if not run.attempts:
+        return ResumeLayoutRevisionFailureReason.VISUAL_QA_DEFERRED
+    return {
+        ResumeLayoutAttemptOutcome.AGENT_OUTPUT_REJECTED: (
+            ResumeLayoutRevisionFailureReason.REVISION_OUTPUT_UNSAFE
+        ),
+        ResumeLayoutAttemptOutcome.RENDER_UNAVAILABLE: (
+            ResumeLayoutRevisionFailureReason.RENDERER_UNAVAILABLE
+        ),
+        ResumeLayoutAttemptOutcome.VERSION_REGISTRATION_FAILED: (
+            ResumeLayoutRevisionFailureReason.VERSION_REGISTRATION_FAILED
+        ),
+        ResumeLayoutAttemptOutcome.COMPILATION_STOPPED: (
+            ResumeLayoutRevisionFailureReason.COMPILATION_STOPPED
+        ),
+        ResumeLayoutAttemptOutcome.VISUAL_QA_DEFERRED: (
+            ResumeLayoutRevisionFailureReason.VISUAL_QA_DEFERRED
+        ),
+        ResumeLayoutAttemptOutcome.VISUAL_QA_FAILED: (
+            ResumeLayoutRevisionFailureReason.VISUAL_QA_FAILED
+        ),
+    }.get(run.attempts[-1].outcome)
+
+
+def _downstream_stop_lineage_outputs(
+    *,
+    run: ResumeLayoutRevisionRun | None,
+    reason: ResumeLayoutRevisionStopReason,
+) -> dict[str, str]:
+    if (
+        run is None
+        or reason is not ResumeLayoutRevisionStopReason.COMPILATION_STOPPED
+        or not run.attempts
+    ):
+        return {}
+    lineage = run.attempts[-1].downstream_stop_lineage
+    if lineage is None:
+        return {}
+    return lineage.stage_output_references()
+
+
+def resume_layout_revision_public_result(
+    result: ReviseResumeLayoutResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a8b outcome to stage-result v2."""
+
+    if not isinstance(result, ReviseResumeLayoutResult):
+        raise TypeError("result must be a resume layout revision result")
+    stage = ApplicationPreparationStage.RESUME_LAYOUT_REVISION
+    replayed_reason = (
+        _replayed_layout_stop_reason(result.run)
+        if result.status is ResumeLayoutRevisionStatus.UNCHANGED
+        and result.run is not None
+        else None
+    )
+    if (
+        result.status is ResumeLayoutRevisionStatus.UNCHANGED
+        and result.run is not None
+        and result.run.final_status
+        in {
+            ResumeLayoutRevisionStatus.DEFERRED_NEEDS_HUMAN,
+            ResumeLayoutRevisionStatus.DEFERRED_ATTEMPTS_EXHAUSTED,
+        }
+        and replayed_reason is None
+    ):
+        raise ValueError("deferred layout replay has no typed stop lineage")
+    if result.status in {
+        ResumeLayoutRevisionStatus.CREATED,
+        ResumeLayoutRevisionStatus.UNCHANGED,
+    } and replayed_reason is None:
+        run = result.run
+        if (
+            run is None
+            or run.final_latex_version_id is None
+            or run.final_compilation_record_id is None
+            or run.final_visual_qa_result_id is None
+        ):
+            raise ValueError("successful layout revision has no final lineage")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeLayoutRevisionStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=run.run_id,
+            result_content_hash=run.run_content_hash,
+            outputs={
+                "layout_revision_run_id": run.run_id,
+                "latex_version_id": run.final_latex_version_id,
+                "compilation_record_id": run.final_compilation_record_id,
+                "visual_qa_result_id": run.final_visual_qa_result_id,
+            },
+        )
+    if result.status is ResumeLayoutRevisionStatus.NOT_REQUIRED:
+        raise ValueError(
+            "NOT_REQUIRED is represented by the orchestrator's skipped stage"
+        )
+    if replayed_reason is not None:
+        reason = _RESUME_LAYOUT_REVISION_FAILURE_REASON_MAP[replayed_reason]
+    else:
+        if result.reason_code is None:
+            raise ValueError(
+                "stopped layout revision has no authoritative reason"
+            )
+        try:
+            reason = _RESUME_LAYOUT_REVISION_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped layout revision stop reason"
+            ) from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if replayed_reason is not None
+        or result.status
+        in {
+            ResumeLayoutRevisionStatus.DEFERRED_NEEDS_HUMAN,
+            ResumeLayoutRevisionStatus.DEFERRED_ATTEMPTS_EXHAUSTED,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=RESUME_LAYOUT_REVISION_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.run_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    run = result.run
+    outputs = {}
+    if run is not None:
+        outputs["layout_revision_run_id"] = run.run_id
+        if run.final_latex_version_id is not None:
+            outputs["latex_version_id"] = run.final_latex_version_id
+        if run.final_compilation_record_id is not None:
+            outputs["compilation_record_id"] = (
+                run.final_compilation_record_id
+            )
+        if run.final_visual_qa_result_id is not None:
+            outputs["visual_qa_result_id"] = run.final_visual_qa_result_id
+    outputs.update(
+        _downstream_stop_lineage_outputs(run=run, reason=reason)
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        result_id=run.run_id if run is not None else None,
+        result_content_hash=(
+            run.run_content_hash if run is not None else None
+        ),
+        outputs=outputs,
+        retryable=result.retryable,
+        human_attention_required=(
+            replayed_reason is not None
+            or result.status
+            in {
+                ResumeLayoutRevisionStatus.DEFERRED_NEEDS_HUMAN,
+                ResumeLayoutRevisionStatus.DEFERRED_ATTEMPTS_EXHAUSTED,
+            }
+        ),
+    )
+
+
 __all__ = [
     "CompositeLatexBuildProvenanceRepository",
+    "DOWNSTREAM_PREPARATION_STOP_LINEAGE_CONTRACT_VERSION",
+    "DownstreamPreparationStopLineage",
     "LayoutRevisionCompileStep",
     "LayoutRevisionFindingView",
     "LayoutRevisionPageView",
@@ -2322,6 +2936,9 @@ __all__ = [
     "RESUME_LAYOUT_REVISION_CONTRACT_VERSION",
     "RESUME_LAYOUT_REVISION_POLICY_VERSION",
     "ResumeLayoutAttemptOutcome",
+    "ResumeLayoutCorrectionConstraint",
+    "ResumeLayoutCorrectionConstraintReadResult",
+    "ResumeLayoutCorrectionDirectiveProvider",
     "ResumeLayoutRevisionAgentMetadata",
     "ResumeLayoutRevisionAgentOutput",
     "ResumeLayoutRevisionAgentPort",
@@ -2342,5 +2959,6 @@ __all__ = [
     "ReviseResumeLayoutCommand",
     "ReviseResumeLayoutResult",
     "revise_resume_layout",
+    "resume_layout_revision_public_result",
     "validate_revised_layout",
 ]

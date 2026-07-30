@@ -14,6 +14,12 @@ from .resume_latex_markers import (
 
 
 MANAGED_RESUME_TEMPLATE_ID = "managed-resume-one-page-v1"
+MANAGED_RESUME_LATEX_PACKAGES = (
+    "fontenc",
+    "inputenc",
+    "geometry",
+    "enumitem",
+)
 
 _PREAMBLE = (
     "\\documentclass[11pt,a4paper]{article}\n"
@@ -90,6 +96,7 @@ class DefaultManagedResumeTemplateProvider:
 
 
 __all__ = [
+    "MANAGED_RESUME_LATEX_PACKAGES",
     "MANAGED_RESUME_TEMPLATE_ID",
     "DefaultManagedResumeTemplateProvider",
     "ManagedResumeTemplate",

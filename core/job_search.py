@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import unicodedata
 from typing import Protocol, runtime_checkable
 
 from source_connectors.contract import SourcePlatform
@@ -43,6 +44,37 @@ _NEVER_RETRYABLE_REASONS = frozenset(
 def _validate_timestamp(name: str, value: datetime) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"{name} must be a timezone-aware datetime")
+
+
+def canonicalize_search_company(value: str) -> str:
+    """Return the company identity used by known-source matching."""
+
+    if not isinstance(value, str):
+        raise TypeError("company must be a string")
+    canonical = " ".join(value.casefold().split())
+    if not canonical or len(canonical) > 240:
+        raise ValueError("company is outside the search contract")
+    return canonical
+
+
+def canonicalize_search_match_text(
+    value: str,
+    *,
+    name: str,
+    maximum: int,
+) -> str:
+    """Return the title/location text used by known-source matching."""
+
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    punctuation_as_spaces = "".join(
+        " " if unicodedata.category(character).startswith("P") else character
+        for character in value.casefold()
+    )
+    canonical = " ".join(punctuation_as_spaces.split())
+    if not canonical or len(canonical) > maximum:
+        raise ValueError(f"{name} is outside the search contract")
+    return canonical
 
 
 def _valid_request(request: "JobSearchRequest") -> bool:

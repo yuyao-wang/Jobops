@@ -71,6 +71,88 @@ flowchart TB
 
 Frontend、CLI、Scheduler 和 Codex 只能调用业务用例。它们不能直接组合 repository、model、browser、permit 或 submit 行为。
 
+### Authenticated interaction boundary
+
+S3d0 provides a reusable FastAPI dependency above subject-scoped business
+services. It reads only the fixed secure-cookie credential, validates its
+opaque session reference and secret hash against a Keychain-backed server-side
+record, and returns a typed `AuthenticatedSubjectContext`. Query, form, JSON,
+ordinary headers, profile data and conversation IDs can never supply or
+override the subject.
+
+Expiry is evaluated against an explicit dependency clock. Missing, expired,
+corrupt, cross-binding or unavailable sessions fail closed as typed results and
+safe HTTP 401 responses. Route handlers receive the context once; business
+services continue to receive only its plain `subject_id` and never import
+FastAPI or session types. S3d0 does not add login, refresh UI, Search,
+Discovery, application execution or browser behavior.
+
+S3d adds one authenticated Dashboard action above that boundary. The route
+accepts only an invocation ID and reprioritization budget, obtains the subject
+from the S3d0 dependency, and calls one injected S3b public callable. Its
+controller shares an in-flight invocation for duplicate requests and rejects a
+second concurrent invocation for the same subject. The browser UI disables the
+button while running and reuses the same invocation ID for transport retries;
+a later explicit click creates a new invocation.
+
+The UI projection exposes only bounded typed counts, safe source failures, the
+refresh run ID and completion time. It never displays repository paths,
+credentials, raw exceptions or internal hashes. A completed refresh may reload
+the legacy job and Priority views, but it does not invoke plan creation,
+Preparation, automation cycles, Browser, ATS or submission. Production
+composition injects the already-composed S3b callable and authenticated
+dependency; the Dashboard does not assemble Search, Public Read, Discovery or
+P1d3 dependencies.
+
+S3e adds a second, independent authenticated Dashboard action. Its request
+contains only a stable invocation ID; a versioned server-side configuration
+supplies the four bounded budgets and composition binding. The handler passes
+the S3d0 subject and explicit clock time to one injected P2c10a public callable.
+Duplicate in-flight requests share the same task, a competing invocation is
+rejected as already running, and transport replay retains the invocation ID so
+P2c10a can return `UNCHANGED`.
+
+The UI projects P2c10a's ordered stages and typed counters into Plan
+created/reused, Preparation completed/deferred/failed, Execution
+completed/deferred/failed/uncertain and Human Attention skipped summaries.
+It explicitly states that deferred work does not block other jobs and
+`SUBMISSION_UNCERTAIN` is never automatically retried. The action neither
+calls S3b nor refreshes job sources; “Refresh Job Library” and “Continue
+Automatic Application” remain separate user decisions. No Gate, permit,
+Browser, Engine, ATS or submit controls are exposed in the Dashboard.
+
+S3f adds a third authenticated interaction that is strictly read-only. On
+initial Dashboard load, and once after a completed S3e invocation, the handler
+calls one injected P2b5 public queue reader with the S3d0 subject and explicit
+time. An optional refresh button performs the same single snapshot read;
+concurrent requests share one in-flight task. There is no polling, queue store,
+write command or Preparation retry.
+
+The Inbox preserves P2b5 item order and separates the existing `USER` and
+`OPERATOR` audiences without reclassifying them. Each projection retains the
+stable item ID, job/Plan identity, priority, typed attention kind, bounded
+required action, blocking state and source stage. P2b5 does not expose job
+title/company, so S3f displays the formal job ID rather than reading
+JobPosting. Empty snapshots are normal; failed reads retain a failed UI state
+and never masquerade as an empty queue. Internal bindings, hashes, paths,
+credentials, permits, exceptions and logs are excluded.
+
+S3g1 adds the corresponding typed write boundary only for current USER
+Application Answers items. It reads one P2b5 snapshot, invokes one bounded
+parser with only the message and typed item context, validates the proposal
+deterministically, and writes either a USER_CONFIRMED CandidateVault fact or a
+plan-scoped attestation. The service then invokes P2b4 once; it never edits the
+Queue or AnswerSet. Manual-review and OPERATOR items remain outside this path.
+
+S3g2 adds a separate typed path for current `USER_CHOICE_REQUIRED` items from
+`BASE_RESUME_SELECTION` and `BASE_LATEX_SELECTION`. It enumerates only the
+subject's public selectable ResumeCandidate or LaTeX version records, resolves
+one option by unique ID/label or one bounded parser call over safe metadata,
+and writes immutable plan-scoped override history. P2a3 and P2a6b optionally
+consume that override, revalidate the selected option, bind its hash into a
+new selection identity and bypass their Agent. With no override, their
+existing identity and automatic behavior remain byte-for-byte compatible.
+
 ## 四个核心业务组件
 
 | Component | Owns | Does not own |
@@ -134,6 +216,9 @@ Conversational Intake
   │           └── 5. UNSUPPORTED / handoff
   │
   └── JobSearchPort
+        └── SearchProfileProvider
+              ├── list_current(subject_id)
+              └── list_enabled(subject_id)
 
 PublicJobReader
   ↓
@@ -163,6 +248,39 @@ async read_public_job(ReadJobRequest) -> ReadJobResult
 It returns a typed `SourceJobObservation` or typed failure. An observation is
 external evidence, not a `JobPosting`; it contains no `job_id`, `revision`,
 `content_hash`, Priority or `ApplicationPlan`.
+
+S3a adds the subject-scoped configuration boundary above `JobSearchPort`.
+`SearchProfile` stores one canonical `JobSearchRequest`, an explicit
+`KNOWN_GREENHOUSE_BOARD` source reference, enabled state and fixed `MANUAL`
+refresh mode. The profile service does not invoke the search port or
+Discovery. Immutable versions are stored in Private Home; provider reads
+select the highest valid version per logical profile and order current/enabled
+profiles by canonical display name and profile ID rather than filesystem
+metadata.
+
+S3b is the explicit manual refresh boundary above those enabled profiles. It
+reads one fixed enabled snapshot, invokes a provider-neutral profile search
+executor once per profile, canonicalizes and de-duplicates candidate URLs,
+then calls the public job reader and formal Discovery once per unique URL.
+Discovery receives a resolved `ADD_JOB` proposal with
+`MANUAL_LIBRARY_REFRESH`; it remains the only JobPosting writer.
+
+S3c adds a separate, subject/profile-scoped intent-policy boundary. Missing or
+disabled policy is deterministically `ADD_JOB_ONLY`. Only an explicitly saved,
+enabled `AUTO_REQUEST_APPLICATION` policy can cause S3b, after successful
+Discovery, to write one v2 `REQUEST_APPLICATION` AcceptedJobIntent. When
+multiple profiles contributed the same URL, any explicit auto-enabled source
+is sufficient and the intent provenance retains every contributing profile ID.
+Changing policy back to add-only affects future refreshes and never cancels
+intent history.
+
+After all profiles and candidates, S3b calls P1d3 once with the shared subject,
+timestamp and explicit bound. Profile, read and Discovery failures are
+isolated and do not suppress that Priority refresh. A subject/invocation-bound
+immutable `JobLibraryRefreshRun` provides audit and zero-call UI replay.
+S3b contains no concrete connector, application planning, preparation,
+execution, scheduling or missing-result lifecycle mutation. Intent policy
+evaluation does not trigger P1d4 or a second Priority refresh.
 
 ### Progressive read policy
 
@@ -208,7 +326,12 @@ It cannot import or call a concrete Connector. It converts a validated
 `SourceJobObservation` into a typed `JobIntakeProposal`; only then may it call
 the injected callable Discovery port. After an accepted Discovery response,
 I2b writes the subject-specific accepted intent through an injected typed port.
-Intake never imports Private Home paths or JSON persistence details.
+I2c keeps legacy v1 records byte-for-byte readable and makes every new write
+an explicit v2 record with typed source provenance. Conversational Intake binds
+the existing proposal ID as `CONVERSATIONAL_INTAKE`; the same contract can
+later represent ordered SearchProfile sources without changing intent
+precedence. Intake never imports Private Home paths or JSON persistence
+details.
 
 Forbidden dependencies:
 
@@ -473,6 +596,8 @@ Stable Priority Agent rules include:
 ```mermaid
 flowchart TB
     Q["P1d4 selected RUNNABLE job"] --> C["ApplicationPlan creator"]
+    Q --> BC["Selective Batch ApplicationPlan Creation"]
+    BC --> C
     C --> I["Immutable ApplicationPlan"]
     I --> P["ApplicationPreparationService"]
     P --> E["CandidateEvidenceRepository"]
@@ -500,6 +625,12 @@ flowchart TB
     MA --> MM["Material Manifest + tier loading"]
     MM --> GA["Approval Gate A"]
 ```
+
+P2a1b reads one fixed subject-scoped P1d4 snapshot, applies an explicit
+job allowlist or positive execution bound, and calls the public P2a1 creator
+serially only for `RUNNABLE` jobs. Blocked and absent jobs do not consume the
+P2a1 call bound. Per-job failures are isolated; the batch neither refreshes the
+snapshot nor starts preparation or execution.
 
 ### Data flow
 
@@ -611,6 +742,16 @@ inherits that parent's root family, so lineage is explicit and history is
 never overwritten. Identity binds source, kind, lineage, optional template,
 draft and fact-QA bindings, labels and contract version, and excludes time,
 so replay is stable and listing order never depends on the filesystem.
+P2a6a1 adds an explicitly selected `SINGLE_FILE_BASE_TEMPLATE_V1` admission
+profile without changing that general registry contract. The strict profile
+requires one document root, an empty and ordered
+`JOBOPS-CONTENT-BEGIN/END` region, and the draft-independent two-argument
+`JobopsSection` and `JobopsBullet` interface before the document body. It
+uses the same deterministic capability scan and the dependency primitive
+used by construction, restricts packages to the managed-template set, and
+rejects every external-file capability. Profile, template, dependency and
+safety-policy versions bind the strict version identity; legacy and general
+records retain their original schema and identity.
 Layout revision closes the loop.
 
 P2a6b chooses which registered version a fact-QA-passed draft should build
@@ -1000,6 +1141,50 @@ evidence, access permit/token infrastructure, acquire Browser, call Engine or
 create a second submission state machine. Batch execution, scheduling and
 human-resolution flows remain outside P2c7.
 
+P2c8 derives the subject-scoped Current Application Execution Queue directly
+from immutable AssemblyRecord and ApplicationExecutionRun histories. The
+Assembly repository deterministically selects the current Assembly per Plan;
+verified completed Runs and uncertain Runs remain terminal across later
+Assemblies, while deferred or failed Runs affect only their bound Assembly.
+Consequently a newer Assembly with no Run is `READY`, but no new Assembly can
+make a submitted or uncertain Plan executable again.
+
+Queue items preserve typed stage/reason fields and are ordered by execution
+status, P0–P3 priority, Plan creation time, job and Plan identity. Item and
+snapshot hashes exclude evaluation time and filesystem metadata. P2c8 has no
+store, calls no execution stage, performs no retry/reconciliation and does not
+re-evaluate Gate, permit, Review or evidence semantics.
+
+P2c9 is the bounded execution-batch boundary above P2c8 and P2c7. It reads
+exactly one queue snapshot, executes only `READY` items and forwards the same
+subject, AssemblyRecord and explicit timestamp to one serial P2c7 call per
+selected Plan. Explicit allowlists preserve caller order and de-duplicate
+Plan IDs; `max_plans` limits actual P2c7 calls, so skipped and missing items do
+not consume execution capacity.
+
+Deferred, failed and uncertain P2c7 results are recorded per Plan and never
+stop later READY items. Submitted and uncertain queue items are skipped
+without a P2c7 call. The batch summary is ephemeral: there is no claim, batch
+store, retry, checkpoint, queue refresh, Browser/Gate/permit access or second
+idempotency mechanism. Repeated-run safety remains owned by a new P2c8
+snapshot and P2c7's terminal replay contract.
+
+P2c10a is the business-level cycle boundary above the four selective batch
+services. One explicit invocation runs P1d3, P2a1b, P2b6 and P2c9 once each,
+in that order, with one shared subject/timestamp and independent non-negative
+budgets. A zero budget creates a typed skipped stage without calling its
+service. Stage-level and per-item failures never roll back prior immutable
+work and do not stop later stages.
+
+Each invocation persists one subject-isolated immutable
+`AutomationCycleRun`. Its logical identity binds an explicit invocation ID,
+budgets, composition binding, all four public service contract versions and
+the cycle version; the audit timestamp is excluded. The same invocation
+replays before all stage calls, while a later scheduler tick must supply a new
+invocation ID. The cycle contains no discovery, scheduling, queue/repository
+inspection, single-job orchestration, retry, Browser, Gate, permit or submit
+capability.
+
 P2b3a establishes the field-language boundary required before Application
 Answers can be prepared. `CanonicalApplicationAnswerKey` and its immutable V1
 registry are the only canonical definitions used by protocol `FormIR`,
@@ -1049,6 +1234,94 @@ zero-call replay and detection of changed upstream bindings cannot both be
 derived by reopening Slice repositories. V1 formally requires both Resume and
 Cover Letter; the orchestrator never guesses from priority or job text.
 
+P2b4a adds a v2 stage-result schema that separates typed stage outcome from a
+versioned, stage-specific `PreparationStopReasonEnvelope`. A closed registry
+validates stage, enum type, reason-contract version and deferred/failed
+outcome; plain strings and unregistered stages fail closed. Base LaTeX
+selection is the first bounded migration, covering its unsatisfiable user
+requirement and decision-integrity stops. P2b4b additionally migrates the five
+Resume semantic stages: Base Resume Selection, Source Resume Projection,
+CandidateEvidence Snapshot, Tailored Resume Draft and Resume Fact QA. Their
+closed contracts preserve no-resume/no-evidence and unsafe-output deferrals,
+while dependency, binding, Agent availability, persistence and integrity
+failures remain failures. Unsupported Resume claims are a distinct deferred
+fact-safety blocker, never an approval. Remaining stages enter new v2 Runs
+only through the explicitly named legacy adapter and remain `LEGACY_UNTYPED`.
+P2b4c applies the same boundary to Cover Letter Evidence, Cover Letter Draft,
+Cover Letter Fact QA and Prepared Application Answers. Answer preparation
+derives fact, choice and attestation stop reasons only from its typed
+`UnresolvedAnswerReason` set; successful AnswerSets continue to preserve every
+individual unresolved item. Cover Letter unsupported claims remain distinct
+fact-safety deferrals, while Agent service, binding, persistence and integrity
+faults remain failures.
+P2b4d migrates Prepared Resume Publication, Resume Manifest Entry, Prepared
+Cover Letter Publication and Cover Letter Manifest Entry. Each public adapter
+maps only its authoritative typed operation status/reason into its own closed
+reason enum. Missing or not-yet-passing upstream material remains deferred;
+subject/Plan/source binding, artifact hash/version, persistence and result
+integrity violations remain failures. Successful immutable replay remains
+`UNCHANGED`, and manifest/publication identity continues to come from the
+formal record rather than a path or filename. P2b4e completes the new-write
+migration for LaTeX Construction, sandboxed Compilation, Resume Visual QA and
+bounded Layout Revision. Construction keeps unreadable selected input and
+unsafe construction output distinct from Agent/service, binding, persistence
+and integrity failures. Compilation keeps unmanaged dependencies, compiler
+unavailability, timeout, source compilation errors and invalid PDF output
+distinct without interpreting stderr. Visual QA separates renderer
+unavailability, unreliable Agent output, typed layout-revision directives and
+internal failures. Layout Revision preserves renderer, unsafe revision,
+registration, downstream compile/QA and bounded-attempt exhaustion reasons;
+the current production stage has no separate no-progress or duplicate-cycle
+branch, so no such reason is invented.
+P2b4e1 keeps Layout's aggregate `COMPILATION_STOPPED` outcome but adds an
+immutable `DownstreamPreparationStopLineage`. The lineage binds the current
+Layout revision record/attempt and Plan to the stopped Compilation public
+result ID/hash, typed outcome and complete closed stop-reason envelope.
+Compilation content rejection therefore remains distinguishable from compiler
+unavailability and timeout without parsing diagnostics. New stopped attempts
+require this lineage; historical attempts without it remain explicitly
+legacy-incomplete and are never reconstructed from `detail`.
+P2b4e2a adds a pre-run `PreparationInvocationBinding` that is created before
+the first public stage call and propagated unchanged to every stage request.
+The binding uses an explicit invocation ID and subject/Plan identity, never a
+stage hash or final Run ID. New stage-result v3 records persist its typed
+reference, and the final Run stores the full audit binding; the existing Run
+ID algorithm remains the hash of its existing identity fields and final stage
+hashes, so no reverse Run-to-invocation dependency exists. Resume Compilation
+also exposes a deterministic invocation-scoped attempt ID and a closed
+`CompilationSourceResolutionLineage`: `RESOLVED` binds the exact Construction
+result, selected LaTeX version and verified source hash, while `UNRESOLVED`
+records only an explicit early resolution state and safe requested references.
+No unresolved lineage invents a source record or hash, and historical v1/v2
+Runs remain readable without reconstructed invocation data.
+P2b4e2 persists every formal stopped Resume Compilation attempt as a
+`ResumeCompilationStoppedSourceRecord` before returning its public stage
+result. The immutable record binds subject, Plan, the pre-run invocation
+reference, deterministic attempt ID, typed outcome/reason and the complete
+resolved or unresolved source lineage; it never references the final
+Preparation Run. Stage-result v3 carries a content-addressed reference to this
+record, so the reference may participate in the stage hash without an identity
+cycle. Success results and orchestrator-synthetic failures carry no reference.
+A stopped-source repository failure becomes one non-recursive typed
+Compilation persistence failure and never fabricates a record.
+P2b4d1 adds the equivalent source traceability at the Resume and Cover Letter
+publication boundary. New Fact-QA-blocked, Resume Visual-QA-blocked,
+unsuccessful Resume Layout Revision and Cover Letter one-page-overflow results
+carry an immutable `PublicationStoppedSourceLineage`. It binds subject, Plan,
+material kind, publication result, exact typed source result/directive,
+artifact identity/hash where the source contract provides one, and blocker
+collection identity. Cover Letter overflow uses a content-addressed LaTeX
+source plus a deterministic overflow-evaluation identity; it never reconstructs
+identity from a path, compiler output or diagnostics. The public stage result
+persists bounded lineage references. Historical results without lineage remain
+readable and are not inferred or rewritten.
+With every formal stage registered, new orchestration-detected callable
+exceptions and malformed public results are also persisted with that stage's
+typed integrity reason plus a safe diagnostic code; the legacy constructor is
+retained only for explicit compatibility inputs and historical reads.
+Historical orchestration-v1 stage dictionaries deserialize without inference,
+retain their original shape/hash and are never rewritten.
+
 `run_application_preparation()` validates the existing Plan once, then passes
 the same subject, Plan ID and timezone-aware `now` through a strictly serial
 stage request. Each injected adapter invokes one existing public Slice and
@@ -1080,17 +1353,47 @@ subject list ordered by Plan ID, domain `completed_at` and Run ID, while
 The read model therefore ignores file mtime, directory iteration order and
 superseded Run history.
 
-A current `DEFERRED` Run yields one item through an exact
-stage/public-status mapping. A current `FAILED` Run is always an
+A current typed `DEFERRED` Run normally yields one item through the explicit
+stage/reason-enum mapping. P2b5a binds its original 47 migrated reasons to one typed resolution
+capability: provide fact, make choice, attest, correct material, replace
+input, operator repair or non-overridable. No current stage maps to approval:
+there is no stable review-target identity yet. A current `FAILED` Run is an
 operator-facing system item. A completed Run is absent when no attention is
 required; otherwise P2b5 reads the exact final AnswerSet and expands only its
 blocking unresolved items. Attestation, missing fact and user choice remain
-distinct user kinds. Non-blocking optional skips are excluded, and unknown
-typed defer reasons fail safe to an operator item instead of disappearing.
+distinct user kinds. Unsupported claims require material correction and
+cannot be approved; readable-source replacement is distinct from operator
+repair. Non-blocking optional skips are excluded. Unknown or legacy-untyped
+defer reasons fail closed as an operator-only, non-overridable unclassified
+blocker instead of being inferred from strings. The 16 technical-stage
+deferred reasons added by P2b4e are explicitly classified by P2b5a2.
+Construction unreadable input requires replacement while unsafe generated
+output requires operator repair. Compilation content errors and unmanaged
+dependencies require material correction; compiler, timeout and invalid-PDF
+conditions require operator repair. Visual QA renderer/Agent deferrals remain
+operator issues. Layout exhaustion requires correction; renderer, revision
+pipeline and downstream Visual QA stops require operator repair. Layout
+`COMPILATION_STOPPED` is classified from its validated P2b4e1 child envelope:
+content reasons require correction, infrastructure reasons require operator
+repair, and missing or damaged lineage stays non-overridable. No technical
+reason maps to approval.
+
+P2b5d makes Fact QA correction the deliberate exception to stage-level
+projection. Resume and Cover Letter `UNSUPPORTED_CLAIM` results, including
+Publication stops carrying validated P2b4d1 Fact QA source lineage, are read
+through the typed blocking-finding provider. Each exact blocking finding
+becomes one item with a `FactQAFindingAttentionRef` binding subject, Plan,
+material kind, origin stage/result, QA result ID/hash/version, finding ID/type
+and source material identity. Finding order affects display order but not item
+identity. A damaged, missing, cross-boundary or partial finding collection
+produces one operator-only non-overridable item and never a partially trusted
+set. The queue projection contract is v3; the semantic classification remains
+`human-attention-mapping-v3`.
 
 Every item binds Plan, current Run/binding, source stage and record, exact
-upstream reason, optional AnswerSet ID/hash and canonical key, plus the
-mapping/queue contract versions. Source event time is retained for ordering
+upstream reason, resolution capability, optional AnswerSet ID/hash and
+canonical key or Fact QA finding reference, plus the mapping/queue contract
+versions. Source event time is retained for ordering
 but no evaluated `now` enters item identity. Queue ordering is priority,
 audience, attention kind, source event time, Plan ID and item ID. Re-reading
 the same upstream state produces identical item and snapshot hashes; a newer
@@ -1260,3 +1563,208 @@ Model output
 Model output 是待验证数据，不是 executable command。
 
 This workflow does not need an Agent that freely chooses tools: the action sequence, legal transitions, inputs, and stop conditions are already known. The only open problem is bounded classification or generation. Tool autonomy would add permissions and nondeterminism without adding a required product capability.
+
+### Material Correction Target boundary
+
+P2b5c projects every current `CORRECT_MATERIAL` item through one closed
+10-entry mapping into an immutable, subject/Plan-scoped target:
+
+```text
+Current HumanAttentionItem + typed blocker lineage
+  → MaterialCorrectionTargetProvider
+  → UnsupportedClaim | LaTeXCompilation | ResumeVisualLayout
+    | CoverLetterLayout target
+  → optional correction_target_ref on the derived P2b5 item
+  → authenticated, read-only safe target response
+```
+
+Fact QA targets bind one exact finding reference. Publication targets consume
+P2b4d1 lineage, Compilation targets consume P2b4e2 stopped-source records, and
+Layout targets consume the exact final attempt and compiled artifact. Missing
+or drifted identity fails closed; no path, stderr, mutable “latest” alias, or
+UI text participates. This boundary does not save correction instructions,
+modify material, or rerun Preparation.
+
+### Unsupported Claim Correction boundary
+
+S3g4a accepts only an explicit typed `REMOVE_UNSUPPORTED_CLAIM` or
+`REWRITE_USING_EXISTING_EVIDENCE` command for one current
+`UnsupportedClaimCorrectionTarget`:
+
+```text
+authenticated command
+  → one P2b5 current snapshot
+  → exact target + FactQAFindingAttentionRef revalidation
+  → immutable finding-scoped correction directive
+  → Resume/Cover Letter Draft correction constraint
+  → one P2b4 rerun → formal Fact QA
+```
+
+The directive changes the Draft binding and is supplied to the bounded Draft
+Agent as a constraint, never as CandidateVault data or CandidateEvidence.
+Existing deterministic evidence validation remains active and P2b4 still runs
+the formal Fact QA stages. The service does not edit an old Draft, QA result,
+finding, or Queue item.
+
+### LaTeX Compilation Correction boundary
+
+S3g4b accepts only `REGENERATE_AND_RETRY` for a current
+`LatexCompilationCorrectionTarget`. It revalidates the exact stopped-source
+record, Construction result, selected LaTeX version, source hash, Compilation
+attempt, reason, and pre-run invocation before saving one immutable directive.
+
+`UNMANAGED_DEPENDENCY` deterministically selects managed-dependency
+regeneration; `COMPILATION_ERROR` selects compilable-LaTeX regeneration.
+P2a6c includes the directive in its construction identity, reads the failed
+source only through its formal version record, invokes the existing bounded
+Construction Agent once, and writes a new immutable Construction lineage.
+Draft text remains marker-exact, external file dependencies remain forbidden,
+and Compilation, Visual QA, Layout, and Publication still run through P2b4.
+The service neither edits the failed source nor loops automatically.
+
+### Resume Layout Correction Preview boundary
+
+P2b5e1 accepts only a current `ResumeVisualLayoutCorrectionTarget`. It
+revalidates the exact Compilation artifact, LaTeX source, Preparation Run and
+final Layout attempt before resolving the managed PDF through a typed artifact
+provider. The existing bounded PDF renderer receives verified bytes, never a
+path, and produces allowlisted PNG pages stored with an immutable,
+subject-scoped preview record.
+
+Preview identity binds the correction target, source artifact hash, renderer
+name/version/DPI and renderer contract. Replay reuses the same record; source
+or renderer drift creates a distinct identity. Authenticated Dashboard reads
+use an opaque preview reference and return only PNG bytes plus limited page
+metadata. A preview does not approve, mutate, rerun, publish, or resolve the
+underlying material.
+
+### Cover Letter Overflow Correction Preview boundary
+
+P2b5e2 accepts only a current `CoverLetterLayoutCorrectionTarget`. It
+revalidates the exact Publication result, overflow evaluation,
+content-addressed managed LaTeX source, Plan and Preparation Run. A formal
+source provider returns verified source content rather than its Private Home
+path.
+
+When no immutable overflow PDF exists, the existing sandbox compiler receives
+that verified source in memory and the existing PDF renderer receives only the
+resulting verified bytes. The overflow evaluation is recomputed from the
+source hash, page count, template policy and compiler identity before
+allowlisted PNG pages are saved in an immutable subject-scoped preview record.
+Replay reuses the same compiler/renderer-bound record. Authenticated reads use
+an opaque reference and expose only PNG bytes and page count. Preview creation
+does not modify the Cover Letter, resolve overflow, rerun P2b4, approve, or
+publish material.
+
+### Resume Layout Correction boundary
+
+S3g4c accepts only explicit `REVISE_LAYOUT_AND_RETRY` for a current
+`ResumeVisualLayoutCorrectionTarget` with an already-created, current safe
+preview. The immutable directive binds the target, preview, exact compiled
+artifact, LaTeX source, Visual QA result, and prior final Layout attempt.
+Target origin deterministically selects either
+`REVISE_FROM_VISUAL_QA_DIRECTIVE` or
+`RESTART_BOUNDED_LAYOUT_REVISION`.
+
+P2a8b consumes the directive through an optional plan-scoped provider. The
+directive identity enters the Layout run binding, so an exhausted run cannot
+be silently replayed. A restart begins from the exact final Visual QA/artifact
+lineage and retains the existing bounded attempt limit. The existing marker
+and controlled-content-region equality checks prove that Resume text is
+byte-identical while dependency, typography, Compilation, Visual QA and
+artifact-integrity checks remain active. The service invokes P2b4 once and
+never loops automatically.
+
+### Cover Letter Overflow Correction boundary
+
+S3g4d accepts only explicit `REFORMAT_AND_RETRY` for a current
+`CoverLetterLayoutCorrectionTarget` with a current authenticated safe preview.
+The immutable directive binds the exact target, preview, Publication result,
+overflow evaluation and content-addressed managed source. Neither the client
+nor an Agent supplies paths, LaTeX, CSS, patches or wording changes.
+
+Cover Letter Publication consumes the directive through an optional
+plan-scoped provider. Its identity and the generated source hash enter
+Publication identity, so the stopped overflow result cannot be silently
+reused. Publication reads the exact target-bound source and applies one closed
+format profile to managed preamble parameters only. The complete document
+body after `\begin{document}` must remain byte-identical to the target source
+and current Fact-QA-approved Draft rendering. Schema, dependency, compiler,
+PDF-text, overflow-evaluation and artifact-integrity checks remain active.
+The service invokes P2b4 once; another overflow creates a new current item and
+never starts an automatic correction loop.
+
+### Input Replacement Target boundary
+
+P2b5f covers the complete current `REPLACE_INPUT` registry: Source Resume
+`FORMAT_UNSUPPORTED` and `ARTIFACT_UNREADABLE`, plus LaTeX Construction
+`BASE_VERSION_UNREADABLE`. The two Resume reasons project one exact
+`SourceResumeReplacementTarget`; the LaTeX reason projects one exact
+`BaseLatexVersionReplacementTarget`.
+
+Target construction uses the immutable successful selection stage in the same
+Preparation Run and revalidates its content-addressed ResumeCandidate or
+LaTeX Version identity through the corresponding public provider. The target
+binds subject, Plan, current Run, stopped stage/reason, selected record,
+version/family and content hash. Missing selection identity yields
+`TARGET_INCOMPLETE`; no path, filename, mtime, display text or “latest” alias
+can complete it. Queue v5 attaches an optional immutable target reference only
+to current USER `REPLACE_INPUT` items. The authenticated Dashboard projection
+is read-only and exposes only safe display metadata and typed future
+replacement methods.
+
+### Existing Input Replacement resolution
+
+S3g5 accepts only `SELECT_EXISTING_REPLACEMENT` for a current target. It
+lists the appropriate subject-scoped registry exactly once, excludes the
+targeted input, and accepts only an exact returned record ID. The resulting
+plan-scoped override is the existing S3g2 contract upgraded to v2 provenance:
+it binds the immutable target, replaced record/version/hash, selected record,
+reason, and previous override. P2a3/P2a6b continue consuming that same
+repository and fail closed unless both the replaced identity and selected
+record remain in the typed selectable set.
+
+One successful override write invokes P2b4 once. The immutable S3g5 receipt
+retains completed, deferred, or failed rerun evidence; replay does not write or
+rerun, and another unreadable input never causes automatic third-option
+selection. Upload, registration, global ACTIVE/default changes and Queue
+mutation remain outside this boundary.
+
+### New ResumeCandidate registration and replacement
+
+S3g5b1 is the Source Resume-only upload boundary. An authenticated multipart
+route reads at most the versioned P2a2 artifact limit and passes bytes—not a
+client path, claimed hash, or trusted browser media type—to a specific
+orchestrator. Existing P2a2 PDF/DOCX byte validation determines the media
+type. A content-addressed, invocation-scoped file under controlled Private
+Home staging exists only while the synchronous P2a2 public registration call
+copies the artifact into its immutable registry.
+
+The orchestrator reads one current P2b5 snapshot, revalidates the exact
+`SourceResumeReplacementTarget`, registers or reuses the candidate through
+P2a2, then confirms the returned candidate through the public provider.
+Only then does it delegate `SELECT_EXISTING_REPLACEMENT` to S3g5 with a
+deterministic child invocation ID. It never writes an override or invokes
+P2b4 itself. Invocation receipts make replay zero-registration/zero-delegation;
+partial replacement failure retains the registered candidate and does not
+start an automatic replacement loop.
+
+### New Base LaTeX Version registration and replacement
+
+S3g5b2 is the Base LaTeX-only single-file upload boundary. The authenticated
+multipart route reads at most the P2a6a source limit and passes bytes, a safe
+display label and an optional bounded note to the orchestrator. Browser media
+type, filename, path, family, parent, hash and registry identity have no
+authority. Ordinary code accepts only bounded UTF-8 text without binary
+control characters; P2a6a1 then applies the closed
+`SINGLE_FILE_BASE_TEMPLATE_V1` structure, dependency and safety contracts.
+
+The orchestrator reads one current P2b5 snapshot, revalidates the exact
+`BaseLatexVersionReplacementTarget`, and obtains root family and predecessor
+only from that target and the typed registry. It invokes the P2a6a public
+registration entry with the replaced version as parent, confirms the returned
+same-family immutable version through the public provider, then delegates
+`SELECT_EXISTING_REPLACEMENT` once to S3g5 using a deterministic child
+invocation. It writes neither the plan override nor P2b4 directly. Replay is
+zero-registration/zero-delegation; delegated failure retains the registered
+version and never starts an automatic registration or replacement loop.

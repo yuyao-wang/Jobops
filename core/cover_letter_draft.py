@@ -10,12 +10,26 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Mapping,
+    Protocol,
+    runtime_checkable,
+)
 
 from .application_plan import (
     ApplicationPlan,
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
+)
+from .application_preparation_orchestrator import (
+    COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CoverLetterDraftStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
 )
 from .cover_letter_evidence import (
     CoverLetterEvidenceScope,
@@ -29,6 +43,11 @@ from .job_discovery import (
     JobPostingRepositoryError,
 )
 from .private_home import PrivateHome, PrivateHomeError
+if TYPE_CHECKING:
+    from .unsupported_claim_correction import (
+        UnsupportedClaimCorrectionConstraint,
+        UnsupportedClaimCorrectionDirectiveProvider,
+    )
 
 
 COVER_LETTER_DRAFT_CONTRACT_VERSION = "cover-letter-draft-v1"
@@ -43,6 +62,10 @@ Instruction priority (highest first):
     2. The current ApplicationPlan's user preparation instructions.
     3. Alignment with the trusted job description.
     4. Default writing style.
+
+Correction directives are constraints, never new facts or evidence. REMOVE
+means omit the identified unsupported claim. REWRITE may use only the supplied
+CandidateEvidence and must not treat the user's wording as evidence.
 
 You must never fabricate:
 - A skill, experience, responsibility, number, outcome, degree or personal
@@ -262,6 +285,9 @@ class CoverLetterAgentContext:
     user_preparation_instructions: str | None
     agent_policy: str
     agent_policy_version: str
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +373,9 @@ def _draft_binding(
     job: JobPosting,
     snapshot: CoverLetterEvidenceSnapshot,
     metadata: CoverLetterAgentMetadata,
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ] = (),
 ) -> str:
     return _canonical_hash(
         {
@@ -366,6 +395,14 @@ def _draft_binding(
             "job_id": job.job_id,
             "job_revision": job.revision,
             "subject_id": plan.subject_id,
+            "unsupported_claim_corrections": [
+                {
+                    "directive_hash": item.directive_hash,
+                    "directive_id": item.directive_id,
+                    "finding_id": item.finding_id,
+                }
+                for item in correction_constraints
+            ],
             "user_preparation_instructions_hash": (
                 plan.user_preparation_instructions_hash
             ),
@@ -1120,6 +1157,9 @@ async def draft_cover_letter(
     agent: CoverLetterAgentPort,
     metadata: CoverLetterAgentMetadata,
     draft_repository: CoverLetterDraftRepository,
+    correction_provider: (
+        UnsupportedClaimCorrectionDirectiveProvider | None
+    ) = None,
 ) -> DraftCoverLetterResult:
     """Create one evidence-bound cover letter draft, at most one Agent call."""
 
@@ -1241,8 +1281,29 @@ async def draft_cover_letter(
             .EVIDENCE_SNAPSHOT_BINDING_MISMATCH,
         )
 
+    correction_constraints: tuple[
+        UnsupportedClaimCorrectionConstraint, ...
+    ] = ()
+    if correction_provider is not None:
+        correction_result = correction_provider.list_current(
+            subject_id=subject_id,
+            application_plan_id=plan.plan_id,
+            material_kind="COVER_LETTER",
+        )
+        if not correction_result.succeeded:
+            return _failure(
+                command,
+                CoverLetterDraftFailureReason.DRAFT_INTEGRITY_FAILURE,
+            )
+        correction_constraints = tuple(
+            item.constraint for item in correction_result.directives
+        )
     binding = _draft_binding(
-        plan=plan, job=job, snapshot=snapshot, metadata=metadata
+        plan=plan,
+        job=job,
+        snapshot=snapshot,
+        metadata=metadata,
+        correction_constraints=correction_constraints,
     )
     draft_id = f"cover-letter-draft-{binding}"
     try:
@@ -1313,6 +1374,7 @@ async def draft_cover_letter(
         user_preparation_instructions=plan.user_preparation_instructions,
         agent_policy=COVER_LETTER_DRAFT_AGENT_POLICY,
         agent_policy_version=COVER_LETTER_DRAFT_POLICY_VERSION,
+        correction_constraints=correction_constraints,
     )
     try:
         output = await agent.generate(context)
@@ -1454,6 +1516,78 @@ async def draft_cover_letter(
     )
 
 
+_COVER_LETTER_DRAFT_FAILURE_REASON_MAP = {
+    reason: CoverLetterDraftStopReason[reason.name]
+    for reason in CoverLetterDraftFailureReason
+}
+
+
+def cover_letter_draft_public_result(
+    result: DraftCoverLetterResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b2b outcome to stage-result v2."""
+
+    if not isinstance(result, DraftCoverLetterResult):
+        raise TypeError("result must be a cover-letter draft result")
+    stage = ApplicationPreparationStage.COVER_LETTER_DRAFT
+    if result.status in {
+        CoverLetterDraftStatus.CREATED,
+        CoverLetterDraftStatus.UNCHANGED,
+    }:
+        if result.draft is None:
+            raise ValueError("successful drafting has no draft")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is CoverLetterDraftStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.draft.draft_id,
+            result_content_hash=result.draft.draft_content_hash,
+            outputs={"cover_letter_draft_id": result.draft.draft_id},
+        )
+    if result.status is CoverLetterDraftStatus.DEFERRED_INSUFFICIENT_EVIDENCE:
+        reason = CoverLetterDraftStopReason.INSUFFICIENT_EVIDENCE
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped drafting has no authoritative reason")
+        try:
+            reason = _COVER_LETTER_DRAFT_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter draft stop reason"
+            ) from error
+        outcome = (
+            PreparationStageOutcome.DEFERRED
+            if result.status is CoverLetterDraftStatus.DEFERRED_NEEDS_HUMAN
+            else PreparationStageOutcome.FAILED
+        )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.draft_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status is CoverLetterDraftStatus.DEFERRED_NEEDS_HUMAN
+        ),
+    )
+
+
 __all__ = [
     "COVER_LETTER_DRAFT_AGENT_POLICY",
     "COVER_LETTER_DRAFT_CONTRACT_VERSION",
@@ -1484,4 +1618,5 @@ __all__ = [
     "MAX_RATIONALE_CHARS",
     "PrivateHomeCoverLetterDraftRepository",
     "draft_cover_letter",
+    "cover_letter_draft_public_result",
 ]

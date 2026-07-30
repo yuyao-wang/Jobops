@@ -23,6 +23,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    RESUME_MANIFEST_ENTRY_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    ResumeManifestEntryStopReason,
+)
 from .prepared_resume_material import (
     PreparedMaterialRole,
     PreparedResumeMaterial,
@@ -1533,6 +1541,87 @@ def assemble_plan_material_manifest(
     )
 
 
+_RESUME_MANIFEST_NOT_READY_REASON_MAP = {
+    PlanMaterialManifestNotReadyReason.PREPARED_RESUME_NOT_PUBLISHED: (
+        ResumeManifestEntryStopReason.PREPARED_RESUME_NOT_PUBLISHED
+    ),
+    PlanMaterialManifestNotReadyReason.PREPARED_RESUME_PLAN_MISMATCH: (
+        ResumeManifestEntryStopReason.PREPARED_RESUME_PLAN_MISMATCH
+    ),
+    PlanMaterialManifestNotReadyReason.PREPARED_RESUME_ROLE_MISMATCH: (
+        ResumeManifestEntryStopReason.PREPARED_RESUME_ROLE_MISMATCH
+    ),
+}
+_RESUME_MANIFEST_FAILURE_REASON_MAP = {
+    reason: ResumeManifestEntryStopReason[reason.name]
+    for reason in PlanMaterialManifestFailureReason
+    if reason.name in ResumeManifestEntryStopReason.__members__
+}
+
+
+def resume_manifest_entry_public_result(
+    result: AssemblePlanMaterialManifestResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b1 outcome to stage-result v2."""
+
+    if not isinstance(result, AssemblePlanMaterialManifestResult):
+        raise TypeError("result must be a resume manifest result")
+    stage = ApplicationPreparationStage.RESUME_MANIFEST
+    if result.status in {
+        PlanMaterialManifestStatus.CREATED,
+        PlanMaterialManifestStatus.UNCHANGED,
+    }:
+        if result.manifest is None:
+            raise ValueError("successful manifest operation has no manifest")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is PlanMaterialManifestStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.manifest.manifest_id,
+            result_content_hash=result.manifest.manifest_content_hash,
+            outputs={
+                "plan_material_manifest_id": result.manifest.manifest_id
+            },
+        )
+    if result.status is PlanMaterialManifestStatus.NOT_READY:
+        if result.not_ready_reason is None:
+            raise ValueError("not-ready manifest operation has no reason")
+        try:
+            reason = _RESUME_MANIFEST_NOT_READY_REASON_MAP[
+                result.not_ready_reason
+            ]
+        except KeyError as error:
+            raise ValueError("unmapped resume manifest not-ready reason") from error
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("failed manifest operation has no reason")
+        try:
+            reason = _RESUME_MANIFEST_FAILURE_REASON_MAP[result.reason_code]
+        except KeyError as error:
+            raise ValueError("unmapped resume manifest failure reason") from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=RESUME_MANIFEST_ENTRY_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "AssemblePlanMaterialManifestCommand",
     "AssemblePlanMaterialManifestResult",
@@ -1559,4 +1648,5 @@ __all__ = [
     "plan_material_manifest_content_hash",
     "plan_material_manifest_id",
     "prepared_material_content_hash",
+    "resume_manifest_entry_public_result",
 ]

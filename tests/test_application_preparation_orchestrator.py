@@ -34,6 +34,7 @@ from core.application_preparation_orchestrator import (
     ApplicationPreparationStageDefinition,
     ApplicationPreparationStatus,
     PreparationStageExecutionStatus,
+    PreparationStageOutcome,
     PrivateHomeApplicationPreparationRunRepository,
     PublicPreparationStageResult,
     PublicStageDirective,
@@ -173,7 +174,7 @@ class _Recorder:
                 PublicStageStatus.DEFERRED,
                 PublicStageStatus.FAILED,
             }:
-                return PublicPreparationStageResult.stopped(
+                return PublicPreparationStageResult.legacy_stopped(
                     stage=request.stage,
                     status=status,
                     public_status=f"SYNTHETIC_{status.value}",
@@ -188,7 +189,7 @@ class _Recorder:
                 is ApplicationPreparationStage.RESUME_VISUAL_QA
                 else PublicStageDirective.CONTINUE
             )
-            return PublicPreparationStageResult.success(
+            return PublicPreparationStageResult.legacy_success(
                 stage=request.stage,
                 status=status,
                 public_status=f"SYNTHETIC_{status.value}",
@@ -300,6 +301,43 @@ def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
         claim in serialized
         for claim in ("gate_a", "submission", "submit_authorized", "ats_state")
     )
+
+
+def test_full_pipeline_accepts_only_typed_new_stage_results(
+    tmp_path: Path,
+) -> None:
+    class _TypedRecorder(_Recorder):
+        def invoke(self, request):
+            self.requests.append(request)
+            directive = (
+                PublicStageDirective.PASSED
+                if request.stage
+                is ApplicationPreparationStage.RESUME_VISUAL_QA
+                else PublicStageDirective.CONTINUE
+            )
+            return PublicPreparationStageResult.completed(
+                stage=request.stage,
+                result_id=f"result-{request.stage.value.lower()}",
+                result_content_hash=_hash(request.stage.value),
+                outputs=OUTPUTS[request.stage],
+                directive=directive,
+            )
+
+    recorder = _TypedRecorder()
+    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+
+    assert result.status is ApplicationPreparationStatus.COMPLETED
+    assert result.run is not None
+    assert all(
+        not item.is_legacy_untyped
+        for item in result.run.stage_results
+    )
+    assert {
+        item.outcome for item in result.run.stage_results
+    } == {
+        PreparationStageOutcome.COMPLETED,
+        PreparationStageOutcome.SKIPPED,
+    }
 
 
 def test_created_and_unchanged_stage_results_both_continue(
@@ -477,6 +515,8 @@ def test_public_exception_becomes_persisted_failed_run(
     assert result.run.failed_stage is (
         ApplicationPreparationStage.RESUME_TAILORING
     )
+    assert not result.run.stage_results[-1].is_legacy_untyped
+    assert result.run.stage_results[-1].stop_reason is not None
     assert repository.get(
         subject_id=SUBJECT, run_id=result.run.run_id
     ).status is ApplicationPreparationRunReadStatus.FOUND
@@ -612,7 +652,7 @@ def test_missing_required_output_fails_contract_and_stops(
     recorder = _Recorder()
 
     def malformed(request):
-        return PublicPreparationStageResult.success(
+        return PublicPreparationStageResult.legacy_success(
             stage=request.stage,
             status=PublicStageStatus.CREATED,
             public_status="CREATED",
@@ -638,6 +678,9 @@ def test_missing_required_output_fails_contract_and_stops(
         ApplicationPreparationFailureReason
         .PUBLIC_STAGE_CONTRACT_FAILURE
     )
+    assert result.run is not None
+    assert not result.run.stage_results[-1].is_legacy_untyped
+    assert result.run.stage_results[-1].stop_reason is not None
     assert [item.stage for item in recorder.requests] == [
         ApplicationPreparationStage.BASE_RESUME_SELECTION
     ]
@@ -712,7 +755,7 @@ def test_real_public_application_answers_slice_composes_at_final_stage(
         )
         assert typed.answer_set is not None
         answer_set = typed.answer_set
-        return PublicPreparationStageResult.success(
+        return PublicPreparationStageResult.legacy_success(
             stage=request.stage,
             status=PublicStageStatus.CREATED,
             public_status=typed.status.value,
@@ -780,6 +823,8 @@ def test_source_has_no_slice_private_repository_or_execution_imports() -> None:
         "typing",
         "application_plan",
         "private_home",
+        "preparation_invocation",
+        "uuid",
     }
     source = Path(orchestrator_module.__file__).read_text(encoding="utf-8")
     assert not any(

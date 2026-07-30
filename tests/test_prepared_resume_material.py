@@ -13,6 +13,9 @@ from core.application_plan import (
     ApplicationPlan,
     PrivateHomeApplicationPlanRepository,
 )
+from core.application_preparation_orchestrator import (
+    PreparationStageOutcome,
+)
 from core.job_prioritization import ProposedPriorityLevel
 from core.prepared_resume_material import (
     PREPARED_RESUME_MATERIAL_CONTRACT_VERSION,
@@ -24,6 +27,7 @@ from core.prepared_resume_material import (
     PreparedResumeMaterialWriteStatus,
     PrivateHomePreparedResumeMaterialRepository,
     PublishPreparedResumeCommand,
+    prepared_resume_publication_public_result,
     publish_prepared_resume,
 )
 from core.private_home import PrivateHome
@@ -583,6 +587,11 @@ def test_unapproved_visual_qa_is_not_ready(
         is PreparedResumeMaterialNotReadyReason.VISUAL_QA_NOT_PASSED
     )
     assert result.material is None
+    assert result.stopped_source_lineage is not None
+    assert (
+        result.stopped_source_lineage.source_result_id
+        == parts["visual_qa"].result_id
+    )
     assert not _materials(parts)
 
 
@@ -612,6 +621,8 @@ def test_unsuccessful_revision_runs_are_not_ready(
         result.not_ready_reason
         is PreparedResumeMaterialNotReadyReason.REVISION_RUN_NOT_SUCCESSFUL
     )
+    assert result.stopped_source_lineage is not None
+    assert result.stopped_source_lineage.source_result_id == run.run_id
     assert not _materials(parts)
 
 
@@ -643,6 +654,11 @@ def test_blocked_fact_qa_cannot_be_published(tmp_path: Path) -> None:
     assert (
         result.not_ready_reason
         is PreparedResumeMaterialNotReadyReason.FACT_QA_NOT_PASSED
+    )
+    assert result.stopped_source_lineage is not None
+    assert (
+        result.stopped_source_lineage.source_result_id
+        == blocked.qa_result_id
     )
     assert not _materials(parts)
 
@@ -845,6 +861,14 @@ def test_replay_returns_unchanged_without_duplicates(
     assert replay.status is PreparedResumeMaterialStatus.UNCHANGED
     assert replay.material == first.material
     assert replay.material.published_at == NOW
+    assert (
+        prepared_resume_publication_public_result(first).outcome
+        is PreparationStageOutcome.COMPLETED
+    )
+    assert (
+        prepared_resume_publication_public_result(replay).outcome
+        is PreparationStageOutcome.UNCHANGED
+    )
     assert len(_materials(parts)) == 1
     assert len(tuple(parts["home"].paths.compiled_resumes.rglob("*.pdf"))) == 1
 

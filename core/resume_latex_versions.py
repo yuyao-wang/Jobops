@@ -13,9 +13,26 @@ from threading import RLock
 from typing import Any, Mapping, Protocol, runtime_checkable
 
 from .private_home import PrivateHome, PrivateHomeError
+from .resume_latex_dependencies import (
+    RESUME_LATEX_DEPENDENCY_POLICY_VERSION,
+    single_file_external_dependencies,
+    unmanaged_latex_packages,
+)
+from .resume_latex_markers import (
+    BULLET_MACRO,
+    JOBOPS_CONTENT_BEGIN,
+    JOBOPS_CONTENT_END,
+    SECTION_MACRO,
+    split_controlled_region,
+    uses_controlled_markers,
+)
 
 
 RESUME_LATEX_VERSION_CONTRACT_VERSION = "resume-latex-version-v1"
+BASE_LATEX_TEMPLATE_CONTRACT_VERSION = "base-latex-template-v1"
+RESUME_LATEX_SOURCE_SAFETY_POLICY_VERSION = (
+    "resume-latex-source-safety-v1"
+)
 MAX_LATEX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_LATEX_LABELS = 32
 MAX_LATEX_LABEL_CHARS = 80
@@ -32,6 +49,11 @@ class ResumeLatexSourceKind(str, Enum):
     SYSTEM_TEMPLATE_DERIVED = "SYSTEM_TEMPLATE_DERIVED"
     AI_GENERATED = "AI_GENERATED"
     AI_REVISED = "AI_REVISED"
+
+
+class LatexSourceProfile(str, Enum):
+    GENERAL_SOURCE_V1 = "GENERAL_SOURCE_V1"
+    SINGLE_FILE_BASE_TEMPLATE_V1 = "SINGLE_FILE_BASE_TEMPLATE_V1"
 
 
 class ResumeLatexVersionWriteStatus(str, Enum):
@@ -65,6 +87,9 @@ class ResumeLatexVersionFailureReason(str, Enum):
     SOURCE_INVALID = "SOURCE_INVALID"
     SOURCE_NOT_UTF8 = "SOURCE_NOT_UTF8"
     SOURCE_CAPABILITY_REJECTED = "SOURCE_CAPABILITY_REJECTED"
+    SOURCE_PROFILE_INVALID = "SOURCE_PROFILE_INVALID"
+    TEMPLATE_CONTRACT_REJECTED = "TEMPLATE_CONTRACT_REJECTED"
+    DEPENDENCY_POLICY_REJECTED = "DEPENDENCY_POLICY_REJECTED"
     PARENT_NOT_FOUND = "PARENT_NOT_FOUND"
     PARENT_INTEGRITY_FAILURE = "PARENT_INTEGRITY_FAILURE"
     ROOT_FAMILY_CONFLICT = "ROOT_FAMILY_CONFLICT"
@@ -78,6 +103,7 @@ class ResumeLatexCapability(str, Enum):
     FILE_WRITE = "FILE_WRITE"
     FILE_READ = "FILE_READ"
     ABSOLUTE_PATH = "ABSOLUTE_PATH"
+    DYNAMIC_CODE_LOADING = "DYNAMIC_CODE_LOADING"
 
 
 _FORBIDDEN_CAPABILITIES: tuple[tuple[ResumeLatexCapability, re.Pattern[str]], ...] = (
@@ -109,6 +135,20 @@ _FORBIDDEN_CAPABILITIES: tuple[tuple[ResumeLatexCapability, re.Pattern[str]], ..
         ),
     ),
 )
+_STRICT_PROFILE_CAPABILITIES = (
+    (
+        ResumeLatexCapability.DYNAMIC_CODE_LOADING,
+        re.compile(r"\\(?:csname|endcsname|catcode|scantokens)\b"),
+    ),
+    (
+        ResumeLatexCapability.FILE_WRITE,
+        re.compile(r"\\begin\s*\{filecontents\*?\}"),
+    ),
+    (
+        ResumeLatexCapability.FILE_READ,
+        re.compile(r"\\read\b"),
+    ),
+)
 
 
 class ResumeLatexCapabilityError(ValueError):
@@ -117,6 +157,14 @@ class ResumeLatexCapabilityError(ValueError):
     def __init__(self, capability: ResumeLatexCapability) -> None:
         super().__init__(f"LaTeX source requests {capability.value}")
         self.capability = capability
+
+
+class BaseLatexTemplateContractError(ValueError):
+    """The source does not expose the closed P2a6c template interface."""
+
+
+class ResumeLatexDependencyPolicyError(ValueError):
+    """The strict single-file source uses a forbidden dependency."""
 
 
 def _clean_text(name: str, value: Any, *, maximum: int) -> str:
@@ -218,6 +266,111 @@ def validate_latex_source(source: str) -> str:
     return source
 
 
+def validate_single_file_base_latex_template(source: str) -> str:
+    """Validate the draft-independent P2a6c base-template interface."""
+
+    validate_latex_source(source)
+    active = _active_latex(source)
+    for capability, pattern in _STRICT_PROFILE_CAPABILITIES:
+        if pattern.search(active) is not None:
+            raise ResumeLatexCapabilityError(capability)
+    if single_file_external_dependencies(active):
+        raise ResumeLatexDependencyPolicyError(
+            "single-file template has an external dependency"
+        )
+    if unmanaged_latex_packages(active):
+        raise ResumeLatexDependencyPolicyError(
+            "single-file template has an unmanaged package"
+        )
+    required = (
+        "\\documentclass",
+        "\\begin{document}",
+        "\\end{document}",
+    )
+    if any(
+        active.count(token) != 1 or source.count(token) != 1
+        for token in required
+    ):
+        raise BaseLatexTemplateContractError(
+            "base template document root is invalid"
+        )
+    active_document_class = active.index("\\documentclass")
+    active_begin_document = active.index("\\begin{document}")
+    active_end_document = active.index("\\end{document}")
+    if (
+        not active_document_class
+        < active_begin_document
+        < active_end_document
+        or active[:active_document_class].strip()
+        or active[
+            active_end_document + len("\\end{document}") :
+        ].strip()
+    ):
+        raise BaseLatexTemplateContractError(
+            "base template document order is invalid"
+        )
+    begin_document = source.index("\\begin{document}")
+    end_document = source.index("\\end{document}")
+    if not uses_controlled_markers(source):
+        raise BaseLatexTemplateContractError(
+            "base template controlled region is invalid"
+        )
+    begin_anchor = source.index(JOBOPS_CONTENT_BEGIN)
+    end_anchor = source.index(JOBOPS_CONTENT_END)
+    if not begin_document < begin_anchor < end_anchor < end_document:
+        raise BaseLatexTemplateContractError(
+            "base template anchors are outside the document"
+        )
+    _, region, _ = split_controlled_region(source)
+    if region.strip():
+        raise BaseLatexTemplateContractError(
+            "base template controlled region must be empty"
+        )
+    definitions = {
+        SECTION_MACRO: re.compile(
+            rf"\\(?:provide|new|renew)command\s*"
+            rf"(?:\{{\s*)?\\{SECTION_MACRO}(?:\s*\}})?\s*\[2\]"
+        ),
+        BULLET_MACRO: re.compile(
+            rf"\\(?:provide|new|renew)command\s*"
+            rf"(?:\{{\s*)?\\{BULLET_MACRO}(?:\s*\}})?\s*\[2\]"
+        ),
+    }
+    for macro, pattern in definitions.items():
+        matches = tuple(pattern.finditer(active))
+        if (
+            len(matches) != 1
+            or source.index(f"\\{macro}") > begin_document
+            or active.count(f"\\{macro}") != 1
+            or source.count(f"\\{macro}") != 1
+        ):
+            raise BaseLatexTemplateContractError(
+                "base template marker interface is invalid"
+            )
+    return source
+
+
+def _active_latex(source: str) -> str:
+    """Remove comments while retaining escaped percent characters."""
+
+    lines = []
+    for line in source.splitlines(keepends=True):
+        end = len(line)
+        for index, character in enumerate(line):
+            if character != "%":
+                continue
+            backslashes = 0
+            cursor = index - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                backslashes += 1
+                cursor -= 1
+            if backslashes % 2 == 0:
+                end = index
+                break
+        lines.append(line[:end] + ("\n" if line.endswith("\n") else ""))
+    return "".join(lines)
+
+
 def _source_reference(*, subject_id: str, source_sha256: str) -> str:
     return str(
         PurePosixPath("state")
@@ -246,8 +399,13 @@ def _identity_payload(
     fact_qa_result_id: str | None,
     fact_qa_result_hash: str | None,
     labels: tuple[str, ...],
+    source_profile: LatexSourceProfile = LatexSourceProfile.GENERAL_SOURCE_V1,
+    template_contract_version: str | None = None,
+    dependency_policy_version: str | None = None,
+    source_safety_policy_version: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    profile = LatexSourceProfile(source_profile)
+    payload = {
         "contract_version": contract_version,
         "fact_qa_result_hash": fact_qa_result_hash,
         "fact_qa_result_id": fact_qa_result_id,
@@ -264,6 +422,18 @@ def _identity_payload(
         "template_id": template_id,
         "template_sha256": template_sha256,
     }
+    if profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1:
+        payload.update(
+            {
+                "dependency_policy_version": dependency_policy_version,
+                "source_profile": profile.value,
+                "source_safety_policy_version": (
+                    source_safety_policy_version
+                ),
+                "template_contract_version": template_contract_version,
+            }
+        )
+    return payload
 
 
 def resume_latex_version_id(**values: Any) -> str:
@@ -304,6 +474,10 @@ class ResumeLatexVersion:
     fact_qa_result_hash: str | None
     labels: tuple[str, ...]
     created_at: datetime
+    source_profile: LatexSourceProfile = LatexSourceProfile.GENERAL_SOURCE_V1
+    template_contract_version: str | None = None
+    dependency_policy_version: str | None = None
+    source_safety_policy_version: str | None = None
 
     def __post_init__(self) -> None:
         contract = _clean_text(
@@ -318,6 +492,23 @@ class ResumeLatexVersion:
         source_hash = _require_hash("source_sha256", self.source_sha256)
         kind = ResumeLatexSourceKind(self.source_kind)
         object.__setattr__(self, "source_kind", kind)
+        profile = LatexSourceProfile(self.source_profile)
+        strict = profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1
+        expected_profile_metadata = (
+            BASE_LATEX_TEMPLATE_CONTRACT_VERSION,
+            RESUME_LATEX_DEPENDENCY_POLICY_VERSION,
+            RESUME_LATEX_SOURCE_SAFETY_POLICY_VERSION,
+        )
+        actual_profile_metadata = (
+            self.template_contract_version,
+            self.dependency_policy_version,
+            self.source_safety_policy_version,
+        )
+        if (
+            strict and actual_profile_metadata != expected_profile_metadata
+        ) or (not strict and actual_profile_metadata != (None, None, None)):
+            raise ValueError("LaTeX source profile metadata is invalid")
+        object.__setattr__(self, "source_profile", profile)
         if (
             not isinstance(self.root_family_id, str)
             or _FAMILY_ID_PATTERN.fullmatch(self.root_family_id) is None
@@ -382,6 +573,10 @@ class ResumeLatexVersion:
             fact_qa_result_id=qa_id,
             fact_qa_result_hash=qa_hash,
             labels=labels,
+            source_profile=profile,
+            template_contract_version=self.template_contract_version,
+            dependency_policy_version=self.dependency_policy_version,
+            source_safety_policy_version=self.source_safety_policy_version,
         )
         if (
             not isinstance(self.latex_version_id, str)
@@ -419,6 +614,12 @@ class ResumeLatexVersion:
                 fact_qa_result_id=self.fact_qa_result_id,
                 fact_qa_result_hash=self.fact_qa_result_hash,
                 labels=self.labels,
+                source_profile=self.source_profile,
+                template_contract_version=self.template_contract_version,
+                dependency_policy_version=self.dependency_policy_version,
+                source_safety_policy_version=(
+                    self.source_safety_policy_version
+                ),
             ),
         }
 
@@ -549,7 +750,7 @@ class ResumeLatexVersionRepository(ResumeLatexVersionProvider, Protocol):
 
 
 def _version_from_dict(value: Any) -> ResumeLatexVersion:
-    expected = {
+    legacy_expected = {
         "latex_version_id",
         "contract_version",
         "subject_id",
@@ -568,12 +769,20 @@ def _version_from_dict(value: Any) -> ResumeLatexVersion:
         "labels",
         "created_at",
     }
+    strict_expected = legacy_expected | {
+        "source_profile",
+        "template_contract_version",
+        "dependency_policy_version",
+        "source_safety_policy_version",
+    }
+    keys = frozenset(value) if isinstance(value, Mapping) else frozenset()
     if (
         not isinstance(value, Mapping)
-        or set(value) != expected
+        or keys not in {frozenset(legacy_expected), frozenset(strict_expected)}
         or not isinstance(value["labels"], list)
     ):
         raise ValueError("persisted ResumeLatexVersion is invalid")
+    is_strict_record = keys == frozenset(strict_expected)
     return ResumeLatexVersion(
         latex_version_id=value["latex_version_id"],
         contract_version=value["contract_version"],
@@ -592,6 +801,22 @@ def _version_from_dict(value: Any) -> ResumeLatexVersion:
         fact_qa_result_hash=value["fact_qa_result_hash"],
         labels=tuple(value["labels"]),
         created_at=_parse_timestamp(value["created_at"]),
+        source_profile=(
+            LatexSourceProfile(value["source_profile"])
+            if is_strict_record
+            else LatexSourceProfile.GENERAL_SOURCE_V1
+        ),
+        template_contract_version=(
+            value["template_contract_version"] if is_strict_record else None
+        ),
+        dependency_policy_version=(
+            value["dependency_policy_version"] if is_strict_record else None
+        ),
+        source_safety_policy_version=(
+            value["source_safety_policy_version"]
+            if is_strict_record
+            else None
+        ),
     )
 
 
@@ -631,7 +856,14 @@ class PrivateHomeResumeLatexVersionRepository:
         if hashlib.sha256(content).hexdigest() != version.source_sha256:
             return False
         try:
-            validate_latex_source(content.decode("utf-8"))
+            decoded = content.decode("utf-8")
+            if (
+                version.source_profile
+                is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1
+            ):
+                validate_single_file_base_latex_template(decoded)
+            else:
+                validate_latex_source(decoded)
         except (UnicodeDecodeError, ValueError):
             return False
         return True
@@ -841,6 +1073,7 @@ class RegisterResumeLatexVersionCommand:
     fact_qa_result_id: str | None = None
     fact_qa_result_hash: str | None = None
     labels: tuple[str, ...] = ()
+    source_profile: LatexSourceProfile = LatexSourceProfile.GENERAL_SOURCE_V1
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,6 +1162,12 @@ def register_resume_latex_version(
     active_repository = repository or PrivateHomeResumeLatexVersionRepository(
         active_home
     )
+    if not isinstance(command, RegisterResumeLatexVersionCommand):
+        return _failure(ResumeLatexVersionFailureReason.INVALID_REQUEST)
+    try:
+        profile = LatexSourceProfile(command.source_profile)
+    except (TypeError, ValueError):
+        return _failure(ResumeLatexVersionFailureReason.SOURCE_PROFILE_INVALID)
     try:
         subject_id = _clean_text(
             "subject_id", command.subject_id, maximum=160
@@ -989,6 +1228,11 @@ def register_resume_latex_version(
         return _failure(ResumeLatexVersionFailureReason.SOURCE_AMBIGUOUS)
     if command.latex_source is None and command.source_path is None:
         return _failure(ResumeLatexVersionFailureReason.SOURCE_MISSING)
+    if (
+        profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1
+        and command.source_path is not None
+    ):
+        return _failure(ResumeLatexVersionFailureReason.SOURCE_UNMANAGED)
 
     try:
         active_home.ensure()
@@ -1041,6 +1285,24 @@ def register_resume_latex_version(
         )
     except (TypeError, ValueError):
         return _failure(ResumeLatexVersionFailureReason.SOURCE_INVALID)
+    if profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1:
+        try:
+            validate_single_file_base_latex_template(decoded)
+        except ResumeLatexCapabilityError as rejection:
+            return _failure(
+                ResumeLatexVersionFailureReason.SOURCE_CAPABILITY_REJECTED,
+                capability=rejection.capability,
+            )
+        except ResumeLatexDependencyPolicyError:
+            return _failure(
+                ResumeLatexVersionFailureReason.DEPENDENCY_POLICY_REJECTED
+            )
+        except BaseLatexTemplateContractError:
+            return _failure(
+                ResumeLatexVersionFailureReason.TEMPLATE_CONTRACT_REJECTED
+            )
+        except (TypeError, ValueError):
+            return _failure(ResumeLatexVersionFailureReason.SOURCE_INVALID)
 
     source_hash = hashlib.sha256(content).hexdigest()
     reference = _source_reference(
@@ -1080,6 +1342,23 @@ def register_resume_latex_version(
     elif requested_family is not None:
         family_id = requested_family
     else:
+        family_values: dict[str, Any] = {
+            "source_profile": profile,
+        }
+        if profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1:
+            family_values.update(
+                {
+                    "template_contract_version": (
+                        BASE_LATEX_TEMPLATE_CONTRACT_VERSION
+                    ),
+                    "dependency_policy_version": (
+                        RESUME_LATEX_DEPENDENCY_POLICY_VERSION
+                    ),
+                    "source_safety_policy_version": (
+                        RESUME_LATEX_SOURCE_SAFETY_POLICY_VERSION
+                    ),
+                }
+            )
         family_id = resume_latex_root_family_id(
             contract_version=RESUME_LATEX_VERSION_CONTRACT_VERSION,
             subject_id=subject_id,
@@ -1094,6 +1373,7 @@ def register_resume_latex_version(
             fact_qa_result_id=qa_id,
             fact_qa_result_hash=qa_hash,
             labels=labels,
+            **family_values,
         )
 
     target = active_home.contained_path(reference)
@@ -1130,6 +1410,21 @@ def register_resume_latex_version(
         "fact_qa_result_hash": qa_hash,
         "labels": labels,
     }
+    if profile is LatexSourceProfile.SINGLE_FILE_BASE_TEMPLATE_V1:
+        values.update(
+            {
+                "source_profile": profile,
+                "template_contract_version": (
+                    BASE_LATEX_TEMPLATE_CONTRACT_VERSION
+                ),
+                "dependency_policy_version": (
+                    RESUME_LATEX_DEPENDENCY_POLICY_VERSION
+                ),
+                "source_safety_policy_version": (
+                    RESUME_LATEX_SOURCE_SAFETY_POLICY_VERSION
+                ),
+            }
+        )
     try:
         version = ResumeLatexVersion(
             latex_version_id=resume_latex_version_id(**values),
@@ -1170,16 +1465,21 @@ def register_resume_latex_version(
 
 
 __all__ = [
+    "BASE_LATEX_TEMPLATE_CONTRACT_VERSION",
+    "BaseLatexTemplateContractError",
+    "LatexSourceProfile",
     "MAX_LATEX_LABELS",
     "MAX_LATEX_LABEL_CHARS",
     "MAX_LATEX_SOURCE_BYTES",
     "PrivateHomeResumeLatexVersionRepository",
     "RESUME_LATEX_VERSION_CONTRACT_VERSION",
+    "RESUME_LATEX_SOURCE_SAFETY_POLICY_VERSION",
     "RegisterResumeLatexVersionCommand",
     "RegisterResumeLatexVersionResult",
     "RegisterResumeLatexVersionStatus",
     "ResumeLatexCapability",
     "ResumeLatexCapabilityError",
+    "ResumeLatexDependencyPolicyError",
     "ResumeLatexSourceKind",
     "ResumeLatexVersion",
     "ResumeLatexVersionFailureReason",
@@ -1194,4 +1494,5 @@ __all__ = [
     "register_resume_latex_version",
     "resume_latex_root_family_id",
     "resume_latex_version_id",
+    "validate_single_file_base_latex_template",
 ]

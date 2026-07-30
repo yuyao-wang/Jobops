@@ -10,12 +10,20 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, runtime_checkable
 
 from .application_plan import (
     ApplicationPlan,
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
+)
+from .application_preparation_orchestrator import (
+    LATEX_CONSTRUCTION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    LatexConstructionStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
 )
 from .base_latex_selection import (
     BaseLatexSelectionDecision,
@@ -50,6 +58,7 @@ from .resume_latex_markers import (
     uses_controlled_markers,
     visible_text_runs,
 )
+from .resume_latex_dependencies import unmanaged_file_dependencies
 from .resume_latex_versions import (
     RegisterResumeLatexVersionCommand,
     RegisterResumeLatexVersionStatus,
@@ -67,6 +76,11 @@ from .resume_tailoring import (
     TailoredResumeDraftReadStatus,
     TailoredResumeDraftRepository,
 )
+if TYPE_CHECKING:
+    from .latex_compilation_correction import (
+        LatexCompilationCorrectionConstraint,
+        LatexCompilationCorrectionDirectiveProvider,
+    )
 
 
 RESUME_LATEX_CONSTRUCTION_CONTRACT_VERSION = "resume-latex-construction-v1"
@@ -95,6 +109,11 @@ You must never:
 - Emit shell escape, file reads or writes, external programs or absolute
   include paths.
 - Read files, call tools, or reach a repository or compiler.
+
+When a typed Compilation correction is supplied, regenerate the document
+without changing any Draft text. A managed-dependency correction must remove
+all external file dependencies. A compilable-LaTeX correction may change only
+LaTeX structure, escaping, layout adaptation and controlled dependencies.
 
 Return the complete LaTeX document as typed structured output.
 """
@@ -288,6 +307,9 @@ class ResumeLatexConstructionContext:
     marker_contract: Mapping[str, Any]
     agent_policy: str
     agent_policy_version: str
+    compilation_correction: (
+        LatexCompilationCorrectionConstraint | None
+    ) = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,11 +489,19 @@ def _construction_binding(
     template_id: str | None,
     template_sha256: str | None,
     metadata: ResumeLatexConstructionAgentMetadata,
+    compilation_correction: (
+        LatexCompilationCorrectionConstraint | None
+    ) = None,
 ) -> str:
     return _canonical_hash(
         {
             "application_plan_id": plan.plan_id,
             "base_latex_selection_decision_id": decision.decision_id,
+            "compilation_correction": (
+                compilation_correction.to_dict()
+                if compilation_correction is not None
+                else None
+            ),
             "fact_qa_result_hash": qa_result.qa_content_hash,
             "fact_qa_result_id": qa_result.qa_result_id,
             "marker_contract_version": (
@@ -1069,6 +1099,9 @@ async def construct_resume_latex_version(
     agent: ResumeLatexConstructionAgentPort,
     metadata: ResumeLatexConstructionAgentMetadata,
     construction_repository: ResumeLatexConstructionRecordRepository,
+    correction_provider: (
+        LatexCompilationCorrectionDirectiveProvider | None
+    ) = None,
     home: PrivateHome | None = None,
 ) -> ConstructResumeLatexResult:
     """Write the Draft into the selected layout as one new immutable version."""
@@ -1358,6 +1391,92 @@ async def construct_resume_latex_version(
                 ResumeLatexConstructionFailureReason.TEMPLATE_UNAVAILABLE,
             )
 
+    compilation_correction = None
+    failed_source: str | None = None
+    if correction_provider is not None:
+        try:
+            correction_read = correction_provider.get_current(
+                subject_id=subject_id,
+                application_plan_id=plan.plan_id,
+            )
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason
+                .RECORD_INTEGRITY_FAILURE,
+            )
+        if not correction_read.succeeded:
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason
+                .RECORD_INTEGRITY_FAILURE,
+            )
+        correction = correction_read.directive
+        if correction is not None:
+            try:
+                failed_record_read = construction_repository.get(
+                    subject_id=subject_id,
+                    record_id=correction.failed_construction_result_id,
+                )
+                failed_version_read = latex_version_repository.get(
+                    subject_id=subject_id,
+                    latex_version_id=correction.failed_latex_version_id,
+                )
+                failed_record = failed_record_read.record
+                failed_version = failed_version_read.version
+                if (
+                    failed_record_read.status
+                    is not ResumeLatexConstructionReadStatus.FOUND
+                    or not isinstance(
+                        failed_record, ResumeLatexConstructionRecord
+                    )
+                    or failed_version_read.status
+                    is not ResumeLatexVersionReadStatus.FOUND
+                    or not isinstance(failed_version, ResumeLatexVersion)
+                    or failed_record.subject_id != subject_id
+                    or failed_record.application_plan_id != plan.plan_id
+                    or failed_record.tailored_resume_draft_id
+                    != draft.draft_id
+                    or failed_record.tailored_resume_draft_hash
+                    != draft.draft_content_hash
+                    or failed_record.fact_qa_result_id
+                    != qa_result.qa_result_id
+                    or failed_record.fact_qa_result_hash
+                    != qa_result.qa_content_hash
+                    or failed_record.base_latex_selection_decision_id
+                    != decision.decision_id
+                    or failed_record.latex_version_id
+                    != correction.failed_latex_version_id
+                    or failed_record.latex_source_sha256
+                    != correction.failed_source_content_hash
+                    or failed_version.source_sha256
+                    != correction.failed_source_content_hash
+                ):
+                    raise ValueError("Compilation correction source drifted")
+                failed_path = active_home.contained_path(
+                    failed_version.source_reference
+                )
+                failed_raw = failed_path.read_bytes()
+                if hashlib.sha256(failed_raw).hexdigest() != (
+                    correction.failed_source_content_hash
+                ):
+                    raise ValueError("Compilation correction source drifted")
+                failed_source = failed_raw.decode("utf-8")
+                compilation_correction = correction.constraint
+            except (
+                AttributeError,
+                OSError,
+                PrivateHomeError,
+                TypeError,
+                UnicodeDecodeError,
+                ValueError,
+            ):
+                return _failure(
+                    command,
+                    ResumeLatexConstructionFailureReason
+                    .RECORD_INTEGRITY_FAILURE,
+                )
+
     binding = _construction_binding(
         plan=plan,
         draft=draft,
@@ -1372,6 +1491,7 @@ async def construct_resume_latex_version(
         template_id=template.template_id if template else None,
         template_sha256=template.template_sha256 if template else None,
         metadata=metadata,
+        compilation_correction=compilation_correction,
     )
     record_id = f"resume-latex-construction-{binding}"
     try:
@@ -1430,7 +1550,58 @@ async def construct_resume_latex_version(
 
     region = render_controlled_region(sections)
     agent_invoked = False
-    if template is not None:
+    if compilation_correction is not None:
+        context = ResumeLatexConstructionContext(
+            subject_id=subject_id,
+            tailored_resume_draft_id=draft.draft_id,
+            base_latex_source=failed_source or "",
+            sections=sections,
+            user_preparation_instructions=(
+                plan.user_preparation_instructions
+            ),
+            marker_contract=marker_contract_dict(),
+            agent_policy=RESUME_LATEX_CONSTRUCTION_AGENT_POLICY,
+            agent_policy_version=(
+                RESUME_LATEX_CONSTRUCTION_POLICY_VERSION
+            ),
+            compilation_correction=compilation_correction,
+        )
+        try:
+            output = await agent.construct(context)
+        except TimeoutError:
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason.AGENT_TIMEOUT,
+                retryable=True,
+                construction_binding=binding,
+            )
+        except ResumeLatexConstructionAgentUnavailableError:
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason.AGENT_UNAVAILABLE,
+                retryable=True,
+                construction_binding=binding,
+            )
+        except Exception:
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason.AGENT_UNAVAILABLE,
+                retryable=True,
+                construction_binding=binding,
+            )
+        agent_invoked = True
+        if not isinstance(output, ResumeLatexConstructionAgentOutput):
+            return _failure(
+                command,
+                ResumeLatexConstructionFailureReason
+                .CONSTRUCTION_OUTPUT_UNSAFE,
+                status=ResumeLatexConstructionStatus.DEFERRED_NEEDS_HUMAN,
+                construction_binding=binding,
+            )
+        constructed = output.latex_source
+        path = ResumeLatexConstructionPath.DERIVED_FROM_EXISTING_VERSION
+        method = ResumeLatexConstructionMethod.AGENT_RECONSTRUCTED
+    elif template is not None:
         constructed = template.wrap(region)
         path = ResumeLatexConstructionPath.MANAGED_TEMPLATE
         method = (
@@ -1462,6 +1633,7 @@ async def construct_resume_latex_version(
             agent_policy_version=(
                 RESUME_LATEX_CONSTRUCTION_POLICY_VERSION
             ),
+            compilation_correction=None,
         )
         try:
             output = await agent.construct(context)
@@ -1507,8 +1679,23 @@ async def construct_resume_latex_version(
         constructed = validate_constructed_source(
             constructed,
             sections=sections,
-            base_source=parent_source,
+            base_source=(
+                None
+                if compilation_correction is not None
+                else parent_source
+            ),
         )
+        if compilation_correction is not None:
+            if hashlib.sha256(constructed.encode("utf-8")).hexdigest() == (
+                compilation_correction.failed_source_content_hash
+            ):
+                raise _ConstructionRejected(
+                    "the correction did not change the failed source"
+                )
+            if unmanaged_file_dependencies(constructed):
+                raise _ConstructionRejected(
+                    "the correction retains an unmanaged dependency"
+                )
     except _ConstructionRejected as rejection:
         return _failure(
             command,
@@ -1637,6 +1824,79 @@ async def construct_resume_latex_version(
     )
 
 
+_LATEX_CONSTRUCTION_FAILURE_REASON_MAP = {
+    reason: LatexConstructionStopReason[reason.name]
+    for reason in ResumeLatexConstructionFailureReason
+}
+
+
+def resume_latex_construction_public_result(
+    result: ConstructResumeLatexResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a6c outcome to stage-result v2."""
+
+    if not isinstance(result, ConstructResumeLatexResult):
+        raise TypeError("result must be a LaTeX construction result")
+    stage = ApplicationPreparationStage.LATEX_CONSTRUCTION
+    if result.status in {
+        ResumeLatexConstructionStatus.CREATED,
+        ResumeLatexConstructionStatus.UNCHANGED,
+    }:
+        if result.record is None or result.version is None:
+            raise ValueError("successful construction has no lineage")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeLatexConstructionStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.record.record_id,
+            result_content_hash=_canonical_hash(
+                result.record.content_dict()
+            ),
+            outputs={
+                "latex_version_id": result.version.latex_version_id,
+                "latex_construction_record_id": result.record.record_id,
+            },
+        )
+    if result.reason_code is None:
+        raise ValueError("stopped construction has no authoritative reason")
+    try:
+        reason = _LATEX_CONSTRUCTION_FAILURE_REASON_MAP[result.reason_code]
+    except KeyError as error:
+        raise ValueError("unmapped LaTeX construction stop reason") from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if result.status
+        in {
+            ResumeLatexConstructionStatus.DEFERRED_SOURCE_UNREADABLE,
+            ResumeLatexConstructionStatus.DEFERRED_NEEDS_HUMAN,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=LATEX_CONSTRUCTION_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.construction_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+        human_attention_required=(
+            result.status is ResumeLatexConstructionStatus.DEFERRED_NEEDS_HUMAN
+        ),
+    )
+
+
 __all__ = [
     "ConstructResumeLatexCommand",
     "ConstructResumeLatexResult",
@@ -1663,5 +1923,7 @@ __all__ = [
     "ResumeLatexConstructionWriteStatus",
     "construct_resume_latex_version",
     "render_controlled_region",
+    "resume_latex_construction_public_result",
     "validate_constructed_source",
+    "unmanaged_file_dependencies",
 ]

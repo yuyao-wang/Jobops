@@ -10,7 +10,7 @@ This document is the authority for domain objects, lifecycle states, and busines
 | `SourceObservation` | connector 返回的一条原始岗位观察；尚不是规范化岗位 | source, external ID/URL, observed time |
 | `DiscoveryRun` | 一次 manual/scheduled collection 及各 source 结果 | run ID, profile version, trigger |
 | `JobPosting` | 标准化后的岗位及其可申请目标 | `job_id`, source identity, content hash, revision |
-| `AcceptedJobIntent` | 某个 subject 在成功 Discovery 后明确接受的 add/apply 业务意图；不是执行许可 | subject ID, job ID, intent, proposal ID, Discovery run ID |
+| `AcceptedJobIntent` | 某个 subject 在成功 Discovery 后明确接受的 add/apply 业务意图；v2 记录 typed source provenance；不是执行许可 | subject ID, job ID, intent, proposal ID, Discovery run ID, v2 source provenance |
 | `PrioritizationPolicyDraft` | AI 对用户自然语言策略的结构化解释；尚未生效 | draft ID, subject ID, interpreter version, expiry |
 | `PrioritizationPolicy` | 用户审核并批准的不可变求职策略 snapshot | policy ID, subject ID, version, content hash |
 | `JobAnalysis` | 从某个 JD revision 提取的结构化 requirements 和 unknowns | job revision, analyzer version |
@@ -33,6 +33,81 @@ This document is the authority for domain objects, lifecycle states, and busines
 | `ApplicationOutcome` | 执行的标准化终态或暂停态 | run ID, exact status, evidence refs, retryability |
 
 Candidate data is never inferred. `CandidateEvidence` is valid only when its source, sensitivity, scope, confirmation time, and optional expiry are known.
+
+### Authenticated subject sessions
+
+- A subject-scoped HTTP use case accepts identity only from a successfully
+  validated server-side session. Client query, form, JSON, ordinary headers,
+  profile fields and conversation IDs are never identity sources.
+- The cookie contains an opaque session reference plus credential. Keychain
+  stores the session context and only the credential hash; neither the cookie
+  credential nor its secret may enter logs, responses or ordinary records.
+- Sessions bind exactly one subject, authentication method, issue time, expiry
+  and contract version. Explicit `now` determines expiry; future-issued,
+  expired, missing, corrupted or hash-mismatched sessions fail closed.
+- FastAPI dependencies translate authentication failure to safe 401 responses
+  and cross-subject resource access to 403. Business services continue to
+  accept a plain explicit subject ID and do not depend on HTTP/session types.
+
+### Accepted job intent provenance
+
+- Persisted v1 records remain their original records: reads do not inject
+  provenance, rewrite bytes or change identity.
+- New records use v2 and require either `CONVERSATIONAL_INTAKE` provenance with
+  its formal proposal source ID, or `SEARCH_PROFILE_REFRESH` provenance with
+  one or more canonical, deduplicated and stably ordered profile IDs.
+- Provenance records origin only. It cannot authorize SearchProfile automation,
+  cancel an earlier request or affect the rule that any valid
+  `REQUEST_APPLICATION` takes precedence over `ADD_JOB`.
+
+### `SearchProfile`
+
+- A SearchProfile is mutable user configuration represented as immutable,
+  subject-specific versions. Its logical profile ID is stable; a content
+  change appends the next version and never overwrites history.
+- V1 source is only typed `KNOWN_GREENHOUSE_BOARD` with an explicit Greenhouse
+  board token. Company, title and optional location are stored as the same
+  canonical `JobSearchRequest` semantics used by the supported search port.
+- Refresh mode is fixed to `MANUAL`. Profiles store no cron, interval,
+  `next_run_at`, due state, CandidateSet, JobPosting or accepted intent.
+- Identical canonical content returns `UNCHANGED`; audit timestamps do not
+  enter content identity.
+- `list_current()` returns one deterministic current version per logical
+  profile. `list_enabled()` filters that current view and never returns a
+  disabled or cross-subject profile.
+- Saving or reading a profile never performs search, Discovery, Priority,
+  application planning or execution.
+
+### Manual full job library refresh
+
+- S3b is invoked explicitly with a subject, timezone-aware timestamp, stable
+  invocation ID and positive Priority budget. It is not a scheduled or due-task
+  operation.
+- One fixed `list_enabled()` snapshot is authoritative for the invocation.
+  Each profile is searched once using its stored canonical request through a
+  provider-neutral executor.
+- Search candidates are not JobPostings. Canonical URL identity merges the
+  same candidate across profiles before one PublicJobReader and one formal
+  Discovery call; all contributing profile IDs remain in the audit result.
+- Formal Discovery receives only resolved `ADD_JOB` proposals under
+  `MANUAL_LIBRARY_REFRESH`. It owns normalization, identity, revision and
+  persistence.
+- Missing SearchProfile intent policy defaults to `ADD_JOB_ONLY`. Only an
+  explicit, enabled `AUTO_REQUEST_APPLICATION` policy may write a v2
+  `REQUEST_APPLICATION` intent after Public Read and Discovery both succeed.
+- When profiles share a candidate URL, any explicit auto-enabled source is
+  sufficient; all contributing profile IDs are retained in the intent
+  provenance. Add-only sources cannot cancel a request.
+- Policy changes are immutable versions and affect future refreshes only.
+  They do not revoke existing request intent or trigger P1d4, planning,
+  preparation or execution.
+- Search, read and Discovery failures are isolated. After all candidates, P1d3
+  runs at most once even when partial failures occurred. No operation retries.
+- A missing result in one bounded search is not evidence that an existing job
+  closed or expired; S3b never mutates lifecycle state from absence.
+- Subject plus invocation ID provides UI replay protection before profile,
+  Search, Reader, Discovery or Priority calls. A different invocation ID is a
+  new explicit refresh.
 
 ## 状态机
 
@@ -112,6 +187,23 @@ version without rewriting its content or historical decisions.
   exactly and never written to static Agent instructions or another job.
 - A plan permits preparation to begin. It does not mean materials are complete,
   satisfy Gate A, authorize browser execution or authorize submission.
+
+### Selective Batch ApplicationPlan Creation
+
+- P2a1b takes either a non-empty ordered job allowlist or a positive
+  `max_jobs` bound and reads P1d4 exactly once for the explicit subject and
+  timezone-aware `now`.
+- Only snapshot items typed `RUNNABLE` call the public P2a1 creator. Every
+  blocked status is preserved as `SKIPPED_NOT_RUNNABLE`; an absent allowlisted
+  job is `NOT_FOUND`. Neither consumes the P2a1 execution bound.
+- Explicit allowlists preserve caller order and first occurrence. Without an
+  allowlist, P1d4 snapshot order is authoritative. Calls are serial, at most
+  once per job, and a single failure does not stop later runnable jobs.
+- Only explicitly supplied per-job preparation instructions cross into P2a1.
+  Missing instructions remain `None`; the batch does not derive instructions
+  from job text, conversation state, or another job.
+- P2a1b has no persistence or retry layer. Repeated runs rely on P2a1 immutable
+  identity and `UNCHANGED`, and never start P2b4/P2b6 or execution.
 
 ### Trusted resume candidates
 
@@ -274,6 +366,19 @@ version without rewriting its content or historical decisions.
   program execution, file writes, file reads and absolute or home-relative
   include paths. Relative includes remain legal. This is admission control,
   not compile safety; sandboxed compilation remains a later Slice.
+- `GENERAL_SOURCE_V1` remains the default registration profile and retains
+  those rules, including legal relative includes. A caller must explicitly
+  select `SINGLE_FILE_BASE_TEMPLATE_V1` to admit a user-supplied base
+  template under the stricter P2a6a1 contract.
+- The strict profile requires exactly one document root, one empty and
+  ordered `JOBOPS-CONTENT-BEGIN/END` region inside that root, and exactly one
+  compatible two-argument definition each for `JobopsSection` and
+  `JobopsBullet` before the document body. These are layout interfaces, not
+  candidate facts and do not depend on a Tailored Draft.
+- Strict single-file sources may use only the closed managed-template package
+  set and no external files, images, fonts, bibliographies, includes or
+  dynamically named file inputs. The shared deterministic capability and
+  dependency policies are registration checks; compilation remains P2a7.
 - Many LaTeX versions and many root families may be valid at once. There is
   no unique `current_resume.tex` and no single ACTIVE version.
 - Nothing overwrites history. An AI revision or template derivation creates a
@@ -288,6 +393,10 @@ version without rewriting its content or historical decisions.
 - Version identity binds subject, managed source reference and hash, source
   kind, parent, root family, template, source resume, draft and fact-QA
   bindings, normalized labels and contract version. Time is excluded.
+- A strict-profile version additionally binds its source profile and exact
+  template, dependency and safety-policy versions. Historical and general
+  versions have no added identity fields and remain readable without
+  revalidation or rewriting under the strict profile.
 - Identical identity replays as `UNCHANGED` without duplicating the managed
   artifact or the record, preserving the original creation time. Different
   content under the same identity is an integrity conflict.
@@ -794,6 +903,44 @@ version without rewriting its content or historical decisions.
   bounded evidence hashes only. Bearer tokens, private keys, form values and
   raw browser content are forbidden.
 
+### Current application execution queue
+
+- A verified completed `ApplicationExecutionRun` makes its Plan permanently
+  `SUBMITTED` for automatic execution selection, including after a newer
+  AssemblyRecord is created.
+- Without a verified completion, any `SUBMISSION_UNCERTAIN` Run makes the Plan
+  `SUBMISSION_UNCERTAIN`; it must never become `READY` or be retried
+  automatically.
+- Deferred and failed Runs are Assembly-scoped. They do not block a newer
+  current Assembly that has no Run, which is `READY`.
+- The queue is a zero-write current read model. It preserves typed Run
+  stage/reason fields and never re-evaluates Gate, permit, Review or evidence
+  semantics.
+- Selective batch execution reads one fixed queue snapshot and may call P2c7
+  only for `READY` items. Deferred/failed items are skipped, and submitted or
+  uncertain items are terminal skips.
+- One Plan's defer, failure or uncertainty never stops later READY Plans in
+  the same bounded serial batch. No item is retried, and the queue is not
+  refreshed during that batch.
+
+### End-to-end automation cycle
+
+- P2c10a calls only the public P1d3, P2a1b, P2b6 and P2c9 batch boundaries,
+  once each and in fixed order. Every enabled stage receives the same subject
+  and explicit timezone-aware timestamp.
+- Each stage has an independent non-negative budget. Zero records a typed
+  skipped stage; at least one budget must be positive.
+- A failed batch stage is audited but does not prevent later stages from using
+  existing state. Per-item defer/failure, Human Attention skips and submission
+  uncertainty are aggregated without rollback, waiting or retry.
+- Every scheduler tick or explicit cycle has a caller-supplied invocation ID.
+  It creates a new immutable audit Run even when configuration is unchanged.
+  Replaying the same invocation ID and binding returns the existing Run before
+  any batch call. Audit time is not logical identity.
+- The cycle never searches for jobs, resolves Human Attention, retries an
+  uncertain submission, or calls a single-job service, Agent, compiler,
+  Browser, Gate, permit, ATS or submit path directly.
+
 ### Cover letter evidence snapshot
 
 - P2b2a is independent of the resume-tailoring evidence boundary in
@@ -1077,6 +1224,75 @@ version without rewriting its content or historical decisions.
 - `CREATED` and `UNCHANGED` are successful stage outcomes. Visual QA `PASSED`
   skips Layout Revision; `REVISION_REQUIRED` calls P2a8b and its final passing
   LaTeX/Compilation/VisualQA IDs replace the initial lineage for publication.
+- New stage results use the v2 outcome contract. `COMPLETED`, `UNCHANGED` and
+  `SKIPPED` cannot carry a stop reason; `DEFERRED` and `FAILED` require a
+  versioned reason whose stage, enum type and outcome match the closed
+  stage-specific registry. Plain string reasons are not a typed write path.
+- Historical orchestration-v1 stage results remain exact, explicitly
+  `LEGACY_UNTYPED` projections. Unmigrated stages in a new v2 Run must use the
+  named legacy adapter; legacy reason text is preserved but never promoted to
+  a typed reason through inference.
+- Base Resume Selection, Source Resume Projection, CandidateEvidence,
+  Tailored Resume Draft and Resume Fact QA use closed stage-specific v1 reason
+  enums in new Runs. Missing selectable input/evidence and explicitly unsafe
+  semantic output retain their deferred semantics. Dependency, binding,
+  Agent-service, persistence and record-integrity faults retain failure
+  semantics. `UNSUPPORTED_CLAIM` remains its own deferred fact-safety block
+  and cannot be converted into a generic human approval.
+- Cover Letter Evidence, Cover Letter Draft, Cover Letter Fact QA and
+  Application Answers also use closed stage-specific v1 stop-reason enums.
+  Missing cover-letter evidence and unsafe bounded-Agent output defer;
+  dependency, binding, Agent-service, persistence and integrity faults fail.
+  Application Answers derives `USER_FACT_REQUIRED`, `USER_CHOICE_REQUIRED`,
+  `USER_ATTESTATION_REQUIRED` or a typed multi-input requirement from the
+  existing `UnresolvedAnswerReason` values. Consent, signature and legal
+  confirmation remain plan-scoped attestation semantics, never reusable facts.
+- Cover Letter Fact QA has no artifact-unreadable branch, and Application
+  Answers has no Agent/parser branch in the current contracts. The stop-reason
+  registry does not invent unavailable production reasons.
+- Resume/Cover Letter Publication and their Manifest-entry stages use four
+  independent closed reason contracts. A missing or formally not-ready
+  upstream material stays `DEFERRED`; subject/Plan/source binding, artifact
+  hash/version, persistence and result-integrity violations stay `FAILED`.
+  Publication/manifest replay of the same immutable record stays `UNCHANGED`.
+  Adapters must use formal material/manifest identity and never reconstruct it
+  from a path, filename or legacy reason string.
+- LaTeX Construction, sandboxed Compilation, Resume Visual QA and bounded
+  Layout Revision use four independent closed reason contracts in every new
+  production Run. Content rejection is not collapsed into service or
+  infrastructure failure: compile errors are distinct from compiler
+  unavailability and timeout; renderer, Visual-QA Agent reliability, layout
+  correction, downstream failure and attempt exhaustion remain distinct.
+  Compiler stderr, renderer logs and Agent explanations never create typed
+  reasons.
+- A new Layout `COMPILATION_STOPPED` attempt must carry the exact stopped
+  Compilation public-result ID/hash, typed outcome and validated stop-reason
+  envelope. Its subject, Plan, revision-record attempt and selected LaTeX
+  version must match the parent attempt. Historical attempts lacking this
+  lineage remain readable only as legacy-incomplete; `detail`, diagnostics and
+  compiler stderr never reconstruct business lineage.
+- Every new P2b4 stage execution receives one shared
+  `PreparationInvocationBinding`, created before the first stage from the
+  authenticated subject, Plan and explicit invocation ID. Its identity never
+  includes stage output, final Run ID or audit time. New stage-result v3
+  records and the final Run must agree on the binding reference; historical
+  records keep an explicit missing/legacy boundary.
+- A direct Resume Compilation attempt is deterministically bound to that
+  invocation, stage, subject, Plan and positive attempt number. A stopped
+  attempt whose Construction, selected LaTeX version and source hash have
+  passed formal binding uses `RESOLVED` source lineage. Invalid request,
+  missing/integrity-failed source records and rejected bindings use one of the
+  closed `UNRESOLVED` states and may retain only safe requested IDs. No path,
+  stderr, exception text, stage hash or fabricated source hash may complete
+  unresolved lineage.
+- P2b4-detected public-call exceptions and malformed public results use the
+  affected stage's registered integrity reason. The orchestration diagnostic
+  remains separate; new production failures do not enter the legacy-string
+  path.
+- The current Layout Revision implementation has no authoritative
+  no-progress, duplicate-revision or cycle branch. The reason registry does
+  not invent these categories. Attempt exhaustion remains a distinct
+  deferred stop and does not imply approval, publication or retry authority.
 - A deferred, not-ready or human-only Slice result records one deferred stage
   and stops the job immediately. A nonrecoverable contract, binding,
   integrity or persistence failure records one failed stage. Neither path
@@ -1097,6 +1313,24 @@ version without rewriting its content or historical decisions.
 
 ### Current Human Attention Queue
 
+Application-answer USER items may be resolved only from an authenticated,
+explicit user message. Reusable facts and ordinary choices become typed
+USER_CONFIRMED CandidateVault records with source, sensitivity, scope, time and
+message-hash provenance. Attestation, consent and signature decisions are
+plan-scoped immutable records and never reusable profile facts. Ambiguous
+messages, manual-review items and OPERATOR items are not resolved by this path.
+After a successful authoritative write, P2b4 is rerun once; the Queue remains a
+derived read model and is never edited directly.
+
+ResumeCandidate and LaTeX version choices use a distinct plan-scoped override.
+Only options returned by the current subject-specific selectable provider are
+eligible. A unique ID or display label is resolved deterministically; otherwise
+one bounded parser may see only the message, required action and safe option
+IDs/labels. It never receives document bytes, source paths, vault data or job
+text. Overrides never mutate registries or global ACTIVE state. P2a3/P2a6b
+revalidate the option on every consumption, fail closed on drift, and bind the
+override into a new immutable selection decision before P2b4 continues.
+
 - P2b5 is a subject-scoped read model derived from immutable current
   `ApplicationPreparationRun` and `PreparedApplicationAnswerSet` records. It
   has no queue database and performs no writes, retries or upstream commands.
@@ -1104,8 +1338,9 @@ version without rewriting its content or historical decisions.
   repository's deterministic current selector. Filesystem mtime and traversal
   order have no meaning. Superseded deferred/failed Runs never contribute
   current items.
-- A current completed Run with no human-attention flag is absent. A deferred
-  Run produces one item from an exact stage/public-status mapping. A failed
+- A current completed Run with no human-attention flag is absent. A typed
+  deferred Run produces one item from the explicit stage/reason-enum
+  classification table. A failed
   Run always produces `SYSTEM_OPERATOR_REQUIRED`; system, contract,
   repository and integrity failures must never be presented as ordinary user
   questions.
@@ -1114,14 +1349,31 @@ version without rewriting its content or historical decisions.
   item becomes one queue item; non-blocking optional skips are excluded.
 - Missing trusted facts map to `USER_FACT_REQUIRED`, ambiguous choices to
   `USER_CHOICE_REQUIRED`, and attestation/consent/signature to
-  `USER_ATTESTATION_REQUIRED`. Fact/visual/layout review maps to
-  `MANUAL_REVIEW_REQUIRED`. Compiler, renderer, managed-artifact and system
-  failures map to `SYSTEM_OPERATOR_REQUIRED`. Unknown typed defer reasons
-  also fail safe to the operator audience.
+  `USER_ATTESTATION_REQUIRED`, with `PROVIDE_FACT`, `MAKE_CHOICE` and
+  `ATTEST` capabilities respectively. Unsupported claims map to
+  `CORRECT_MATERIAL`, readable-source problems map to `REPLACE_INPUT`, and
+  dependency/binding faults map to `OPERATOR_REPAIR`. None may become an
+  approval.
+- `MANUAL_REVIEW_REQUIRED` and `APPROVE_REVIEW_TARGET` require a stable
+  artifact/version/hash review target. No current preparation stage provides
+  that contract, so P2b5a/P2b5a2 emit neither. P2b5a2 explicitly maps all 16
+  P2b4e technical defers: content correction and readable-input replacement
+  remain USER work; compiler, renderer, Agent-pipeline and managed-output
+  repair remain OPERATOR work. Layout compilation stops use the validated
+  child typed envelope from P2b4e1. Missing, legacy-incomplete or damaged
+  child lineage remains `UNCLASSIFIED_SYSTEM_BLOCKER` / `NON_OVERRIDABLE`.
+  Classification never parses stderr, diagnostics or free text.
+- Every new formal stopped Resume Compilation result must first persist one
+  immutable stopped-source record bound to the pre-run invocation and
+  deterministic attempt. Resolved records preserve exact Construction,
+  selected LaTeX version and source hash; unresolved records preserve only
+  their closed early-resolution state and safe requested IDs. They never
+  reference the final Run, synthesize a source hash, or store stderr. A
+  stopped-source persistence failure is non-recursive and returns no reference.
 - Item identity binds Plan, current Run/binding, source stage/record and
-  reason, optional AnswerSet ID/hash and canonical key, and mapping/contract
-  versions. Evaluated `now` is excluded. Ordering is P0→P3, USER before
-  OPERATOR, attestation→fact→choice→manual→operator, then immutable source
+  reason, resolution capability, optional AnswerSet ID/hash and canonical key,
+  and mapping/contract versions. Evaluated `now` is excluded. Ordering is
+  P0→P3, USER before OPERATOR, typed attention kind, then immutable source
   event time, Plan ID and item ID.
 - A newer current Run automatically replaces the old projection. Once that
   Run completes without attention, the old item disappears without
@@ -1433,3 +1685,209 @@ priority in the explicit-promotion set requires a separate future promotion
 fact, and a priority in neither admission set is not runnable. Intent integrity
 failure fails the whole view rather than masquerading as no intent. P1d4
 preserves P1d2 order and performs no claim, save, preparation or execution.
+
+### Material correction targets
+
+- A correction target exists only for a current P2b5 item whose capability is
+  `CORRECT_MATERIAL`.
+- The closed mapping contains all ten current correctable reasons: four exact
+  unsupported-claim paths, two Resume Publication visual/layout paths, one
+  Cover Letter overflow path, two LaTeX Compilation content paths, and one
+  exhausted Resume Layout path.
+- Unsupported claims bind exactly one stable QA finding and can only be
+  deleted or rewritten; they cannot be approved around Fact QA.
+- Compilation and Layout targets bind immutable source/result/attempt
+  identity. Paths, stderr, exception text, UI copy, and “latest” aliases are
+  never identity sources.
+- A missing safe visual preview returns `PREVIEW_UNAVAILABLE`; it never
+  authorizes blind correction.
+- Target creation and read are non-mutating with respect to materials and do
+  not rerun P2b4 or authorize an application.
+
+### Resume layout correction preview
+
+- Only a current Resume visual/layout correction target may produce a preview.
+- The preview binds the exact compiled artifact, LaTeX source, target, renderer
+  contract, and final Layout attempt when one exists. A path, “latest” alias,
+  UI value, or whole Preparation Run is never a source identity.
+- The formal artifact provider verifies subject, record, byte count and hash
+  before the existing renderer receives PDF bytes. Only bounded PNG pages are
+  exposed.
+- Preview replay is immutable and content-addressed. Target or artifact drift,
+  unsafe media, missing bytes, and integrity failures fail closed.
+- Preview availability does not mean Visual QA passed, approval was granted,
+  publication is allowed, or the Human Attention item was resolved.
+
+### Cover Letter overflow correction preview
+
+- Only a current Cover Letter layout correction target may produce a preview.
+- The preview binds the exact Publication result, overflow evaluation,
+  content-addressed source, compiler identity, rendered artifact and renderer
+  contract. Paths, “latest” aliases, UI values and modification times are not
+  identities.
+- The managed source provider verifies subject and source hash before the
+  existing compiler receives in-memory source. The overflow evaluation is
+  recomputed and must still describe the generated multi-page PDF.
+- Only allowlisted PNG pages are exposed through an authenticated opaque
+  reference. Source paths, internal hashes, compiler output and exceptions are
+  never returned to the Dashboard.
+- Preview creation and reading are immutable and read-only with respect to
+  Cover Letter content, Publication, Queue state and Preparation execution.
+
+### Resume layout correction
+
+- Layout correction requires a current USER `CORRECT_MATERIAL` item, exact
+  Resume visual/layout target, and an already-created current safe preview.
+- The only action is `REVISE_LAYOUT_AND_RETRY`; visual issues are selected
+  from a closed enum and cannot contain LaTeX, CSS, code, or content edits.
+- Target origin selects the correction mode. UI or model output cannot choose
+  the authoritative mode.
+- Each immutable directive starts at most one new Layout cycle with the
+  existing attempt limit. A repeated blocker never triggers another cycle
+  automatically.
+- P2a8b must preserve the controlled Resume content region and marker set byte
+  for byte, reject unmanaged dependencies and unsafe typography, and rerun
+  Compilation and Visual QA.
+- Defer or failure preserves the directive and receipt; it does not edit Queue
+  state, weaken checks, approve publication, or authorize submission.
+
+### Cover Letter overflow correction
+
+- Correction requires a current USER `CORRECT_MATERIAL` item, exact Cover
+  Letter overflow target, and an already-created current safe preview.
+- The only action is `REFORMAT_AND_RETRY`; it selects the fixed
+  `REFORMAT_EXISTING_CONTENT` mode. Free text, LaTeX, CSS and patches are not
+  accepted.
+- Each immutable directive binds the exact Publication result, overflow
+  evaluation and content-addressed source and starts at most one P2b4 rerun.
+- Publication may change only closed managed layout parameters. The complete
+  document body, canonical paragraph identities and Fact-QA-approved text
+  must remain unchanged; Agent self-report is never preservation proof.
+- Compiler, dependency, PDF-text, overflow, artifact, Publication and Manifest
+  checks remain mandatory. A new overflow does not trigger an automatic loop.
+- Defer or failure preserves the directive and receipt and never mutates Queue
+  state, edits the prior source, approves publication or authorizes submission.
+
+### Input replacement targets
+
+- Only a current USER item with capability `REPLACE_INPUT` may carry an input
+  replacement target reference.
+- Source Resume unsupported/unreadable reasons bind the exact selected
+  ResumeCandidate record, candidate contract version, artifact hash and media
+  type. The target is not CandidateVault or the whole Plan.
+- Base LaTeX unreadable binds the exact selected LaTeX Version, root family,
+  version contract and source hash. A family or “current template” alone is
+  insufficient.
+- Missing upstream selection identity is `TARGET_INCOMPLETE`; changed current
+  item, selection, record or content identity is `TARGET_STALE`. Paths,
+  filenames, mtimes, UI text and “latest” aliases never repair lineage.
+- A target states only that another formally registered input is required. It
+  does not delete, deactivate, upload, register, select, validate or rerun
+  anything.
+- Safe UI output contains input kind, display name, version, media type,
+  required action and closed replacement methods. Content hashes, Private Home
+  references, credentials, permits, exceptions and parser diagnostics remain
+  private.
+
+### Existing input replacement resolution
+
+- Only an authenticated current USER `REPLACE_INPUT` item with a current exact
+  target may select an existing replacement.
+- The choice must be an exact ID returned by one typed subject-scoped
+  ResumeCandidate or LaTeX Version selectable listing. Display names, paths,
+  filenames, “latest” aliases and client-supplied unlisted IDs have no
+  authority.
+- Selecting the targeted old input is rejected. With no other selectable
+  record, the service reports that new registration is required but performs
+  no upload or registration.
+- Replacement reuses the S3g2 plan-scoped override repository. Its v2
+  provenance binds target, old record/version/hash, selected record, reason,
+  and prior override; it never changes global ACTIVE/default state or old
+  records.
+- P2a3/P2a6b revalidate the selected record and old bound identity before
+  consuming the override. Invalid provenance fails closed rather than falling
+  back to an Agent choice.
+- One new override triggers one full P2b4 rerun. Replay, defer, failure, and a
+  newly unreadable replacement never cause an automatic additional choice.
+
+### New ResumeCandidate registration and replacement
+
+- Only a current authenticated Source Resume replacement target that permits
+  `REGISTER_NEW_RESUME_CANDIDATE` accepts an upload. LaTeX targets and stale
+  target bindings fail closed before registration.
+- The service enforces the versioned P2a2 byte limit and detects only PDF or
+  DOCX from validated content. Browser media type, extension, filename,
+  client path, client hash and client Candidate ID are never authoritative.
+- Display name is bounded safe metadata and does not determine content
+  identity. No uploaded bytes, Private Home path, parser output, or exception
+  is stored in the orchestration receipt.
+- Registration uses the P2a2 public entry exclusively. Existing identical
+  content is replayed through P2a2's `UNCHANGED` semantics; the old candidate,
+  registry history and global defaults remain untouched.
+- The exact returned candidate must be subject-owned, content-matching and
+  selectable through the public provider before delegation.
+- S3g5b1 delegates once to S3g5 using a deterministic child invocation. It
+  never writes an override or calls P2b4. Registration survives delegated
+  failure, and neither replay nor a newly unreadable resume causes an
+  automatic additional upload or selection.
+
+### New Base LaTeX Version registration and replacement
+
+- Only a current authenticated Base LaTeX replacement target permitting
+  `REGISTER_NEW_LATEX_VERSION` accepts this upload. Resume targets and stale
+  target/version/family bindings fail closed before registration.
+- The service accepts one bounded UTF-8 text source. It rejects binary/control
+  content and never trusts client filename, extension, media type, path,
+  family, parent, content hash or registry ID.
+- Registration always selects P2a6a1's explicit
+  `SINGLE_FILE_BASE_TEMPLATE_V1` profile. Its document-root, controlled
+  anchors, managed-package, external-file and unsafe-capability checks remain
+  authoritative; registration does not substitute compilation.
+- Root family and predecessor come only from the exact target-bound old
+  version and typed registry. The new immutable version remains in that
+  family and records the old version as parent. Old versions and global
+  ACTIVE/default state are never modified.
+- Display label and optional note are bounded UI metadata only and do not
+  enter source identity. Source bytes, full LaTeX, paths and validator details
+  never enter the orchestration receipt or logs.
+- The exact returned version must be subject-owned, same-family,
+  content-matching, strict-profile and provider-readable before delegation.
+- S3g5b2 delegates once to S3g5 with a deterministic child invocation. It
+  never writes an override or calls P2b4. Registration survives delegated
+  failure; replay and a newly unusable template never trigger an automatic
+  additional upload, selection or rerun.
+
+### Unsupported claim correction
+
+- Only current USER `CORRECT_MATERIAL` items backed by an exact
+  `UnsupportedClaimCorrectionTarget` may create a directive.
+- REMOVE prevents the Draft stage from intentionally reproducing the bound
+  unsupported claim. REWRITE is a bounded writing instruction and may use
+  only the already-bound formal evidence.
+- A correction instruction is not a candidate fact, evidence item,
+  attestation, or approval and is never written to CandidateVault.
+- Directives are immutable and finding-scoped. Changed action or instruction
+  creates a new version linked to the prior directive.
+- Every successful write triggers at most one P2b4 rerun. Formal Fact QA is
+  neither skipped nor weakened; a repeated unsupported claim produces a new
+  current blocker.
+- Preparation defer/failure never rolls back the authoritative directive and
+  never causes an automatic retry.
+
+### LaTeX Compilation correction
+
+- Only current USER `CORRECT_MATERIAL` items backed by an exact
+  `LatexCompilationCorrectionTarget` are accepted.
+- The only action is `REGENERATE_AND_RETRY`. `UNMANAGED_DEPENDENCY` maps to
+  `REGENERATE_WITH_MANAGED_DEPENDENCIES`; `COMPILATION_ERROR` maps to
+  `REGENERATE_COMPILABLE_LATEX`.
+- The directive binds the exact failed Construction, LaTeX version/source
+  hash, Compilation attempt, stopped-source record, and preparation
+  invocation. Infrastructure and OPERATOR reasons are excluded.
+- P2a6c creates a new immutable Construction identity and must retain exact
+  Draft text, managed-dependency checks, source safety validation, and all
+  downstream Compilation and visual checks.
+- No raw LaTeX, code patch, stderr, path, exception, CandidateVault fact, or
+  new Resume claim is accepted from the UI.
+- Each directive triggers at most one full P2b4 rerun. Defer/failure retains
+  its directive and receipt; the service never loops or retries itself.

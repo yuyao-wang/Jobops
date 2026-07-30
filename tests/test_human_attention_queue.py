@@ -25,14 +25,26 @@ from core.application_plan import (
     PrivateHomeApplicationPlanRepository,
 )
 from core.application_preparation_orchestrator import (
+    APPLICATION_ANSWERS_STOP_REASON_CONTRACT_VERSION,
+    BASE_LATEX_STOP_REASON_CONTRACT_VERSION,
+    CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
+    COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
+    RESUME_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+    ApplicationAnswersStopReason,
     ApplicationPreparationRunListResult,
     ApplicationPreparationRunListStatus,
     ApplicationPreparationStage,
+    BaseLatexPreparationStopReason,
+    CandidateEvidenceSnapshotStopReason,
+    CoverLetterDraftStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
     ApplicationPreparationStatus,
     PrivateHomeApplicationPreparationRunRepository,
     PublicPreparationStageResult,
     PublicStageDirective,
     PublicStageStatus,
+    ResumeFactQAStopReason,
     RunApplicationPreparationCommand,
     run_application_preparation,
 )
@@ -42,6 +54,7 @@ from core.human_attention_queue import (
     HumanAttentionQueueFailureReason,
     HumanAttentionQueueStatus,
     HumanAttentionReasonCode,
+    HumanAttentionResolutionCapability,
     build_current_human_attention_queue,
 )
 from core.job_prioritization import ProposedPriorityLevel
@@ -117,7 +130,7 @@ def _deferred_recipe(
     recorder = _Recorder()
 
     def deferred(request):
-        return PublicPreparationStageResult.stopped(
+        return PublicPreparationStageResult.legacy_stopped(
             stage=request.stage,
             status=PublicStageStatus.DEFERRED,
             public_status=public_status,
@@ -138,7 +151,7 @@ def _failed_recipe(
     recorder = _Recorder()
 
     def failed(request):
-        return PublicPreparationStageResult.stopped(
+        return PublicPreparationStageResult.legacy_stopped(
             stage=request.stage,
             status=PublicStageStatus.FAILED,
             public_status="FAILED",
@@ -149,6 +162,34 @@ def _failed_recipe(
         recorder,
         input_binding=input_binding,
         overrides={stage: failed},
+    )
+
+
+def _typed_deferred_recipe(
+    *,
+    stage: ApplicationPreparationStage,
+    reason,
+    contract_version: str,
+    input_binding: str = "typed-deferred-binding",
+):
+    recorder = _Recorder()
+
+    def deferred(request):
+        return PublicPreparationStageResult.deferred(
+            stage=request.stage,
+            stop_reason=PreparationStopReasonEnvelope(
+                stage=request.stage,
+                code=reason,
+                contract_version=contract_version,
+                outcome=PreparationStageOutcome.DEFERRED,
+            ),
+            human_attention_required=True,
+        )
+
+    return recorder, _recipe(
+        recorder,
+        input_binding=input_binding,
+        overrides={stage: deferred},
     )
 
 
@@ -233,7 +274,7 @@ def _completed_with_real_answers(
         )
         assert result.answer_set is not None
         answer_set = result.answer_set
-        return PublicPreparationStageResult.success(
+        return PublicPreparationStageResult.legacy_success(
             stage=request.stage,
             status=PublicStageStatus.CREATED,
             public_status=result.status.value,
@@ -270,10 +311,10 @@ def test_current_deferred_run_creates_typed_user_fact_item(
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-deferred-fact")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
-    _recorder, recipe = _deferred_recipe(
+    _recorder, recipe = _typed_deferred_recipe(
         stage=ApplicationPreparationStage.RESUME_EVIDENCE,
-        public_status="DEFERRED_NO_EVIDENCE",
-        reason_code="NO_TRUSTED_EVIDENCE",
+        reason=CandidateEvidenceSnapshotStopReason.NO_USABLE_EVIDENCE,
+        contract_version=CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
     )
     run = _invoke(
         plan=plan,
@@ -334,47 +375,67 @@ def test_completed_answer_set_expands_only_blocking_items(
 
 
 @pytest.mark.parametrize(
-    ("stage", "public_status", "kind", "audience"),
+    (
+        "stage",
+        "reason",
+        "contract_version",
+        "kind",
+        "audience",
+        "capability",
+    ),
     (
         (
             ApplicationPreparationStage.APPLICATION_ANSWERS,
-            "DEFERRED_NO_TRUSTED_FACTS",
+            ApplicationAnswersStopReason.NO_TRUSTED_FACTS,
+            APPLICATION_ANSWERS_STOP_REASON_CONTRACT_VERSION,
             HumanAttentionKind.USER_FACT_REQUIRED,
             HumanAttentionAudience.USER,
+            HumanAttentionResolutionCapability.PROVIDE_FACT,
         ),
         (
             ApplicationPreparationStage.BASE_LATEX_SELECTION,
-            "DEFERRED_NEEDS_HUMAN",
+            (
+                BaseLatexPreparationStopReason
+                .USER_REQUIREMENT_UNSATISFIABLE
+            ),
+            BASE_LATEX_STOP_REASON_CONTRACT_VERSION,
             HumanAttentionKind.USER_CHOICE_REQUIRED,
             HumanAttentionAudience.USER,
+            HumanAttentionResolutionCapability.MAKE_CHOICE,
         ),
         (
             ApplicationPreparationStage.RESUME_FACT_QA,
-            "BLOCKED_UNSUPPORTED_CLAIM",
-            HumanAttentionKind.MANUAL_REVIEW_REQUIRED,
-            HumanAttentionAudience.USER,
+            ResumeFactQAStopReason.UNSUPPORTED_CLAIM,
+            RESUME_FACT_QA_STOP_REASON_CONTRACT_VERSION,
+            HumanAttentionKind.UNCLASSIFIED_SYSTEM_BLOCKER,
+            HumanAttentionAudience.OPERATOR,
+            HumanAttentionResolutionCapability.NON_OVERRIDABLE,
         ),
         (
-            ApplicationPreparationStage.RESUME_COMPILATION,
-            "DEFERRED_COMPILER_UNAVAILABLE",
+            ApplicationPreparationStage.COVER_LETTER_DRAFT,
+            CoverLetterDraftStopReason.AGENT_OUTPUT_UNSAFE,
+            COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
             HumanAttentionKind.SYSTEM_OPERATOR_REQUIRED,
             HumanAttentionAudience.OPERATOR,
+            HumanAttentionResolutionCapability.OPERATOR_REPAIR,
         ),
     ),
 )
 def test_explicit_defer_mapping_categories(
     tmp_path: Path,
     stage,
-    public_status,
+    reason,
+    contract_version,
     kind,
     audience,
+    capability,
 ) -> None:
-    home = PrivateHome(tmp_path / public_status)
-    plan, plans = _plan(home, job_id=f"job-{public_status.lower()}")
-    recorder, recipe = _deferred_recipe(
+    home = PrivateHome(tmp_path / reason.value)
+    plan, plans = _plan(home, job_id=f"job-{reason.value.lower()}")
+    recorder, recipe = _typed_deferred_recipe(
         stage=stage,
-        public_status=public_status,
-        reason_code=f"REASON_{public_status}",
+        reason=reason,
+        contract_version=contract_version,
     )
     _invoke(
         plan=plan,
@@ -387,6 +448,7 @@ def test_explicit_defer_mapping_categories(
 
     assert result.items[0].attention_kind is kind
     assert result.items[0].audience is audience
+    assert result.items[0].resolution_capability is capability
     assert result.items[0].source_stage is stage
 
 
@@ -435,7 +497,14 @@ def test_unknown_typed_defer_reason_fails_safe_to_operator(
     item = _queue(home).items[0]
 
     assert item.audience is HumanAttentionAudience.OPERATOR
-    assert item.reason_code is HumanAttentionReasonCode.UNKNOWN_DEFER_REASON
+    assert (
+        item.reason_code
+        is HumanAttentionReasonCode.UNCLASSIFIED_SYSTEM_BLOCKER
+    )
+    assert (
+        item.resolution_capability
+        is HumanAttentionResolutionCapability.NON_OVERRIDABLE
+    )
 
 
 def test_new_clean_run_makes_old_deferred_item_disappear(
@@ -535,43 +604,55 @@ def test_sorting_uses_priority_then_audience_kind_and_ties(
         (
             "job-p1-operator",
             ProposedPriorityLevel.P1,
-            ApplicationPreparationStage.RESUME_COMPILATION,
-            "DEFERRED_COMPILER_UNAVAILABLE",
+            ApplicationPreparationStage.COVER_LETTER_DRAFT,
+            CoverLetterDraftStopReason.AGENT_OUTPUT_UNSAFE,
+            COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
         ),
         (
             "job-p0-operator",
             ProposedPriorityLevel.P0,
-            ApplicationPreparationStage.RESUME_COMPILATION,
-            "DEFERRED_COMPILER_UNAVAILABLE",
+            ApplicationPreparationStage.COVER_LETTER_DRAFT,
+            CoverLetterDraftStopReason.AGENT_OUTPUT_UNSAFE,
+            COVER_LETTER_DRAFT_STOP_REASON_CONTRACT_VERSION,
         ),
         (
             "job-p1-fact",
             ProposedPriorityLevel.P1,
             ApplicationPreparationStage.RESUME_EVIDENCE,
-            "DEFERRED_NO_EVIDENCE",
+            CandidateEvidenceSnapshotStopReason.NO_USABLE_EVIDENCE,
+            CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
         ),
         (
             "job-p1-choice",
             ProposedPriorityLevel.P1,
             ApplicationPreparationStage.BASE_LATEX_SELECTION,
-            "DEFERRED_NEEDS_HUMAN",
+            (
+                BaseLatexPreparationStopReason
+                .USER_REQUIREMENT_UNSATISFIABLE
+            ),
+            BASE_LATEX_STOP_REASON_CONTRACT_VERSION,
         ),
         (
-            "job-p1-manual",
+            "job-p1-correction",
             ProposedPriorityLevel.P1,
             ApplicationPreparationStage.RESUME_FACT_QA,
-            "DEFERRED_NEEDS_HUMAN",
+            ResumeFactQAStopReason.UNSUPPORTED_CLAIM,
+            RESUME_FACT_QA_STOP_REASON_CONTRACT_VERSION,
         ),
     )
     plans = PrivateHomeApplicationPlanRepository(home)
-    for index, (job_id, priority, stage, public_status) in enumerate(
-        specifications
-    ):
+    for index, (
+        job_id,
+        priority,
+        stage,
+        reason,
+        contract_version,
+    ) in enumerate(specifications):
         plan, _ = _plan(home, job_id=job_id, priority=priority)
-        _recorder, recipe = _deferred_recipe(
+        _recorder, recipe = _typed_deferred_recipe(
             stage=stage,
-            public_status=public_status,
-            reason_code=f"REASON_{index}",
+            reason=reason,
+            contract_version=contract_version,
             input_binding=f"binding-{index}",
         )
         _invoke(
@@ -588,8 +669,8 @@ def test_sorting_uses_priority_then_audience_kind_and_ties(
         "job-p0-operator",
         "job-p1-fact",
         "job-p1-choice",
-        "job-p1-manual",
         "job-p1-operator",
+        "job-p1-correction",
     ]
 
 

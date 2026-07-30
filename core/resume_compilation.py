@@ -16,6 +16,18 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 import pdfplumber
 from pdfminer.pdfparser import PDFSyntaxError
 
+from .application_preparation_orchestrator import (
+    COMPILATION_SOURCE_RESOLUTION_LINEAGE_CONTRACT_VERSION,
+    LATEX_COMPILATION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    LatexCompilationStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    ResolvedCompilationSourceLineage,
+    UnresolvedCompilationSourceLineage,
+    UnresolvedCompilationSourceState,
+)
 from .latex_compiler import (
     LATEX_COMPILE_POLICY_VERSION,
     LATEX_SANDBOX_POLICY_VERSION,
@@ -29,12 +41,23 @@ from .latex_compiler import (
     redact_diagnostics,
 )
 from .private_home import PrivateHome, PrivateHomeError
+from .preparation_invocation import (
+    PreparationInvocationBinding,
+    resume_compilation_attempt_id,
+)
 from .resume_latex_construction import (
     LatexBuildProvenance,
     ResumeLatexConstructionReadStatus,
     ResumeLatexConstructionRecordRepository,
+    unmanaged_file_dependencies,
+)
+from .resume_compilation_stopped_source import (
+    ResumeCompilationStoppedSourceRecord,
+    ResumeCompilationStoppedSourceRepository,
+    ResumeCompilationStoppedSourceWriteStatus,
 )
 from .resume_latex_versions import (
+    RESUME_LATEX_VERSION_CONTRACT_VERSION,
     ResumeLatexCapabilityError,
     ResumeLatexVersion,
     ResumeLatexVersionReadStatus,
@@ -47,14 +70,6 @@ RESUME_COMPILATION_CONTRACT_VERSION = "resume-compilation-v1"
 
 _HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _RECORD_ID_PATTERN = re.compile(r"^resume-compilation-[a-f0-9]{64}$")
-
-#: P2a6a manages exactly one .tex per version, so any file dependency the
-#: source pulls in cannot be resolved from the registry.
-_FILE_DEPENDENCY_PATTERN = re.compile(
-    r"\\(?:input|include|includegraphics|lstinputlisting|subfile"
-    r"|includepdf|bibliography|addbibresource)\s*(?:\[[^\]]*\])?\s*\{"
-)
-
 
 class ResumeCompilationStatus(str, Enum):
     CREATED = "CREATED"
@@ -98,6 +113,34 @@ class ResumeCompilationFailureReason(str, Enum):
     ARTIFACT_PERSISTENCE_FAILED = "ARTIFACT_PERSISTENCE_FAILED"
     RECORD_PERSISTENCE_FAILED = "RECORD_PERSISTENCE_FAILED"
     RECORD_INTEGRITY_FAILURE = "RECORD_INTEGRITY_FAILURE"
+
+
+_UNRESOLVED_SOURCE_STATES_BY_REASON = {
+    ResumeCompilationFailureReason.INVALID_REQUEST: (
+        UnresolvedCompilationSourceState.INVALID_REQUEST
+    ),
+    ResumeCompilationFailureReason.CONSTRUCTION_RECORD_NOT_FOUND: (
+        UnresolvedCompilationSourceState.CONSTRUCTION_NOT_FOUND
+    ),
+    ResumeCompilationFailureReason.CONSTRUCTION_RECORD_INTEGRITY_FAILURE: (
+        UnresolvedCompilationSourceState.CONSTRUCTION_INTEGRITY_FAILURE
+    ),
+    ResumeCompilationFailureReason.CONSTRUCTION_BINDING_MISMATCH: (
+        UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+    ),
+    ResumeCompilationFailureReason.LATEX_VERSION_NOT_FOUND: (
+        UnresolvedCompilationSourceState.LATEX_VERSION_NOT_FOUND
+    ),
+    ResumeCompilationFailureReason.LATEX_VERSION_INTEGRITY_FAILURE: (
+        UnresolvedCompilationSourceState.LATEX_VERSION_INTEGRITY_FAILURE
+    ),
+    ResumeCompilationFailureReason.LATEX_VERSION_BINDING_MISMATCH: (
+        UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+    ),
+    ResumeCompilationFailureReason.SOURCE_HASH_DRIFT: (
+        UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+    ),
+}
 
 
 def _clean_text(name: str, value: Any, *, maximum: int) -> str:
@@ -184,20 +227,6 @@ def pdf_page_count(content: bytes) -> int:
         return 0
     except Exception:
         return 0
-
-
-def unmanaged_file_dependencies(source: str) -> tuple[str, ...]:
-    """Report LaTeX macros that would pull in files the registry does not hold."""
-
-    if not isinstance(source, str):
-        raise TypeError("source must be a string")
-    found: list[str] = []
-    for match in _FILE_DEPENDENCY_PATTERN.finditer(source):
-        macro = match.group(0)
-        name = macro.strip()[1:].split("[")[0].split("{")[0].strip()
-        if name and name not in found:
-            found.append(name)
-    return tuple(found)
 
 
 def compilation_binding(
@@ -643,6 +672,12 @@ class CompileResumeLatexResult:
     diagnostics: str
     retryable: bool
     message: str
+    source_construction_record_id: str | None = None
+    source_latex_version_id: str | None = None
+    source_application_plan_id: str | None = None
+    source_latex_sha256: str | None = None
+    source_contract_version: str | None = None
+    unresolved_source_state: UnresolvedCompilationSourceState | None = None
 
     def __post_init__(self) -> None:
         status = ResumeCompilationStatus(self.status)
@@ -664,6 +699,79 @@ class CompileResumeLatexResult:
             raise ValueError("diagnostics are outside the bounded contract")
         if not isinstance(self.message, str) or not self.message:
             raise ValueError("message must be non-empty")
+        if (
+            self.source_construction_record_id is None
+        ) != (self.source_latex_version_id is None):
+            raise ValueError("compilation source lineage must be complete")
+        if self.source_construction_record_id is not None:
+            _clean_text(
+                "source_construction_record_id",
+                self.source_construction_record_id,
+                maximum=160,
+            )
+            _clean_text(
+                "source_latex_version_id",
+                self.source_latex_version_id,
+                maximum=160,
+            )
+        resolved_values = (
+            self.source_application_plan_id,
+            self.source_latex_sha256,
+            self.source_contract_version,
+        )
+        if any(value is not None for value in resolved_values):
+            if (
+                self.source_construction_record_id is None
+                or self.source_latex_version_id is None
+                or any(value is None for value in resolved_values)
+                or self.unresolved_source_state is not None
+            ):
+                raise ValueError("resolved compilation source is incomplete")
+            _clean_text(
+                "source_application_plan_id",
+                self.source_application_plan_id,
+                maximum=180,
+            )
+            _require_hash(
+                "source_latex_sha256", self.source_latex_sha256
+            )
+            if (
+                self.source_contract_version
+                != RESUME_LATEX_VERSION_CONTRACT_VERSION
+            ):
+                raise ValueError("source contract version is unsupported")
+            if self.reason_code in _UNRESOLVED_SOURCE_STATES_BY_REASON:
+                raise ValueError("early source failure cannot be resolved")
+        elif status not in {
+            ResumeCompilationStatus.CREATED,
+            ResumeCompilationStatus.UNCHANGED,
+        }:
+            if self.unresolved_source_state is None:
+                raise ValueError(
+                    "stopped compilation needs a source resolution state"
+                )
+            object.__setattr__(
+                self,
+                "unresolved_source_state",
+                UnresolvedCompilationSourceState(
+                    self.unresolved_source_state
+                ),
+            )
+            expected_state = _UNRESOLVED_SOURCE_STATES_BY_REASON.get(
+                self.reason_code
+            )
+            if (
+                self.reason_code
+                is ResumeCompilationFailureReason.SOURCE_UNREADABLE
+            ):
+                expected_state = (
+                    UnresolvedCompilationSourceState
+                    .SOURCE_BINDING_REJECTED
+                )
+            if expected_state is not self.unresolved_source_state:
+                raise ValueError(
+                    "unresolved source state conflicts with stop reason"
+                )
         if status in {
             ResumeCompilationStatus.CREATED,
             ResumeCompilationStatus.UNCHANGED,
@@ -694,7 +802,51 @@ def _failure(
     diagnostics: str = "",
     compilation_binding: str = "",
     detail: str | None = None,
+    unresolved_source_state: (
+        UnresolvedCompilationSourceState | None
+    ) = None,
+    resolved_source: tuple[str, str, str] | None = None,
 ) -> CompileResumeLatexResult:
+    source_construction_record_id = (
+        command.resume_latex_construction_record_id.strip()
+        if isinstance(
+            command.resume_latex_construction_record_id, str
+        )
+        and command.resume_latex_construction_record_id.strip()
+        and len(command.resume_latex_construction_record_id.strip()) <= 160
+        else None
+    )
+    source_latex_version_id = (
+        command.resume_latex_version_id.strip()
+        if isinstance(command.resume_latex_version_id, str)
+        and command.resume_latex_version_id.strip()
+        and len(command.resume_latex_version_id.strip()) <= 160
+        else None
+    )
+    if (
+        source_construction_record_id is None
+        or source_latex_version_id is None
+    ):
+        source_construction_record_id = None
+        source_latex_version_id = None
+    source_application_plan_id = None
+    source_latex_sha256 = None
+    source_contract_version = None
+    if resolved_source is not None:
+        (
+            source_application_plan_id,
+            source_latex_sha256,
+            source_contract_version,
+        ) = resolved_source
+        if (
+            source_construction_record_id is None
+            or source_latex_version_id is None
+        ):
+            raise ValueError("resolved source needs exact request identity")
+        if unresolved_source_state is not None:
+            raise ValueError("resolved source cannot be unresolved")
+    elif unresolved_source_state is None:
+        raise ValueError("unresolved failure needs an explicit state")
     return CompileResumeLatexResult(
         status=status,
         subject_id=(
@@ -710,6 +862,12 @@ def _failure(
         diagnostics=diagnostics,
         retryable=retryable,
         message=detail or f"LaTeX compilation stopped: {reason.value}.",
+        source_construction_record_id=source_construction_record_id,
+        source_latex_version_id=source_latex_version_id,
+        source_application_plan_id=source_application_plan_id,
+        source_latex_sha256=source_latex_sha256,
+        source_contract_version=source_contract_version,
+        unresolved_source_state=unresolved_source_state,
     )
 
 
@@ -742,7 +900,11 @@ def compile_resume_latex(
         now = _require_aware("now", command.now)
     except (AttributeError, TypeError, ValueError):
         return _failure(
-            command, ResumeCompilationFailureReason.INVALID_REQUEST
+            command,
+            ResumeCompilationFailureReason.INVALID_REQUEST,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.INVALID_REQUEST
+            ),
         )
 
     try:
@@ -754,6 +916,10 @@ def compile_resume_latex(
             command,
             ResumeCompilationFailureReason
             .CONSTRUCTION_RECORD_INTEGRITY_FAILURE,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState
+                .CONSTRUCTION_INTEGRITY_FAILURE
+            ),
         )
     if (
         construction_read.status
@@ -762,6 +928,9 @@ def compile_resume_latex(
         return _failure(
             command,
             ResumeCompilationFailureReason.CONSTRUCTION_RECORD_NOT_FOUND,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.CONSTRUCTION_NOT_FOUND
+            ),
         )
     if (
         construction_read.status
@@ -772,6 +941,10 @@ def compile_resume_latex(
             command,
             ResumeCompilationFailureReason
             .CONSTRUCTION_RECORD_INTEGRITY_FAILURE,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState
+                .CONSTRUCTION_INTEGRITY_FAILURE
+            ),
         )
     construction = construction_read.record
     if (
@@ -781,6 +954,9 @@ def compile_resume_latex(
         return _failure(
             command,
             ResumeCompilationFailureReason.CONSTRUCTION_BINDING_MISMATCH,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+            ),
         )
 
     try:
@@ -792,11 +968,18 @@ def compile_resume_latex(
             command,
             ResumeCompilationFailureReason
             .LATEX_VERSION_INTEGRITY_FAILURE,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState
+                .LATEX_VERSION_INTEGRITY_FAILURE
+            ),
         )
     if version_read.status is ResumeLatexVersionReadStatus.NOT_FOUND:
         return _failure(
             command,
             ResumeCompilationFailureReason.LATEX_VERSION_NOT_FOUND,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.LATEX_VERSION_NOT_FOUND
+            ),
         )
     if (
         version_read.status is not ResumeLatexVersionReadStatus.FOUND
@@ -806,6 +989,10 @@ def compile_resume_latex(
             command,
             ResumeCompilationFailureReason
             .LATEX_VERSION_INTEGRITY_FAILURE,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState
+                .LATEX_VERSION_INTEGRITY_FAILURE
+            ),
         )
     version = version_read.version
     if (
@@ -825,6 +1012,9 @@ def compile_resume_latex(
         return _failure(
             command,
             ResumeCompilationFailureReason.LATEX_VERSION_BINDING_MISMATCH,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+            ),
         )
 
     try:
@@ -834,18 +1024,42 @@ def compile_resume_latex(
         raw = source_path.read_bytes()
     except (OSError, PrivateHomeError, TypeError, ValueError):
         return _failure(
-            command, ResumeCompilationFailureReason.SOURCE_UNREADABLE
+            command,
+            ResumeCompilationFailureReason.SOURCE_UNREADABLE,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+            ),
         )
     if hashlib.sha256(raw).hexdigest() != version.source_sha256:
         return _failure(
-            command, ResumeCompilationFailureReason.SOURCE_HASH_DRIFT
+            command,
+            ResumeCompilationFailureReason.SOURCE_HASH_DRIFT,
+            unresolved_source_state=(
+                UnresolvedCompilationSourceState.SOURCE_BINDING_REJECTED
+            ),
         )
+    resolved_source = (
+        construction.application_plan_id,
+        version.source_sha256,
+        RESUME_LATEX_VERSION_CONTRACT_VERSION,
+    )
+
+    def resolved_failure(
+        reason: ResumeCompilationFailureReason,
+        **kwargs: Any,
+    ) -> CompileResumeLatexResult:
+        return _failure(
+            command,
+            reason,
+            resolved_source=resolved_source,
+            **kwargs,
+        )
+
     try:
         latex_source = raw.decode("utf-8")
         validate_latex_source(latex_source)
     except ResumeLatexCapabilityError as exc:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.SOURCE_CAPABILITY_REJECTED,
             detail=(
                 "The managed LaTeX source requests "
@@ -853,14 +1067,13 @@ def compile_resume_latex(
             ),
         )
     except (TypeError, UnicodeDecodeError, ValueError):
-        return _failure(
-            command, ResumeCompilationFailureReason.SOURCE_UNREADABLE
+        return resolved_failure(
+            ResumeCompilationFailureReason.SOURCE_UNREADABLE
         )
 
     dependencies = unmanaged_file_dependencies(latex_source)
     if dependencies:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.UNMANAGED_DEPENDENCY,
             status=ResumeCompilationStatus.DEFERRED_SOURCE_INCOMPLETE,
             diagnostics=(
@@ -880,15 +1093,13 @@ def compile_resume_latex(
                 "the compiler description is invalid"
             )
     except LatexCompilerUnavailableError:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILER_UNAVAILABLE,
             status=ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
             detail="No allowlisted LaTeX engine is available to compile.",
         )
     except (OSError, RuntimeError, TypeError, ValueError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILER_UNAVAILABLE,
             status=ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
             detail="The LaTeX engine could not be described.",
@@ -905,14 +1116,12 @@ def compile_resume_latex(
             subject_id=subject_id, record_id=record_id
         )
     except (OSError, RuntimeError, TypeError, ValueError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.RECORD_INTEGRITY_FAILURE,
             compilation_binding=binding,
         )
     if existing.status is ResumeCompilationReadStatus.INTEGRITY_FAILURE:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.RECORD_INTEGRITY_FAILURE,
             compilation_binding=binding,
         )
@@ -943,15 +1152,13 @@ def compile_resume_latex(
             LatexCompileRequest(latex_source=latex_source)
         )
     except LatexCompilerUnavailableError:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILER_UNAVAILABLE,
             status=ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
             compilation_binding=binding,
         )
     except (OSError, RuntimeError, TypeError, ValueError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILER_UNAVAILABLE,
             status=ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
             compilation_binding=binding,
@@ -961,8 +1168,7 @@ def compile_resume_latex(
         outcome.diagnostics if hasattr(outcome, "diagnostics") else ""
     )
     if outcome.status is LatexCompileStatus.UNAVAILABLE:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILER_UNAVAILABLE,
             status=ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
             compiler_started=outcome.compiler_started,
@@ -970,8 +1176,7 @@ def compile_resume_latex(
             compilation_binding=binding,
         )
     if outcome.status is LatexCompileStatus.TIMEOUT:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILATION_TIMEOUT,
             status=ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
             compiler_started=True,
@@ -980,8 +1185,7 @@ def compile_resume_latex(
             detail="The LaTeX engine timed out and was terminated.",
         )
     if outcome.status is LatexCompileStatus.COMPILATION_ERROR:
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.COMPILATION_ERROR,
             status=ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
             compiler_started=True,
@@ -993,8 +1197,7 @@ def compile_resume_latex(
         outcome.status is not LatexCompileStatus.SUCCEEDED
         or not isinstance(outcome.pdf_bytes, bytes)
     ):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.PDF_INVALID,
             status=ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
             compiler_started=outcome.compiler_started,
@@ -1010,8 +1213,7 @@ def compile_resume_latex(
         or not 0 < len(content) <= MAX_PDF_BYTES
         or pages < 1
     ):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.PDF_INVALID,
             status=ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
             compiler_started=True,
@@ -1036,16 +1238,14 @@ def compile_resume_latex(
             or not target.is_file()
             or target.read_bytes() != content
         ):
-            return _failure(
-                command,
+            return resolved_failure(
                 ResumeCompilationFailureReason.ARTIFACT_PERSISTENCE_FAILED,
                 compilation_binding=binding,
                 compiler_started=True,
                 diagnostics=diagnostics,
             )
     except (OSError, PrivateHomeError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.ARTIFACT_PERSISTENCE_FAILED,
             retryable=True,
             compilation_binding=binding,
@@ -1076,8 +1276,7 @@ def compile_resume_latex(
             compiled_at=now,
         )
     except (TypeError, ValueError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.PDF_INVALID,
             status=ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
             compiler_started=True,
@@ -1088,8 +1287,7 @@ def compile_resume_latex(
     try:
         write_result = compilation_repository.save(record)
     except (OSError, RuntimeError, TypeError, ValueError):
-        return _failure(
-            command,
+        return resolved_failure(
             ResumeCompilationFailureReason.RECORD_PERSISTENCE_FAILED,
             retryable=True,
             compiler_started=True,
@@ -1097,8 +1295,7 @@ def compile_resume_latex(
             compilation_binding=binding,
         )
     if write_result.status is ResumeCompilationWriteStatus.FAILED:
-        return _failure(
-            command,
+        return resolved_failure(
             write_result.reason_code
             or ResumeCompilationFailureReason.RECORD_PERSISTENCE_FAILED,
             retryable=write_result.retryable,
@@ -1122,6 +1319,241 @@ def compile_resume_latex(
             if status is ResumeCompilationStatus.CREATED
             else "The existing compiled resume is unchanged."
         ),
+        source_construction_record_id=construction_id,
+        source_latex_version_id=version_id,
+    )
+
+
+_LATEX_COMPILATION_FAILURE_REASON_MAP = {
+    reason: LatexCompilationStopReason[reason.name]
+    for reason in ResumeCompilationFailureReason
+}
+
+
+def resume_compilation_public_result(
+    result: CompileResumeLatexResult,
+    *,
+    preparation_invocation_binding: PreparationInvocationBinding | None = None,
+    application_plan_id: str | None = None,
+    attempt_number: int = 1,
+    stopped_source_repository: (
+        ResumeCompilationStoppedSourceRepository | None
+    ) = None,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a7 outcome to stage-result v3."""
+
+    if not isinstance(result, CompileResumeLatexResult):
+        raise TypeError("result must be a resume compilation result")
+    stage = ApplicationPreparationStage.RESUME_COMPILATION
+    if result.status in {
+        ResumeCompilationStatus.CREATED,
+        ResumeCompilationStatus.UNCHANGED,
+    }:
+        if result.record is None:
+            raise ValueError("successful compilation has no record")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is ResumeCompilationStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.record.record_id,
+            result_content_hash=_canonical_hash(
+                result.record.content_dict()
+            ),
+            outputs={"compilation_record_id": result.record.record_id},
+        )
+    if result.reason_code is None:
+        raise ValueError("stopped compilation has no authoritative reason")
+    try:
+        reason = _LATEX_COMPILATION_FAILURE_REASON_MAP[result.reason_code]
+    except KeyError as error:
+        raise ValueError("unmapped compilation stop reason") from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if result.status
+        in {
+            ResumeCompilationStatus.DEFERRED_COMPILER_UNAVAILABLE,
+            ResumeCompilationStatus.DEFERRED_SOURCE_INCOMPLETE,
+            ResumeCompilationStatus.DEFERRED_COMPILATION_ERROR,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=LATEX_COMPILATION_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+        upstream_lineage_id=result.compilation_binding or None,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    source_lineage = None
+    stopped_source_ref = None
+    if preparation_invocation_binding is not None:
+        if not isinstance(
+            preparation_invocation_binding, PreparationInvocationBinding
+        ):
+            raise TypeError("preparation invocation binding must be typed")
+        plan_id = _clean_text(
+            "application_plan_id", application_plan_id, maximum=180
+        )
+        if (
+            preparation_invocation_binding.application_plan_id != plan_id
+            or (
+                result.subject_id
+                and result.subject_id
+                != preparation_invocation_binding.subject_id
+            )
+        ):
+            raise ValueError("compilation invocation binding is invalid")
+        attempt_id = resume_compilation_attempt_id(
+            invocation=preparation_invocation_binding,
+            subject_id=preparation_invocation_binding.subject_id,
+            application_plan_id=plan_id,
+            attempt_number=attempt_number,
+        )
+        if result.source_application_plan_id is not None:
+            if (
+                result.source_application_plan_id != plan_id
+                or result.source_construction_record_id is None
+                or result.source_latex_version_id is None
+                or result.source_latex_sha256 is None
+                or result.source_contract_version is None
+                or result.unresolved_source_state is not None
+            ):
+                raise ValueError("resolved compilation lineage is invalid")
+            source_lineage = ResolvedCompilationSourceLineage(
+                contract_version=(
+                    COMPILATION_SOURCE_RESOLUTION_LINEAGE_CONTRACT_VERSION
+                ),
+                invocation_binding_ref=(
+                    preparation_invocation_binding.reference
+                ),
+                compilation_attempt_id=attempt_id,
+                subject_id=preparation_invocation_binding.subject_id,
+                application_plan_id=plan_id,
+                construction_result_id=(
+                    result.source_construction_record_id
+                ),
+                latex_version_id=result.source_latex_version_id,
+                source_content_hash=result.source_latex_sha256,
+                source_contract_version=result.source_contract_version,
+            )
+        else:
+            if result.unresolved_source_state is None:
+                raise ValueError("unresolved compilation lineage is absent")
+            source_lineage = UnresolvedCompilationSourceLineage(
+                contract_version=(
+                    COMPILATION_SOURCE_RESOLUTION_LINEAGE_CONTRACT_VERSION
+                ),
+                invocation_binding_ref=(
+                    preparation_invocation_binding.reference
+                ),
+                compilation_attempt_id=attempt_id,
+                subject_id=preparation_invocation_binding.subject_id,
+                application_plan_id=plan_id,
+                resolution_state=result.unresolved_source_state,
+                requested_construction_id=(
+                    result.source_construction_record_id
+                ),
+                requested_latex_version_id=(
+                    result.source_latex_version_id
+                ),
+            )
+        if stopped_source_repository is None:
+            raise ValueError(
+                "formal stopped compilation needs a stopped-source repository"
+            )
+        stopped_source = ResumeCompilationStoppedSourceRecord.create(
+            subject_id=preparation_invocation_binding.subject_id,
+            application_plan_id=plan_id,
+            preparation_invocation_ref=(
+                preparation_invocation_binding.reference
+            ),
+            compilation_attempt_id=source_lineage.compilation_attempt_id,
+            outcome=outcome,
+            stop_reason=stop_reason,
+            source_resolution_lineage=source_lineage,
+            created_at=preparation_invocation_binding.created_at,
+        )
+        try:
+            write = stopped_source_repository.save(stopped_source)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            write = None
+        if (
+            write is None
+            or write.status
+            is ResumeCompilationStoppedSourceWriteStatus.FAILED
+            or write.record is None
+        ):
+            persistence_reason = PreparationStopReasonEnvelope(
+                stage=stage,
+                code=(
+                    LatexCompilationStopReason.RECORD_PERSISTENCE_FAILED
+                ),
+                contract_version=(
+                    LATEX_COMPILATION_STOP_REASON_CONTRACT_VERSION
+                ),
+                outcome=PreparationStageOutcome.FAILED,
+                upstream_lineage_id=result.compilation_binding or None,
+            )
+            persistence_hash = _canonical_hash(
+                {
+                    "outcome": PreparationStageOutcome.FAILED.value,
+                    "source_resolution_lineage": source_lineage.to_dict(),
+                    "stage": stage.value,
+                    "stop_reason": persistence_reason.to_dict(),
+                    "subject_id": result.subject_id,
+                }
+            )
+            return PublicPreparationStageResult.failed(
+                stage=stage,
+                stop_reason=persistence_reason,
+                result_id=(
+                    f"resume-compilation-stop-{persistence_hash}"
+                ),
+                result_content_hash=persistence_hash,
+                retryable=True,
+                compilation_source_lineage=source_lineage,
+            )
+        if write.record.reference != stopped_source.reference:
+            raise ValueError(
+                "stopped-source repository returned inconsistent record"
+            )
+        stopped_source_ref = write.record.reference
+    elif stopped_source_repository is not None:
+        raise ValueError(
+            "stopped-source repository requires an invocation binding"
+        )
+    stopped_result_content = {
+        "compilation_binding": result.compilation_binding or None,
+        "outcome": outcome.value,
+        "retryable": result.retryable,
+        "source_construction_record_id": (
+            result.source_construction_record_id
+        ),
+        "source_latex_version_id": result.source_latex_version_id,
+        "stage": stage.value,
+        "stop_reason": stop_reason.to_dict(),
+        "subject_id": result.subject_id,
+        "source_resolution_lineage": (
+            source_lineage.to_dict() if source_lineage is not None else None
+        ),
+    }
+    stopped_result_hash = _canonical_hash(stopped_result_content)
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        result_id=f"resume-compilation-stop-{stopped_result_hash}",
+        result_content_hash=stopped_result_hash,
+        retryable=result.retryable,
+        compilation_source_lineage=source_lineage,
+        stopped_source_ref=stopped_source_ref,
     )
 
 
@@ -1142,5 +1574,6 @@ __all__ = [
     "compile_resume_latex",
     "compiled_pdf_reference",
     "pdf_page_count",
+    "resume_compilation_public_result",
     "unmanaged_file_dependencies",
 ]

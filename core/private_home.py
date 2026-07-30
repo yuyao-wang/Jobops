@@ -214,6 +214,9 @@ class PrivatePaths:
     base_latex_selections: Path
     resume_latex_constructions: Path
     resume_compilations: Path
+    resume_compilation_stopped_sources: Path
+    material_correction_targets: Path
+    input_replacement_targets: Path
     compiled_resumes: Path
     resume_visual_qa: Path
     resume_layout_revisions: Path
@@ -332,6 +335,17 @@ class PrivateHome:
             resume_compilations=(
                 state / "preparation" / "resume-compilations"
             ),
+            resume_compilation_stopped_sources=(
+                state
+                / "preparation"
+                / "resume-compilation-stopped-sources"
+            ),
+            material_correction_targets=(
+                state / "preparation" / "material-correction-targets"
+            ),
+            input_replacement_targets=(
+                state / "preparation" / "input-replacement-targets"
+            ),
             compiled_resumes=(
                 state / "preparation" / "compiled-resumes"
             ),
@@ -446,6 +460,9 @@ class PrivateHome:
             paths.base_latex_selections,
             paths.resume_latex_constructions,
             paths.resume_compilations,
+            paths.resume_compilation_stopped_sources,
+            paths.material_correction_targets,
+            paths.input_replacement_targets,
             paths.compiled_resumes,
             paths.resume_visual_qa,
             paths.resume_layout_revisions,

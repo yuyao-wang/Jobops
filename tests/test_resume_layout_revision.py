@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -33,6 +34,7 @@ from core.pdf_page_renderer import (
 from core.private_home import PrivateHome
 from core.resume_compilation import (
     CompileResumeLatexCommand,
+    ResumeCompilationFailureReason,
     PrivateHomeResumeCompilationRepository,
     ResumeCompilationStatus,
     compile_resume_latex,
@@ -185,6 +187,26 @@ class _StoppingCompiler(_ScriptedCompiler):
             diagnostics="! Undefined control sequence.",
             exit_code=1,
             compiler_started=True,
+        )
+
+
+class _InfrastructureStoppingCompiler(_ScriptedCompiler):
+    def __init__(self, page_counts, stop_status: LatexCompileStatus) -> None:
+        super().__init__(page_counts)
+        self.stop_status = stop_status
+
+    def compile(self, request: LatexCompileRequest) -> LatexCompileOutcome:
+        if self.calls == 0:
+            return super().compile(request)
+        self.calls += 1
+        return LatexCompileOutcome(
+            status=self.stop_status,
+            pdf_bytes=None,
+            diagnostics="bounded synthetic diagnostic",
+            exit_code=None,
+            compiler_started=(
+                self.stop_status is LatexCompileStatus.TIMEOUT
+            ),
         )
 
 
@@ -756,7 +778,130 @@ async def test_compilation_stop_halts_the_run(tmp_path: Path) -> None:
     assert result.run.attempts[0].outcome is (
         ResumeLayoutAttemptOutcome.COMPILATION_STOPPED
     )
+    lineage = result.run.attempts[0].downstream_stop_lineage
+    assert lineage is not None
+    assert lineage.parent_attempt_id.startswith("resume-layout-revision-")
+    assert lineage.child_stage_result_id.startswith(
+        "resume-compilation-stop-"
+    )
+    assert lineage.child_stop_reason.code.value == "COMPILATION_ERROR"
+    assert lineage.child_outcome.value == "DEFERRED"
+    public = revision_module.resume_layout_revision_public_result(result)
+    public_outputs = {
+        item.key: item.value for item in public.outputs
+    }
+    assert (
+        public_outputs["downstream_lineage_id"]
+        == lineage.lineage_id
+    )
+    assert (
+        public_outputs["downstream_child_reason_code"]
+        == "COMPILATION_ERROR"
+    )
+    for drift in (
+        {"subject_id": "subject-b"},
+        {"application_plan_id": "plan-drift"},
+        {"parent_attempt_id": "resume-layout-revision-" + "0" * 64},
+        {
+            "child_stage": (
+                revision_module.ApplicationPreparationStage
+                .RESUME_LAYOUT_REVISION
+            )
+        },
+        {
+            "child_outcome": (
+                revision_module.PreparationStageOutcome.FAILED
+            )
+        },
+        {"contract_version": "downstream-lineage-v999"},
+    ):
+        with pytest.raises(ValueError):
+            replace(lineage, **drift)
     assert len(agent.contexts) == 1
+    compile_calls = parts["compiler"].calls
+
+    replay = await _revise(parts, agent)
+
+    assert replay.status is ResumeLayoutRevisionStatus.UNCHANGED
+    assert replay.run.run_id == result.run.run_id
+    assert (
+        replay.run.attempts[0].downstream_stop_lineage
+        == lineage
+    )
+    assert parts["compiler"].calls == compile_calls
+
+
+@pytest.mark.asyncio
+async def test_compilation_infrastructure_lineage_stays_distinct(
+    tmp_path: Path,
+) -> None:
+    parts = await _setup(
+        tmp_path,
+        compiler=_InfrastructureStoppingCompiler(
+            [2], LatexCompileStatus.UNAVAILABLE
+        ),
+    )
+
+    result = await _revise(parts)
+
+    lineage = result.run.attempts[0].downstream_stop_lineage
+    assert lineage is not None
+    assert (
+        lineage.child_stop_reason.code.value
+        == ResumeCompilationFailureReason.COMPILER_UNAVAILABLE.value
+    )
+    assert lineage.child_stage_result_id.startswith(
+        "resume-compilation-stop-"
+    )
+
+
+@pytest.mark.asyncio
+async def test_compilation_lineage_binding_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    parts = await _setup(tmp_path, compiler=_StoppingCompiler([2, 1]))
+    authoritative_compile = parts["compile_step"]
+
+    def mismatched_compile(**kwargs):
+        return replace(
+            authoritative_compile(**kwargs),
+            source_construction_record_id="resume-layout-revision-" + "0" * 64,
+        )
+
+    parts["compile_step"] = mismatched_compile
+
+    result = await _revise(parts)
+
+    assert result.status is ResumeLayoutRevisionStatus.FAILED
+    assert (
+        result.reason_code
+        is ResumeLayoutRevisionFailureReason.RECORD_INTEGRITY_FAILURE
+    )
+    assert result.run is None
+
+
+def test_legacy_compilation_stop_attempt_is_not_reconstructed_from_detail() -> None:
+    legacy = {
+        "attempt_number": 1,
+        "input_latex_version_id": "latex-1",
+        "input_compilation_record_id": "compilation-1",
+        "input_visual_qa_result_id": "visual-1",
+        "blocking_finding_ids": ["finding-1"],
+        "agent_version": "v1",
+        "prompt_version": "v1",
+        "model_id": "synthetic",
+        "output_latex_version_id": "latex-2",
+        "output_compilation_record_id": None,
+        "output_visual_qa_result_id": None,
+        "outcome": ResumeLayoutAttemptOutcome.COMPILATION_STOPPED.value,
+        "detail": "Compilation stopped: DEFERRED_COMPILATION_ERROR.",
+    }
+
+    attempt = revision_module._attempt_from_dict(legacy)
+
+    assert attempt.downstream_stop_lineage is None
+    assert attempt.legacy_incomplete_downstream_lineage is True
+    assert attempt.to_dict() == legacy
 
 
 @pytest.mark.asyncio

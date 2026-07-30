@@ -20,6 +20,14 @@ from pdfminer.pdfdocument import PDFPasswordIncorrect
 from pdfminer.pdfparser import PDFSyntaxError
 
 from .private_home import PrivateHome, PrivateHomeError
+from .application_preparation_orchestrator import (
+    SOURCE_RESUME_PROJECTION_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    SourceResumeProjectionStopReason,
+)
 from .resume_candidates import (
     MAX_RESUME_ARTIFACT_BYTES,
     ResumeArtifactType,
@@ -1593,6 +1601,96 @@ def create_source_resume_projection(
     )
 
 
+_SOURCE_PROJECTION_FAILURE_REASON_MAP = {
+    SourceResumeProjectionFailureReason.INVALID_REQUEST: (
+        SourceResumeProjectionStopReason.INVALID_REQUEST
+    ),
+    SourceResumeProjectionFailureReason.RESUME_NOT_FOUND: (
+        SourceResumeProjectionStopReason.RESUME_NOT_FOUND
+    ),
+    SourceResumeProjectionFailureReason.RESUME_INTEGRITY_FAILURE: (
+        SourceResumeProjectionStopReason.RESUME_INTEGRITY_FAILURE
+    ),
+    SourceResumeProjectionFailureReason.ARTIFACT_HASH_MISMATCH: (
+        SourceResumeProjectionStopReason.ARTIFACT_HASH_MISMATCH
+    ),
+    SourceResumeProjectionFailureReason.FORMAT_UNSUPPORTED: (
+        SourceResumeProjectionStopReason.FORMAT_UNSUPPORTED
+    ),
+    SourceResumeProjectionFailureReason.ARTIFACT_UNREADABLE: (
+        SourceResumeProjectionStopReason.ARTIFACT_UNREADABLE
+    ),
+    SourceResumeProjectionFailureReason.PROJECTION_PERSISTENCE_FAILED: (
+        SourceResumeProjectionStopReason.PROJECTION_PERSISTENCE_FAILED
+    ),
+    SourceResumeProjectionFailureReason.PROJECTION_INTEGRITY_FAILURE: (
+        SourceResumeProjectionStopReason.PROJECTION_INTEGRITY_FAILURE
+    ),
+}
+
+
+def source_resume_projection_public_result(
+    result: CreateSourceResumeProjectionResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2a4a outcome to stage-result v2."""
+
+    if not isinstance(result, CreateSourceResumeProjectionResult):
+        raise TypeError("result must be a source-resume projection result")
+    stage = ApplicationPreparationStage.SOURCE_RESUME_PROJECTION
+    if result.status in {
+        SourceResumeProjectionStatus.CREATED,
+        SourceResumeProjectionStatus.UNCHANGED,
+    }:
+        if result.projection is None:
+            raise ValueError("successful projection has no record")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is SourceResumeProjectionStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.projection.projection_id,
+            result_content_hash=result.projection.projection_content_hash,
+            outputs={
+                "source_resume_projection_id": (
+                    result.projection.projection_id
+                )
+            },
+        )
+    if result.reason_code is None:
+        raise ValueError("stopped projection has no authoritative reason")
+    try:
+        reason = _SOURCE_PROJECTION_FAILURE_REASON_MAP[result.reason_code]
+    except KeyError as error:
+        raise ValueError("unmapped source-projection stop reason") from error
+    outcome = (
+        PreparationStageOutcome.DEFERRED
+        if result.status
+        in {
+            SourceResumeProjectionStatus.UNSUPPORTED,
+            SourceResumeProjectionStatus.UNREADABLE,
+        }
+        else PreparationStageOutcome.FAILED
+    )
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=SOURCE_RESUME_PROJECTION_STOP_REASON_CONTRACT_VERSION,
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "CreateSourceResumeProjectionCommand",
     "CreateSourceResumeProjectionResult",
@@ -1616,6 +1714,7 @@ __all__ = [
     "SourceResumeProjectionStatus",
     "SourceResumeProjectionWriteResult",
     "SourceResumeProjectionWriteStatus",
+    "source_resume_projection_public_result",
     "SourceResumeSection",
     "create_source_resume_projection",
     "source_resume_projection_id",

@@ -17,12 +17,26 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    BASE_LATEX_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    BaseLatexPreparationStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+    PublicStageStatus,
+)
 from .job_discovery import (
     JobPosting,
     JobPostingReadRepository,
     JobPostingRepositoryError,
 )
 from .private_home import PrivateHome, PrivateHomeError
+from .plan_scoped_version_override import (
+    PLAN_SCOPED_VERSION_OVERRIDE_REPLACEMENT_CONTRACT_VERSION,
+    PlanScopedVersionOverrideKind,
+    PlanScopedVersionOverrideProvider,
+)
 from .resume_fact_qa import (
     ResumeFactQAReadStatus,
     ResumeFactQARepository,
@@ -67,6 +81,7 @@ class BaseLatexSelectionMethod(str, Enum):
     ONLY_CANDIDATE = "ONLY_CANDIDATE"
     EXACT_SOURCE_RESUME_MATCH = "EXACT_SOURCE_RESUME_MATCH"
     USER_REQUIRED_VERSION = "USER_REQUIRED_VERSION"
+    USER_OVERRIDE = "USER_OVERRIDE"
     AGENT_SELECTED = "AGENT_SELECTED"
     MANAGED_TEMPLATE_FALLBACK = "MANAGED_TEMPLATE_FALLBACK"
 
@@ -123,6 +138,7 @@ class BaseLatexSelectionFailureReason(str, Enum):
     JOB_READ_FAILED = "JOB_READ_FAILED"
     JOB_BINDING_MISMATCH = "JOB_BINDING_MISMATCH"
     LATEX_PROVIDER_FAILED = "LATEX_PROVIDER_FAILED"
+    OVERRIDE_INVALID = "OVERRIDE_INVALID"
     LATEX_PROVENANCE_INVALID = "LATEX_PROVENANCE_INVALID"
     AGENT_TIMEOUT = "AGENT_TIMEOUT"
     AGENT_UNAVAILABLE = "AGENT_UNAVAILABLE"
@@ -360,32 +376,34 @@ def _selection_binding(
     selection: ResumeSelectionDecision,
     candidate_set_hash: str,
     metadata: BaseLatexSelectionAgentMetadata,
+    override_content_hash: str | None = None,
 ) -> str:
-    return _canonical_hash(
-        {
-            "application_plan_id": plan.plan_id,
-            "base_latex_selection_agent_version": metadata.agent_version,
-            "base_latex_selection_contract_version": (
-                BASE_LATEX_SELECTION_CONTRACT_VERSION
-            ),
-            "base_latex_selection_model_id": metadata.model_id,
-            "base_latex_selection_prompt_version": metadata.prompt_version,
-            "candidate_set_hash": candidate_set_hash,
-            "fact_qa_result_hash": qa_result.qa_content_hash,
-            "fact_qa_result_id": qa_result.qa_result_id,
-            "job_content_hash": job.content_hash,
-            "job_id": job.job_id,
-            "job_revision": job.revision,
-            "resume_selection_decision_id": selection.decision_id,
-            "source_resume_id": selection.source_resume_id,
-            "subject_id": plan.subject_id,
-            "tailored_resume_draft_hash": draft.draft_content_hash,
-            "tailored_resume_draft_id": draft.draft_id,
-            "user_preparation_instructions_hash": (
-                plan.user_preparation_instructions_hash
-            ),
-        }
-    )
+    payload = {
+        "application_plan_id": plan.plan_id,
+        "base_latex_selection_agent_version": metadata.agent_version,
+        "base_latex_selection_contract_version": (
+            BASE_LATEX_SELECTION_CONTRACT_VERSION
+        ),
+        "base_latex_selection_model_id": metadata.model_id,
+        "base_latex_selection_prompt_version": metadata.prompt_version,
+        "candidate_set_hash": candidate_set_hash,
+        "fact_qa_result_hash": qa_result.qa_content_hash,
+        "fact_qa_result_id": qa_result.qa_result_id,
+        "job_content_hash": job.content_hash,
+        "job_id": job.job_id,
+        "job_revision": job.revision,
+        "resume_selection_decision_id": selection.decision_id,
+        "source_resume_id": selection.source_resume_id,
+        "subject_id": plan.subject_id,
+        "tailored_resume_draft_hash": draft.draft_content_hash,
+        "tailored_resume_draft_id": draft.draft_id,
+        "user_preparation_instructions_hash": (
+            plan.user_preparation_instructions_hash
+        ),
+    }
+    if override_content_hash is not None:
+        payload["plan_scoped_override_content_hash"] = override_content_hash
+    return _canonical_hash(payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -956,6 +974,7 @@ async def select_base_latex_version(
     agent: BaseLatexSelectionAgentPort,
     metadata: BaseLatexSelectionAgentMetadata,
     decision_repository: BaseLatexSelectionDecisionRepository,
+    override_provider: PlanScopedVersionOverrideProvider | None = None,
 ) -> SelectBaseLatexVersionResult:
     """Pick one trusted historical LaTeX version, or the managed template."""
 
@@ -1219,6 +1238,46 @@ async def select_base_latex_version(
     candidates = tuple(views)
     by_id = {item.latex_version_id: item for item in versions}
     candidate_hash = base_latex_candidate_set_hash(candidates)
+    override = None
+    if override_provider is not None:
+        try:
+            override = override_provider.get_current(
+                subject_id=subject_id,
+                application_plan_id=plan.plan_id,
+                override_kind=(
+                    PlanScopedVersionOverrideKind.LATEX_VERSION_OVERRIDE
+                ),
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return _failure(
+                command,
+                BaseLatexSelectionFailureReason.OVERRIDE_INVALID,
+                candidate_set_hash=candidate_hash,
+            )
+        if override is not None and (
+            override.subject_id != subject_id
+            or override.application_plan_id != plan.plan_id
+            or override.override_kind
+            is not PlanScopedVersionOverrideKind.LATEX_VERSION_OVERRIDE
+            or override.selected_option_id not in by_id
+            or (
+                override.contract_version
+                == PLAN_SCOPED_VERSION_OVERRIDE_REPLACEMENT_CONTRACT_VERSION
+                and not any(
+                    item.latex_version_id == override.replaced_option_id
+                    and item.contract_version
+                    == override.replaced_option_version
+                    and item.source_sha256
+                    == override.replaced_option_content_hash
+                    for item in versions
+                )
+            )
+        ):
+            return _failure(
+                command,
+                BaseLatexSelectionFailureReason.OVERRIDE_INVALID,
+                candidate_set_hash=candidate_hash,
+            )
     binding = _selection_binding(
         plan=plan,
         draft=draft,
@@ -1227,6 +1286,9 @@ async def select_base_latex_version(
         selection=selection,
         candidate_set_hash=candidate_hash,
         metadata=metadata,
+        override_content_hash=(
+            override.override_content_hash if override else None
+        ),
     )
     decision_id = f"base-latex-selection-{binding}"
     try:
@@ -1293,7 +1355,14 @@ async def select_base_latex_version(
 
     pool = candidates
     agent_invoked = False
-    if has_requirement:
+    if override is not None:
+        pool = (next(
+            item
+            for item in candidates
+            if item.latex_version_id == override.selected_option_id
+        ),)
+        has_requirement = False
+    elif has_requirement:
         if not required_versions.issubset(set(by_id)):
             return _deferred(
                 "an explicitly requested version is not a selectable candidate."
@@ -1319,7 +1388,14 @@ async def select_base_latex_version(
     selected: BaseLatexCandidateView | None
     method: BaseLatexSelectionMethod
     rationale: str
-    if not pool:
+    if override is not None:
+        selected = pool[0]
+        method = BaseLatexSelectionMethod.USER_OVERRIDE
+        rationale = (
+            "The current plan-scoped user override selected this LaTeX "
+            "version."
+        )
+    elif not pool:
         selected = None
         method = BaseLatexSelectionMethod.MANAGED_TEMPLATE_FALLBACK
         rationale = (
@@ -1537,6 +1613,99 @@ async def select_base_latex_version(
     )
 
 
+def base_latex_selection_public_result(
+    result: SelectBaseLatexVersionResult,
+) -> PublicPreparationStageResult:
+    """Adapt the migrated stop surface; other failures stay explicit legacy."""
+
+    if not isinstance(result, SelectBaseLatexVersionResult):
+        raise TypeError("result must be a base-LaTeX selection result")
+    if result.status in {
+        BaseLatexSelectionStatus.CREATED,
+        BaseLatexSelectionStatus.UNCHANGED,
+    }:
+        assert result.decision is not None
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is BaseLatexSelectionStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        outputs = {
+            "base_latex_selection_id": result.decision.decision_id,
+        }
+        if result.decision.selected_latex_version_id is not None:
+            assert result.decision.selected_latex_source_sha256 is not None
+            assert result.decision.selected_root_family_id is not None
+            outputs.update(
+                {
+                    "selected_latex_source_sha256": (
+                        result.decision.selected_latex_source_sha256
+                    ),
+                    "selected_latex_version_id": (
+                        result.decision.selected_latex_version_id
+                    ),
+                    "selected_root_family_id": (
+                        result.decision.selected_root_family_id
+                    ),
+                }
+            )
+        return constructor(
+            stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+            result_id=result.decision.decision_id,
+            result_content_hash=result.decision.selection_binding,
+            outputs=outputs,
+        )
+    if (
+        result.status is BaseLatexSelectionStatus.DEFERRED_NEEDS_HUMAN
+        and result.reason_code
+        is BaseLatexSelectionFailureReason.USER_REQUIREMENT_UNSATISFIABLE
+    ):
+        return PublicPreparationStageResult.deferred(
+            stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+            stop_reason=PreparationStopReasonEnvelope(
+                stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+                code=(
+                    BaseLatexPreparationStopReason
+                    .USER_REQUIREMENT_UNSATISFIABLE
+                ),
+                contract_version=(
+                    BASE_LATEX_STOP_REASON_CONTRACT_VERSION
+                ),
+                outcome=PreparationStageOutcome.DEFERRED,
+                upstream_lineage_id=result.selection_binding or None,
+            ),
+        )
+    if (
+        result.status is BaseLatexSelectionStatus.FAILED
+        and result.reason_code
+        is BaseLatexSelectionFailureReason.DECISION_INTEGRITY_FAILURE
+    ):
+        return PublicPreparationStageResult.failed(
+            stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+            stop_reason=PreparationStopReasonEnvelope(
+                stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+                code=(
+                    BaseLatexPreparationStopReason
+                    .DECISION_INTEGRITY_FAILURE
+                ),
+                contract_version=(
+                    BASE_LATEX_STOP_REASON_CONTRACT_VERSION
+                ),
+                outcome=PreparationStageOutcome.FAILED,
+                upstream_lineage_id=result.selection_binding or None,
+            ),
+            retryable=result.retryable,
+        )
+    assert result.reason_code is not None
+    return PublicPreparationStageResult.legacy_stopped(
+        stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
+        status=PublicStageStatus.FAILED,
+        public_status=result.status.value,
+        reason_code=result.reason_code.value,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "BASE_LATEX_SELECTION_CONTRACT_VERSION",
     "BaseLatexCandidateView",
@@ -1561,6 +1730,7 @@ __all__ = [
     "PrivateHomeBaseLatexSelectionDecisionRepository",
     "SelectBaseLatexVersionCommand",
     "SelectBaseLatexVersionResult",
+    "base_latex_selection_public_result",
     "base_latex_candidate_set_hash",
     "select_base_latex_version",
 ]

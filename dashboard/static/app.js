@@ -1,5 +1,5 @@
 /**
- * MR.Jobs — Job Intelligence Dashboard
+ * JobOps — Job Intelligence Dashboard
  *
  * Alpine.js application with:
  * - Real-time WebSocket event feed
@@ -9,7 +9,7 @@
  * - Full job CRUD with expandable detail rows
  */
 
-function mrjobs() {
+function jobops() {
   return {
     // ----- Core State -----
     jobs: [],
@@ -24,6 +24,52 @@ function mrjobs() {
     loading: false,
     notification: "",
     notificationType: "success",
+
+    // ----- Authenticated Manual Job Library Refresh (S3d) -----
+    jobLibraryRefresh: {
+      status: "IDLE",
+      invocationId: null,
+      maxReprioritizations: 50,
+      summary: null,
+      sourceFailures: [],
+      refreshRunId: null,
+      lastCompletedRefreshTime: null,
+      message: null,
+      replayed: false,
+    },
+
+    // ----- Authenticated Automation Cycle (S3e) -----
+    automationCycle: {
+      status: "IDLE",
+      invocationId: null,
+      stages: [],
+      summary: null,
+      stageFailures: [],
+      cycleRunId: null,
+      startedAt: null,
+      completedAt: null,
+      message: null,
+    },
+
+    // ----- Read-only Human Attention Inbox (S3f) -----
+    humanAttentionInbox: {
+      status: "LOADING",
+      userItems: [],
+      operatorItems: [],
+      itemCount: 0,
+      affectedPlanCount: 0,
+      refreshedAt: null,
+      message: null,
+    },
+    _humanAttentionInboxRequest: null,
+    attentionReplies: {},
+    correctionInstructions: {},
+    replacementSelections: {},
+    replacementUploads: {},
+    replacementUploadNames: {},
+    replacementUploadNotes: {},
+    layoutIssueSelections: {},
+    resolvingAttentionItemId: null,
 
     // ----- WebSocket -----
     ws: null,
@@ -215,6 +261,7 @@ function mrjobs() {
         this.fetchProfile(),
         this.fetchSchedulerStatus(),
         this.fetchFollowUps(),
+        this.fetchHumanAttentionInbox(),
       ]);
       this.connectWebSocket();
       this.$nextTick(() => this.initCharts());
@@ -348,6 +395,566 @@ function mrjobs() {
       } catch (_) {}
     },
 
+    async fetchHumanAttentionInbox() {
+      if (this.humanAttentionInbox.status === "LOADING") {
+        // The initial load is allowed; only share an already active request.
+        if (this._humanAttentionInboxRequest) {
+          return this._humanAttentionInboxRequest;
+        }
+      }
+      const load = async () => {
+        this.humanAttentionInbox.status = "LOADING";
+        this.humanAttentionInbox.message = null;
+        try {
+          const response = await fetch("/api/human-attention-inbox");
+          if (!response.ok) {
+            const safeMessages = {
+              401: "需要登录后才能查看待处理事项。",
+              503: "待处理事项服务暂时不可用。",
+            };
+            this.humanAttentionInbox.status = "FAILED";
+            this.humanAttentionInbox.message =
+              safeMessages[response.status] || "无法读取待处理事项。";
+            return;
+          }
+          const data = await response.json();
+          if (data.status === "FAILED") {
+            this.humanAttentionInbox.status = "FAILED";
+            this.humanAttentionInbox.message =
+              data.message || "无法读取待处理事项。";
+            this.humanAttentionInbox.refreshedAt = data.refreshed_at;
+            return;
+          }
+          this.humanAttentionInbox = {
+            status: data.status,
+            userItems: data.user_items || [],
+            operatorItems: data.operator_items || [],
+            itemCount: data.item_count,
+            affectedPlanCount: data.affected_plan_count,
+            refreshedAt: data.refreshed_at,
+            message: data.message,
+          };
+          await Promise.all(
+            this.humanAttentionInbox.userItems
+              .filter(
+                (item) => item.correction_target_id,
+              )
+              .map((item) => this.fetchUnsupportedClaimTarget(item)),
+          );
+          await Promise.all(
+            this.humanAttentionInbox.userItems
+              .filter((item) => item.replacement_target_id)
+              .map((item) => this.fetchInputReplacementTarget(item)),
+          );
+        } catch (_) {
+          this.humanAttentionInbox.status = "FAILED";
+          this.humanAttentionInbox.message =
+            "待处理事项服务暂时不可用。";
+        }
+      };
+      this._humanAttentionInboxRequest = load();
+      try {
+        return await this._humanAttentionInboxRequest;
+      } finally {
+        this._humanAttentionInboxRequest = null;
+      }
+    },
+
+    async resolveHumanAttention(item) {
+      if (
+        this.resolvingAttentionItemId ||
+        item.source_stage !== "APPLICATION_ANSWERS"
+      ) {
+        return;
+      }
+      const message = (this.attentionReplies[item.item_id] || "").trim();
+      if (!message) {
+        this.notify("请先输入明确回复。", "warning");
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/resolve`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("回答暂时无法安全保存。");
+        }
+        this.notify(data.message || "回答已处理。", data.status === "FAILED" ? "error" : "success");
+        if (!["DEFERRED_AMBIGUOUS_INPUT", "FAILED"].includes(data.status)) {
+          delete this.attentionReplies[item.item_id];
+        }
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("回答暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async resolveVersionChoice(item) {
+      if (
+        this.resolvingAttentionItemId ||
+        !["BASE_RESUME_SELECTION", "BASE_LATEX_SELECTION"].includes(
+          item.source_stage,
+        )
+      ) {
+        return;
+      }
+      const message = (this.attentionReplies[item.item_id] || "").trim();
+      if (!message) {
+        this.notify("请明确输入一个简历或 LaTeX 版本。", "warning");
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/resolve-version-choice`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("选择暂时无法安全保存。");
+        }
+        this.notify(
+          data.message || "选择已处理。",
+          data.status === "FAILED" ? "error" : "success",
+        );
+        if (
+          ![
+            "DEFERRED_AMBIGUOUS_INPUT",
+            "OPTION_NOT_SELECTABLE",
+            "FAILED",
+          ].includes(data.status)
+        ) {
+          delete this.attentionReplies[item.item_id];
+        }
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("选择暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async correctUnsupportedClaim(item, action) {
+      if (
+        this.resolvingAttentionItemId ||
+        item.resolution_capability !== "CORRECT_MATERIAL" ||
+        !item.correction_target_id
+      ) {
+        return;
+      }
+      const instruction =
+        (this.correctionInstructions[item.item_id] || "").trim() || null;
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-unsupported-claim`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, instruction }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("材料修正要求暂时无法安全保存。");
+        }
+        this.notify(
+          data.message || "材料修正要求已处理。",
+          ["FAILED", "INVALID_CORRECTION"].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        if (!["FAILED", "TARGET_STALE", "TARGET_UNAVAILABLE"].includes(data.status)) {
+          delete this.correctionInstructions[item.item_id];
+        }
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("材料修正要求暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async fetchUnsupportedClaimTarget(item) {
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correction-target`,
+        );
+        if (!response.ok) {
+          item.correctionTarget = {
+            status: "FAILED",
+            message: "暂时无法安全读取需要修正的陈述。",
+            target: null,
+          };
+          return;
+        }
+        item.correctionTarget = await response.json();
+        if (
+          item.correctionTarget?.target?.target_kind ===
+          "RESUME_VISUAL_LAYOUT"
+        ) {
+          await this.fetchResumeLayoutPreview(item);
+        } else if (
+          item.correctionTarget?.target?.target_kind ===
+          "COVER_LETTER_LAYOUT"
+        ) {
+          await this.fetchCoverLetterOverflowPreview(item);
+        }
+      } catch (_) {
+        item.correctionTarget = {
+          status: "FAILED",
+          message: "暂时无法安全读取需要修正的陈述。",
+          target: null,
+        };
+      }
+    },
+
+    async fetchInputReplacementTarget(item) {
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replacement-target`,
+        );
+        if (!response.ok) {
+          throw new Error("replacement target unavailable");
+        }
+        item.replacementTarget = await response.json();
+        if (item.replacementTarget.status === "AVAILABLE") {
+          const optionsResponse = await fetch(
+            `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replacement-options`,
+          );
+          item.replacementOptions = optionsResponse.ok
+            ? await optionsResponse.json()
+            : { status: "FAILED", options: [] };
+        }
+      } catch (_) {
+        item.replacementTarget = {
+          status: "FAILED",
+          message: "暂时无法安全读取需要替换的输入。",
+          target: null,
+        };
+      }
+    },
+
+    async replaceExistingInput(item) {
+      const replacementOptionId =
+        this.replacementSelections[item.item_id] || "";
+      if (!replacementOptionId || this.resolvingAttentionItemId) {
+        this.notify("请选择一个已注册的替代输入。", "warning");
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/replace-input`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "SELECT_EXISTING_REPLACEMENT",
+              replacement_option_id: replacementOptionId,
+            }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error("replacement failed");
+        this.notify(
+          data.message || "替代输入已处理。",
+          data.status.endsWith("FAILED") ? "error" : "success",
+        );
+        if (!["OPTION_NOT_SELECTABLE", "SAME_INPUT_SELECTED", "FAILED"].includes(data.status)) {
+          delete this.replacementSelections[item.item_id];
+        }
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("替代输入暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async registerAndReplaceResume(item) {
+      const file = this.replacementUploads[item.item_id];
+      const displayName = (
+        this.replacementUploadNames[item.item_id] || ""
+      ).trim();
+      if (!file || !displayName || this.resolvingAttentionItemId) {
+        this.notify("请选择简历文件并填写安全显示名称。", "warning");
+        return;
+      }
+      const invocationId =
+        "resume-upload-" +
+        (globalThis.crypto?.randomUUID?.() ||
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      const form = new FormData();
+      form.append("file", file);
+      form.append("display_name", displayName);
+      form.append("invocation_id", invocationId);
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/register-and-replace-resume`,
+          { method: "POST", body: form },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error("upload replacement failed");
+        this.notify(
+          data.message || "新简历已处理。",
+          ["FAILED", "UPLOAD_REJECTED", "UNSUPPORTED_MEDIA_TYPE", "REGISTRATION_FAILED"].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("新简历暂时无法安全注册。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async registerAndReplaceBaseLatex(item) {
+      const file = this.replacementUploads[item.item_id];
+      const displayLabel = (
+        this.replacementUploadNames[item.item_id] || ""
+      ).trim();
+      const versionNote = (
+        this.replacementUploadNotes[item.item_id] || ""
+      ).trim();
+      if (!file || !displayLabel || this.resolvingAttentionItemId) {
+        this.notify("请选择单个 .tex 文件并填写安全显示名称。", "warning");
+        return;
+      }
+      const invocationId =
+        "base-latex-upload-" +
+        (globalThis.crypto?.randomUUID?.() ||
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      const form = new FormData();
+      form.append("file", file);
+      form.append("display_label", displayLabel);
+      form.append("version_note", versionNote);
+      form.append("invocation_id", invocationId);
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/register-and-replace-base-latex`,
+          { method: "POST", body: form },
+        );
+        const data = await response.json();
+        if (!response.ok) throw new Error("LaTeX upload replacement failed");
+        this.notify(
+          data.message || "新 Base LaTeX Version 已处理。",
+          [
+            "FAILED",
+            "UPLOAD_REJECTED",
+            "INVALID_LATEX_SOURCE",
+            "UNSAFE_LATEX_SOURCE",
+            "UNSUPPORTED_UPLOAD_TYPE",
+            "REGISTRATION_FAILED",
+            "VERSION_NOT_SELECTABLE",
+          ].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("新 Base LaTeX Version 暂时无法安全注册。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async fetchResumeLayoutPreview(item) {
+      const targetId = item.correctionTarget?.target?.target_id;
+      if (!targetId) return;
+      try {
+        const response = await fetch(
+          `/api/resume-layout-correction-previews/targets/${encodeURIComponent(targetId)}`,
+        );
+        item.layoutPreview = response.ok
+          ? await response.json()
+          : {
+              status: "FAILED",
+              message: "当前 Resume 预览暂时不可用。",
+              preview: null,
+            };
+      } catch (_) {
+        item.layoutPreview = {
+          status: "FAILED",
+          message: "当前 Resume 预览暂时不可用。",
+          preview: null,
+        };
+      }
+    },
+
+    resumeLayoutPreviewPageUrl(item, pageNumber) {
+      const reference = item.layoutPreview?.preview?.preview_reference;
+      if (!reference) return "";
+      return `/api/resume-layout-correction-previews/${encodeURIComponent(reference)}/pages/${pageNumber}`;
+    },
+
+    async fetchCoverLetterOverflowPreview(item) {
+      const targetId = item.correctionTarget?.target?.target_id;
+      if (!targetId) return;
+      try {
+        const response = await fetch(
+          `/api/cover-letter-overflow-previews/targets/${encodeURIComponent(targetId)}`,
+        );
+        item.coverLetterOverflowPreview = response.ok
+          ? await response.json()
+          : {
+              status: "FAILED",
+              message: "当前 Cover Letter 预览暂时不可用。",
+              preview: null,
+            };
+      } catch (_) {
+        item.coverLetterOverflowPreview = {
+          status: "FAILED",
+          message: "当前 Cover Letter 预览暂时不可用。",
+          preview: null,
+        };
+      }
+    },
+
+    coverLetterOverflowPreviewPageUrl(item, pageNumber) {
+      const reference =
+        item.coverLetterOverflowPreview?.preview?.preview_reference;
+      if (!reference) return "";
+      return `/api/cover-letter-overflow-previews/${encodeURIComponent(reference)}/pages/${pageNumber}`;
+    },
+
+    async correctCoverLetterOverflow(item) {
+      if (
+        this.resolvingAttentionItemId ||
+        !["AVAILABLE", "UNCHANGED"].includes(
+          item.coverLetterOverflowPreview?.status,
+        ) ||
+        !item.coverLetterPreviewViewed
+      ) {
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-cover-letter-overflow`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "REFORMAT_AND_RETRY" }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("Cover Letter 格式修正暂时无法安全保存。");
+        }
+        this.notify(
+          data.message || "Cover Letter 格式修正已处理。",
+          ["FAILED", "CONTENT_PRESERVATION_FAILED"].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("Cover Letter 格式修正暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    toggleLayoutIssue(item, issue) {
+      const selected = new Set(
+        this.layoutIssueSelections[item.item_id] || [],
+      );
+      selected.has(issue) ? selected.delete(issue) : selected.add(issue);
+      this.layoutIssueSelections[item.item_id] = [...selected].sort();
+    },
+
+    async correctResumeLayout(item) {
+      if (
+        this.resolvingAttentionItemId ||
+        !["AVAILABLE", "UNCHANGED"].includes(item.layoutPreview?.status)
+      ) {
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-resume-layout`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "REVISE_LAYOUT_AND_RETRY",
+              visual_issues:
+                this.layoutIssueSelections[item.item_id] || [],
+            }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("Resume 排版修正暂时无法安全启动。");
+        }
+        this.notify(
+          data.message || "Resume 排版修正已处理。",
+          ["FAILED", "INVALID_ACTION", "PREVIEW_STALE"].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("Resume 排版修正暂时无法安全启动。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
+    async correctLatexCompilation(item) {
+      if (
+        this.resolvingAttentionItemId ||
+        !item.latex_compilation_correction_supported ||
+        item.correctionTarget?.status !== "AVAILABLE"
+      ) {
+        return;
+      }
+      this.resolvingAttentionItemId = item.item_id;
+      try {
+        const response = await fetch(
+          `/api/human-attention-inbox/${encodeURIComponent(item.item_id)}/correct-latex-compilation`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "REGENERATE_AND_RETRY" }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("LaTeX 修复请求暂时无法安全保存。");
+        }
+        this.notify(
+          data.message || "LaTeX 修复请求已处理。",
+          ["FAILED", "INVALID_ACTION"].includes(data.status)
+            ? "error"
+            : "success",
+        );
+        await this.fetchHumanAttentionInbox();
+      } catch (_) {
+        this.notify("LaTeX 修复请求暂时无法安全保存。", "error");
+      } finally {
+        this.resolvingAttentionItemId = null;
+      }
+    },
+
     async fetchCompanies() {
       try {
         const res = await fetch("/api/companies");
@@ -465,6 +1072,147 @@ function mrjobs() {
     // ===================================================================
     // ACTIONS
     // ===================================================================
+
+    async refreshJobLibrary({ reuseInvocation = false } = {}) {
+      if (this.jobLibraryRefresh.status === "RUNNING") return;
+      const invocationId =
+        reuseInvocation && this.jobLibraryRefresh.invocationId
+          ? this.jobLibraryRefresh.invocationId
+          : globalThis.crypto?.randomUUID?.() ||
+            `refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      this.jobLibraryRefresh = {
+        ...this.jobLibraryRefresh,
+        status: "RUNNING",
+        invocationId,
+        message: null,
+        sourceFailures: [],
+      };
+      try {
+        const response = await fetch("/api/job-library/refresh", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            invocation_id: invocationId,
+            max_reprioritizations:
+              this.jobLibraryRefresh.maxReprioritizations,
+          }),
+        });
+        if (!response.ok) {
+          const safeMessages = {
+            401: "需要登录后才能刷新职位库。",
+            422: "刷新请求无效。",
+            503: "刷新服务暂时不可用。",
+          };
+          this.jobLibraryRefresh.message =
+            safeMessages[response.status] || "刷新职位库失败。";
+          throw new Error("safe refresh failure");
+        }
+        const data = await response.json();
+        this.jobLibraryRefresh = {
+          ...this.jobLibraryRefresh,
+          status: data.status,
+          invocationId: data.invocation_id,
+          summary: data.summary,
+          sourceFailures: data.source_failures || [],
+          refreshRunId: data.refresh_run_id,
+          lastCompletedRefreshTime: data.last_completed_refresh_time,
+          message: data.message,
+          replayed: Boolean(data.replayed),
+        };
+        if (["COMPLETED", "PARTIAL_FAILURE", "NOOP"].includes(data.status)) {
+          await Promise.all([this.fetchJobs(), this.fetchStats()]);
+        }
+      } catch (_) {
+        this.jobLibraryRefresh = {
+          ...this.jobLibraryRefresh,
+          status: "FAILED",
+          message:
+            this.jobLibraryRefresh.message || "刷新职位库失败，请重试。",
+        };
+      }
+    },
+
+    retryJobLibraryRefresh() {
+      return this.refreshJobLibrary({ reuseInvocation: true });
+    },
+
+    async continueAutomaticApplication({ reuseInvocation = false } = {}) {
+      if (this.automationCycle.status === "RUNNING") return;
+      const invocationId =
+        reuseInvocation && this.automationCycle.invocationId
+          ? this.automationCycle.invocationId
+          : globalThis.crypto?.randomUUID?.() ||
+            `automation-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      this.automationCycle = {
+        ...this.automationCycle,
+        status: "RUNNING",
+        invocationId,
+        stages: [],
+        stageFailures: [],
+        message: null,
+      };
+      try {
+        const response = await fetch("/api/automation-cycle/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ invocation_id: invocationId }),
+        });
+        if (!response.ok) {
+          const safeMessages = {
+            401: "需要登录后才能继续自动申请。",
+            422: "自动处理请求无效。",
+            503: "自动处理服务暂时不可用。",
+          };
+          this.automationCycle.message =
+            safeMessages[response.status] || "自动处理失败。";
+          throw new Error("safe automation failure");
+        }
+        const data = await response.json();
+        this.automationCycle = {
+          ...this.automationCycle,
+          status: data.status,
+          invocationId: data.invocation_id,
+          stages: data.stages || [],
+          summary: data.summary,
+          stageFailures: data.stage_failures || [],
+          cycleRunId: data.cycle_run_id,
+          startedAt: data.started_at,
+          completedAt: data.completed_at,
+          message: data.message,
+        };
+        if (
+          ["COMPLETED", "PARTIAL_FAILURE", "NOOP", "UNCHANGED"].includes(
+            data.status,
+          )
+        ) {
+          await Promise.all([
+            this.fetchJobs(),
+            this.fetchStats(),
+            this.fetchHumanAttentionInbox(),
+          ]);
+        }
+      } catch (_) {
+        this.automationCycle = {
+          ...this.automationCycle,
+          status: "FAILED",
+          message:
+            this.automationCycle.message || "自动处理失败，请安全重试。",
+        };
+      }
+    },
+
+    retryAutomationCycleRequest() {
+      return this.continueAutomaticApplication({ reuseInvocation: true });
+    },
+
+    automationStageLabel(stage) {
+      return {
+        PRIORITY_REFRESH: "优先级刷新",
+        APPLICATION_PLAN_CREATION: "申请计划",
+        APPLICATION_PREPARATION: "材料准备",
+        APPLICATION_EXECUTION: "申请执行",
+      }[stage] || "自动处理阶段";
+    },
 
     async discover() {
       this.discovering = true;

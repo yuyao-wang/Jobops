@@ -54,6 +54,14 @@ _KNOWN_SENSITIVITIES = frozenset(
         "demographic",
         "employment",
         "education",
+        "BASIC",
+        "PERSONAL",
+        "LEGAL",
+        "COMPENSATION",
+        "VOLUNTARY_SELF_ID",
+        "APPLICATION_MATERIAL",
+        "ATTESTATION",
+        "UNSUPPORTED",
     }
 )
 

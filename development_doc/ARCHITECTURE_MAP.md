@@ -21,6 +21,29 @@ Jobops V1
 │
 ├── 交互层
 │   ├── Dashboard / 对话框
+│   │   ├── Authenticated Subject Session              [完成 S3d0]
+│   │   │   ├── fixed secure-cookie credential only
+│   │   │   ├── Keychain-backed server-side session
+│   │   │   ├── explicit-now expiry validation
+│   │   │   └── typed FastAPI dependency / safe 401
+│   │   ├── Refresh Job Library UI                     [完成 S3d]
+│   │   │   ├── authenticated subject from S3d0 only
+│   │   │   ├── one injected S3b invocation per click
+│   │   │   ├── in-flight dedup + same-ID network replay
+│   │   │   ├── typed safe summary / per-source failures
+│   │   │   └── zero Plan / Preparation / Execution
+│   │   ├── Continue Automatic Application UI          [完成 S3e]
+│   │   │   ├── authenticated subject from S3d0 only
+│   │   │   ├── one injected P2c10a invocation per click
+│   │   │   ├── versioned server-side stage budgets
+│   │   │   ├── typed stage / attention / uncertain summary
+│   │   │   └── zero S3b / Gate / Browser direct calls
+│   │   ├── Human Attention Inbox UI                   [完成 S3f]
+│   │   │   ├── one injected P2b5 read-only snapshot
+│   │   │   ├── USER / OPERATOR groups in P2b5 order
+│   │   │   └── initial / explicit / one post-S3e refresh
+│   │   ├── Application Answer Resolution              [完成 S3g1]
+│   │   └── Resume / LaTeX Choice Resolution           [完成 S3g2]
 │   ├── Conversational Intake
 │   ├── jobctl CLI
 │   ├── Scheduler
@@ -123,6 +146,11 @@ Job Discovery Domain
 │       ├── immutable CREATED / UNCHANGED
 │       ├── current read：FOUND / NOT_FOUND / INTEGRITY_FAILURE
 │       └── Private Home：state/intake/accepted-job-intents/
+│   └── I2c Intent Source Provenance                   [完成]
+│       ├── v1 explicit compatibility read（bytes / ID 不变）
+│       ├── v2 CONVERSATIONAL_INTAKE / SEARCH_PROFILE_REFRESH
+│       ├── ordered, deduplicated SearchProfile IDs
+│       └── provenance 不参与 intent precedence
 │
 ├── Job Search                                         [部分]
 │   ├── Provider-neutral JobSearchPort                 [完成]
@@ -145,8 +173,27 @@ Job Discovery Domain
 │   │       WAITING_FOR_CANDIDATE_SELECTION
 │   │       → RESOLVING_CANDIDATE
 │   │       → COMPLETED
-│   ├── Lever Board Search                             [计划]
-│   └── SearchProfile / scheduled search               [计划]
+│   ├── SearchProfile Contract                         [完成 S3a]
+│   │   ├── subject-scoped immutable version history
+│   │   ├── typed KNOWN_GREENHOUSE_BOARD source + token
+│   │   ├── canonical JobSearchRequest
+│   │   ├── current / enabled deterministic provider
+│   │   └── MANUAL only / zero search or Discovery
+│   ├── Manual Full Job Library Refresh                [完成 S3b]
+│   │   ├── one fixed enabled-profile snapshot
+│   │   ├── provider-neutral Search once per profile
+│   │   ├── canonical URL de-duplication across profiles
+│   │   ├── Public Read → formal ADD_JOB Discovery
+│   │   ├── one bounded P1d3 refresh after all candidates
+│   │   ├── immutable invocation audit + zero-call replay
+│   │   └── zero Plan / application execution
+│   ├── SearchProfile Auto-application Policy         [完成 S3c]
+│   │   ├── missing/disabled policy → ADD_JOB_ONLY
+│   │   ├── explicit AUTO_REQUEST_APPLICATION only
+│   │   ├── successful Discovery → v2 AcceptedJobIntent
+│   │   ├── all contributing Profile IDs in provenance
+│   │   └── future-only changes / no implicit cancellation
+│   └── Lever Board Search                             [计划]
 │
 └── Formal Discovery Write                             [完成]
     ├── Typed Discovery Entry                          [完成]
@@ -414,6 +461,14 @@ Application Preparation                                [部分]
 │   ├── AUTOMATION_FIRST
 │   └── DEFER_ITEM_AND_CONTINUE
 │
+├── Selective Batch ApplicationPlan Creation           [完成 P2a1b]
+│   ├── one fixed P1d4 Runnable Queue snapshot
+│   ├── ordered allowlist or positive max_jobs
+│   ├── RUNNABLE-only serial P2a1 calls
+│   ├── blocked/not-found do not consume call quota
+│   ├── explicit per-job instructions only
+│   └── per-job failure isolation / no batch store
+│
 ├── CandidateEvidence
 │   └── Trusted Resume Candidate Registry              [完成 P2a2]
 │       ├── explicit subject-scoped registration only
@@ -468,6 +523,12 @@ Application Preparation                                [部分]
 │   │   ├── many versions and families, no ACTIVE one
 │   │   ├── immutable CREATED / UNCHANGED records
 │   │   └── typed get + stable list_selectable
+│   ├── Single-file Base Template Contract             [完成 P2a6a1]
+│   │   ├── explicit SINGLE_FILE_BASE_TEMPLATE_V1 only
+│   │   ├── one document root + empty ordered content region
+│   │   ├── JobopsSection / JobopsBullet interface
+│   │   ├── managed packages, no external files
+│   │   └── GENERAL_SOURCE_V1 identity unchanged
 │   ├── Version Lineage                                [完成 P2a6a]
 │   │   ├── parent must exist under the same subject
 │   │   ├── child inherits the parent root family
@@ -652,6 +713,27 @@ Application Preparation                                [部分]
 │   ├── terminal uncertainty, never automatic retry
 │   ├── immutable stage lineage + terminal zero-call replay
 │   └── no direct Gate / permit / Browser / Engine / ATS access
+├── Current Application Execution Queue                  [完成 P2c8]
+│   ├── current Assembly per Plan by deterministic repository rule
+│   ├── READY / DEFERRED / FAILED
+│   ├── terminal SUBMISSION_UNCERTAIN / SUBMITTED
+│   ├── old defer/failure does not block a new Assembly
+│   ├── stable status/priority/Plan ordering + snapshot hash
+│   └── zero store / execution / retry / reconciliation
+├── Selective Batch Application Execution                [完成 P2c9]
+│   ├── one fixed P2c8 snapshot
+│   ├── READY-only bounded selection
+│   ├── deterministic serial P2c7 calls
+│   ├── per-Plan defer/failure/uncertainty isolation
+│   ├── submitted/uncertain terminal skips
+│   └── zero batch store / retry / refresh / Scheduler
+├── End-to-end Automation Cycle                          [完成 P2c10a]
+│   ├── P1d3 → P2a1b → P2b6 → P2c9 public batches only
+│   ├── independent bounded stage budgets
+│   ├── one shared subject + explicit now
+│   ├── stage failure isolation / later stages continue
+│   ├── immutable invocation-scoped cycle audit
+│   └── zero Discovery / Scheduler / retry / direct execution
 ├── Application Answers                               [部分]
 │   ├── Unified Canonical Answer Taxonomy              [完成 P2b3a]
 │   │   ├── one versioned typed key registry
@@ -672,6 +754,20 @@ Application Preparation                                [部分]
 │   ├── exact serial P2a3 → P2b3b public-Slice recipe
 │   ├── same subject / Plan / explicit now for every stage
 │   ├── CREATED + UNCHANGED continuation
+│   ├── typed outcome + stage-specific stop reason     [完成 P2b4a]
+│   │   ├── v2 typed envelope / closed registry
+│   │   ├── Base LaTeX sample migration
+│   │   ├── five Resume semantic stages          [完成 P2b4b]
+│   │   ├── Cover Letter + Answers semantics      [完成 P2b4c]
+│   │   ├── Publication + Manifest stages          [完成 P2b4d]
+│   │   ├── Construction / Compile / Visual / Layout [完成 P2b4e]
+│   │   ├── Layout → Compilation typed stop lineage [完成 P2b4e1]
+│   │   ├── pre-run invocation + Compilation source resolution
+│   │   │                                              [完成 P2b4e2a]
+│   │   ├── Compilation stopped-source immutable record
+│   │   │                                              [完成 P2b4e2]
+│   │   ├── Publication → stopped source lineage [完成 P2b4d1]
+│   │   └── exact v1 read + explicit legacy adapter
 │   ├── Visual QA pass-skip or P2a8b final lineage
 │   ├── typed defer/failure short-circuit, no rollback/retry
 │   ├── completed zero-call replay + immutable Run history
@@ -680,8 +776,20 @@ Application Preparation                                [部分]
 │   ├── subject-scoped Run list + deterministic current per Plan
 │   ├── current DEFERRED / FAILED projection
 │   ├── completed Run blocking AnswerSet expansion
-│   ├── USER fact / choice / attestation / manual review
-│   ├── OPERATOR system / integrity / unknown reason
+│   ├── Typed Semantic Classification             [完成 P2b5a]
+│   │   ├── fact / choice / attestation
+│   │   ├── correction / input replacement
+│   │   ├── operator repair / non-overridable
+│   │   └── no approvable review without target identity
+│   ├── Technical Reason Classification           [完成 P2b5a2]
+│   │   ├── 16/16 typed deferred reasons
+│   │   ├── Layout compile child-lineage dispatch
+│   │   └── zero approvable Visual QA reasons
+│   ├── Fact QA Finding-Level Projection          [完成 P2b5d]
+│   │   ├── direct Resume / Cover Letter QA
+│   │   ├── Publication source-lineage resolution
+│   │   └── one exact blocking finding → one item
+│   ├── OPERATOR system / integrity / unclassified reason
 │   ├── stable identity, priority/audience/kind ordering
 │   └── zero store / write / retry / resolution
 ├── Selective Batch Preparation                        [完成 P2b6]
@@ -715,7 +823,9 @@ Application Preparation                                [部分]
 │   ├── AI_REVISED child per attempt, same root family
 │   ├── exhausted → DEFERRED_ATTEMPTS_EXHAUSTED with lineage
 │   └── immutable run + pre-work UNCHANGED replay
-├── Conversational Human Resolution                    [计划]
+├── Conversational Human Resolution                    [部分 S3g1]
+│   ├── Application-answer USER items                  [完成 S3g1]
+│   └── Resume / LaTeX choice items                    [完成 S3g2]
 │   └── typed upstream update then P2b4 rerun
 ├── Material manifest                                  [完成]
 │   └── load_material_manifest(
@@ -766,6 +876,26 @@ Application Execution                                  [完成]
 │           command: RunApplicationExecutionCommand,
 │           ...
 │       ) -> RunApplicationExecutionResult
+│
+├── Current Application Execution Queue                 [完成 P2c8]
+│   └── build_current_application_execution_queue(...)
+│       → CurrentApplicationExecutionQueueResult
+│
+├── Selective Batch Application Execution               [完成 P2c9]
+│   └── async run_selective_batch_execution(
+│           command: SelectiveBatchExecutionCommand,
+│           ...
+│       ) → SelectiveBatchExecutionResult
+│
+├── End-to-end Automation Cycle                         [完成 P2c10a]
+│   └── async run_automation_cycle(
+│           command: RunAutomationCycleCommand,
+│           priority_refresh: P1d3 public callable,
+│           plan_creation: P2a1b public callable,
+│           preparation: P2b6 public callable,
+│           execution: P2c9 public callable,
+│           repository: AutomationCycleRunRepository,
+│       ) → RunAutomationCycleResult
 │
 ├── Application Engine                                 [完成]
 │   └── async JobApplicationEngine.execute(
@@ -1007,3 +1137,170 @@ Legacy                                                 [旧版]
 ├── applications.db
 └── profile.yaml
 ```
+
+## Material correction target
+
+```text
+P2b5 current CORRECT_MATERIAL item
+  ├── FactQAFindingAttentionRef
+  ├── PublicationStoppedSourceLineage
+  ├── ResumeCompilationStoppedSourceRef
+  └── ResumeLayoutRevision final attempt
+        ↓
+MaterialCorrectionTargetProvider
+        ↓
+immutable Private Home target + typed item reference
+        ↓
+authenticated safe read-only Dashboard projection
+```
+
+The provider is the only target-construction boundary. P2b5 remains a derived
+queue and the Dashboard never reads target repositories directly.
+
+## Unsupported claim correction
+
+```text
+S3f exact unsupported-claim item
+  → authenticated REMOVE / REWRITE command
+  → MaterialCorrectionTargetProvider
+  → immutable UnsupportedClaimCorrectionDirective
+  → optional Draft-stage directive provider
+  → P2b4 rerun and unchanged Fact QA boundary
+```
+
+Compilation, Layout, overflow, replacement, operator repair, and approval use
+different future resolution paths.
+
+## LaTeX Compilation correction
+
+```text
+S3f current Compilation correction item
+  → authenticated REGENERATE_AND_RETRY
+  → exact target + stopped-source revalidation
+  → immutable LatexCompilationCorrectionDirective
+  → optional P2a6c directive provider
+  → new Construction identity/version lineage
+  → one full P2b4 rerun
+```
+
+The reason, not the UI or an Agent, selects managed-dependency versus
+compilable-LaTeX regeneration. No raw LaTeX, stderr, path, patch, or new
+candidate fact enters this boundary.
+
+## Resume Layout correction preview
+
+```text
+current ResumeVisualLayoutCorrectionTarget
+  → exact Compilation artifact + optional final Layout attempt
+  → verified artifact bytes
+  → existing bounded PdfPageRendererPort
+  → immutable subject-scoped PNG preview record
+  → authenticated opaque-reference page read
+```
+
+S3f exposes only a read-only “view current version” entry. It does not add a
+correction instruction, approval, retry, or P2b4 invocation.
+
+## Cover Letter overflow correction preview
+
+```text
+current CoverLetterLayoutCorrectionTarget
+  → exact Publication overflow evaluation + content-addressed source
+  → verified source content (no path)
+  → existing bounded compiler + PdfPageRendererPort
+  → immutable subject-scoped PNG preview record
+  → authenticated opaque-reference page read
+```
+
+S3f exposes only “view current Cover Letter”. Preview creation neither changes
+the source nor resolves the item and does not invoke P2b4.
+
+## Resume Layout correction
+
+```text
+authenticated explicit action + current safe preview
+  → exact target / preview / source revalidation
+  → immutable ResumeLayoutCorrectionDirective
+  → optional P2a8b directive provider
+  → new bounded Layout run identity
+  → one full P2b4 rerun
+```
+
+The agent receives only closed visual issue selections and existing typed
+findings. Deterministic controlled-region equality prevents claim or fact
+changes.
+
+## Cover Letter overflow correction
+
+```text
+authenticated explicit action + current safe preview
+  → exact target / preview / evaluation / source revalidation
+  → immutable CoverLetterOverflowCorrectionDirective
+  → optional Cover Letter Publication directive provider
+  → new content-addressed format-only source + Publication identity
+  → one full P2b4 rerun
+```
+
+Publication continues from the exact target source and changes only closed
+managed preamble parameters. The document body remains byte-identical while
+Fact QA, compiler, PDF text, overflow evaluation, Publication and Manifest
+contracts run normally. Content reduction and automatic correction loops stay
+outside this boundary.
+
+## Input replacement target
+
+```text
+current typed REPLACE_INPUT blocker
+  → exact successful selection lineage in the same Preparation Run
+  → ResumeCandidateProvider / LaTeXVersionProvider revalidation
+  → immutable subject/Plan-scoped InputReplacementTarget
+  → optional HumanAttentionItem replacement_target_ref
+  → authenticated safe read-only Dashboard summary
+```
+
+The registry is closed at three mappings and two target kinds. This boundary
+does not upload, register, select, disable, delete or rerun preparation.
+
+## Existing input replacement
+
+```text
+authenticated current replacement item
+  → exact target + one typed selectable-registry read
+  → existing plan-scoped override repository (v2 provenance)
+  → P2a3 ResumeCandidate or P2a6b LaTeX Version consumption
+  → one full P2b4 rerun
+  → immutable replacement receipt
+```
+
+No upload, registration, global default mutation, fuzzy option lookup,
+automatic choice, Queue write, or replacement loop is part of S3g5.
+
+## New ResumeCandidate registration and replacement
+
+```text
+authenticated bounded multipart bytes
+  → existing PDF/DOCX byte detection + controlled staging
+  → P2a2 public ResumeCandidate registration / reuse
+  → public selectable candidate confirmation
+  → S3g5 SELECT_EXISTING_REPLACEMENT (deterministic child invocation)
+  → immutable outer receipt
+```
+
+S3g5b1 has no override write, direct P2b4 call, LaTeX registration, global
+default change, parser extension, automatic third choice, or live execution.
+
+## New Base LaTeX Version registration and replacement
+
+```text
+authenticated bounded single UTF-8 .tex bytes
+  → P2a6a1 strict single-file source profile
+  → target-derived same-family parent/version lineage
+  → P2a6a public LaTeX Version registration / reuse
+  → public selectable version confirmation
+  → S3g5 SELECT_EXISTING_REPLACEMENT (deterministic child invocation)
+  → immutable outer receipt
+```
+
+S3g5b2 has no direct override write, P2a6b/P2b4 call, global default change,
+multi-file bundle support, parser/compiler extension, automatic third choice,
+or live execution.

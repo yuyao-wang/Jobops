@@ -24,6 +24,14 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .application_preparation_orchestrator import (
+    COVER_LETTER_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
+    ApplicationPreparationStage,
+    CoverLetterEvidenceStopReason,
+    PreparationStageOutcome,
+    PreparationStopReasonEnvelope,
+    PublicPreparationStageResult,
+)
 from .private_home import PrivateHome, PrivateHomeError
 from .resume_candidates import (
     ResumeCandidate,
@@ -1406,6 +1414,76 @@ def create_cover_letter_evidence_snapshot(
     )
 
 
+_COVER_LETTER_EVIDENCE_FAILURE_REASON_MAP = {
+    reason: CoverLetterEvidenceStopReason[reason.name]
+    for reason in CoverLetterEvidenceFailureReason
+}
+
+
+def cover_letter_evidence_public_result(
+    result: CreateCoverLetterEvidenceSnapshotResult,
+) -> PublicPreparationStageResult:
+    """Adapt every authoritative P2b2a outcome to stage-result v2."""
+
+    if not isinstance(result, CreateCoverLetterEvidenceSnapshotResult):
+        raise TypeError("result must be a cover-letter evidence result")
+    stage = ApplicationPreparationStage.COVER_LETTER_EVIDENCE
+    if result.status in {
+        CoverLetterEvidenceSnapshotStatus.CREATED,
+        CoverLetterEvidenceSnapshotStatus.UNCHANGED,
+    }:
+        if result.snapshot is None:
+            raise ValueError("successful evidence operation has no snapshot")
+        constructor = (
+            PublicPreparationStageResult.completed
+            if result.status is CoverLetterEvidenceSnapshotStatus.CREATED
+            else PublicPreparationStageResult.unchanged
+        )
+        return constructor(
+            stage=stage,
+            result_id=result.snapshot.snapshot_id,
+            result_content_hash=result.snapshot.snapshot_content_hash,
+            outputs={
+                "cover_letter_evidence_snapshot_id": (
+                    result.snapshot.snapshot_id
+                )
+            },
+        )
+    if result.status is CoverLetterEvidenceSnapshotStatus.DEFERRED_NO_EVIDENCE:
+        reason = CoverLetterEvidenceStopReason.NO_USABLE_EVIDENCE
+        outcome = PreparationStageOutcome.DEFERRED
+    else:
+        if result.reason_code is None:
+            raise ValueError("stopped evidence operation has no reason")
+        try:
+            reason = _COVER_LETTER_EVIDENCE_FAILURE_REASON_MAP[
+                result.reason_code
+            ]
+        except KeyError as error:
+            raise ValueError(
+                "unmapped cover-letter evidence stop reason"
+            ) from error
+        outcome = PreparationStageOutcome.FAILED
+    stop_reason = PreparationStopReasonEnvelope(
+        stage=stage,
+        code=reason,
+        contract_version=(
+            COVER_LETTER_EVIDENCE_STOP_REASON_CONTRACT_VERSION
+        ),
+        outcome=outcome,
+    )
+    constructor = (
+        PublicPreparationStageResult.deferred
+        if outcome is PreparationStageOutcome.DEFERRED
+        else PublicPreparationStageResult.failed
+    )
+    return constructor(
+        stage=stage,
+        stop_reason=stop_reason,
+        retryable=result.retryable,
+    )
+
+
 __all__ = [
     "COVER_LETTER_EVIDENCE_CONTRACT_VERSION",
     "CoverLetterEvidenceFailureReason",
@@ -1427,5 +1505,6 @@ __all__ = [
     "PrivateHomeCoverLetterEvidenceSnapshotRepository",
     "cover_letter_evidence_id",
     "cover_letter_evidence_snapshot_id",
+    "cover_letter_evidence_public_result",
     "create_cover_letter_evidence_snapshot",
 ]
