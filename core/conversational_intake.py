@@ -1376,9 +1376,33 @@ def _search_failure_response(
         JobSearchReason.UNSUPPORTED_COMPANY: (
             "This company is not configured for bounded job search."
         ),
+        JobSearchReason.PROVIDER_CONFIGURATION_ERROR: (
+            "The configured job search provider is invalid."
+        ),
         JobSearchReason.SOURCE_TIMEOUT: "The job search source timed out.",
         JobSearchReason.SOURCE_RATE_LIMITED: (
             "The job search source is temporarily rate limited."
+        ),
+        JobSearchReason.NETWORK_UNAVAILABLE: (
+            "The job search network is currently unavailable."
+        ),
+        JobSearchReason.HTTP_ERROR: (
+            "The job search source returned an HTTP error."
+        ),
+        JobSearchReason.REDIRECT_REJECTED: (
+            "The job search source redirected outside its configured boundary."
+        ),
+        JobSearchReason.RESPONSE_TOO_LARGE: (
+            "The job search source response exceeded the server limit."
+        ),
+        JobSearchReason.UNSUPPORTED_CONTENT_TYPE: (
+            "The job search source returned an unsupported content type."
+        ),
+        JobSearchReason.MALFORMED_RESPONSE: (
+            "The job search source returned malformed content."
+        ),
+        JobSearchReason.CANDIDATE_VALIDATION_FAILED: (
+            "The job search source returned an invalid candidate record."
         ),
         JobSearchReason.SOURCE_RESPONSE_INVALID: (
             "The job search source returned an invalid response."

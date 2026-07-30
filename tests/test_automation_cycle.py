@@ -169,6 +169,11 @@ def _bundles(
             unchanged=unchanged,
             skipped_not_prepared=0,
             skipped_missing_binding=missing,
+            context_bound=assembled + unchanged + failed,
+            context_not_ready=0,
+            context_conflict=0,
+            context_integrity_failure=0,
+            context_failed=0,
             failed=failed,
         ),
     )

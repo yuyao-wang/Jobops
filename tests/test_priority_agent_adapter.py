@@ -19,6 +19,7 @@ from core.job_prioritization import (
     PriorityCandidateContext,
     PriorityContext,
     PriorityJobContext,
+    PriorityAgentOutputInvalidError,
     PriorityPolicyContext,
     PriorityProposalReason,
     PriorityProposalStatus,
@@ -42,6 +43,18 @@ from core.priority_agent_adapter import (
     OpenAIPriorityAgentAdapter,
     PRIORITY_AGENT_OUTPUT_SCHEMA,
     PRIORITY_AGENT_SYSTEM_PROMPT,
+)
+from core.production_priority_agent import (
+    ProductionPriorityAgentErrorCategory,
+    ProductionPriorityAgentLimits,
+    StructuredBackendPriorityAgentAdapter,
+    build_production_priority_agent,
+)
+from core.model_provider_capabilities import (
+    MODEL_EXECUTION_ISOLATION_PROFILES,
+    ModelBackendResolutionError,
+    ModelBackendResolutionFailure,
+    model_execution_isolation_profiles,
 )
 from utils import llm
 
@@ -673,3 +686,130 @@ def test_adapter_rejects_agentic_or_untrusted_input_unsafe_client() -> None:
 
     with pytest.raises(ValueError, match="tool-free"):
         OpenAIPriorityAgentAdapter(client)
+
+
+class FakeAsyncPriorityBackend:
+    capabilities = llm.OpenAIAPIBackend.capabilities
+    native_capabilities = llm.OpenAIAPIBackend.native_capabilities
+    response: dict[str, Any] | BaseException = {}
+    calls: list[Any] = []
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.model = str(config.get("model", ""))
+
+    async def complete_structured_request(self, request):
+        type(self).calls.append(request)
+        if isinstance(type(self).response, BaseException):
+            raise type(self).response
+        return copy.deepcopy(type(self).response)
+
+
+class FakeAsyncCodexPriorityBackend(FakeAsyncPriorityBackend):
+    capabilities = llm.CodexCLIBackend.capabilities
+    native_capabilities = llm.CodexCLIBackend.native_capabilities
+
+
+def _production_adapter(
+    response: dict[str, Any] | BaseException,
+    *,
+    limits: ProductionPriorityAgentLimits | None = None,
+) -> StructuredBackendPriorityAgentAdapter:
+    FakeAsyncPriorityBackend.response = response
+    FakeAsyncPriorityBackend.calls = []
+    return build_production_priority_agent(
+        ai_config={
+            "default_backend": "openai_api",
+            "backends": {
+                "openai_api": {"model": "synthetic-priority-model"}
+            },
+            "components": {
+                "priority_evaluation": "openai_api",
+            },
+        },
+        backend_registry={"openai_api": FakeAsyncPriorityBackend},
+        isolation_profile_registry=MODEL_EXECUTION_ISOLATION_PROFILES,
+        limits=limits,
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_priority_adapter_uses_one_async_structured_call() -> None:
+    adapter = _production_adapter(_qualified_output())
+
+    output = await adapter.evaluate(_context())
+
+    assert output.proposed_priority_level == "P1"
+    assert len(FakeAsyncPriorityBackend.calls) == 1
+    request = FakeAsyncPriorityBackend.calls[0]
+    assert request.input_data["data_type"] == "PriorityContext"
+    assert request.system_prompt == PRIORITY_AGENT_SYSTEM_PROMPT
+    assert request.output_schema == PRIORITY_AGENT_OUTPUT_SCHEMA
+    assert request.images == ()
+    assert adapter.metadata.prompt_version == DEFAULT_PROMPT_VERSION
+    assert adapter.call_metadata.backend_id == "openai_api"
+    assert "synthetic-priority-model" in adapter.metadata.model_id
+
+
+@pytest.mark.asyncio
+async def test_production_priority_adapter_fails_closed_without_second_call() -> None:
+    malformed = _qualified_output()
+    malformed["confidence"] = "CERTAIN"
+    adapter = _production_adapter(malformed)
+    with pytest.raises(PriorityAgentOutputInvalidError):
+        await adapter.evaluate(_context())
+    assert len(FakeAsyncPriorityBackend.calls) == 1
+
+    adapter = _production_adapter(TimeoutError("synthetic timeout"))
+    with pytest.raises(TimeoutError):
+        await adapter.evaluate(_context())
+    assert len(FakeAsyncPriorityBackend.calls) == 1
+
+    adapter = _production_adapter(
+        _qualified_output(),
+        limits=ProductionPriorityAgentLimits(max_output_bytes=32),
+    )
+    with pytest.raises(PriorityAgentOutputInvalidError) as oversized:
+        await adapter.evaluate(_context())
+    assert oversized.value.__cause__.category is (
+        ProductionPriorityAgentErrorCategory.OUTPUT_TOO_LARGE
+    )
+    assert len(FakeAsyncPriorityBackend.calls) == 1
+
+
+def test_production_priority_factory_is_exact_and_never_falls_back() -> None:
+    FakeAsyncPriorityBackend.calls = []
+    adapter = _production_adapter(_qualified_output())
+    assert isinstance(adapter, StructuredBackendPriorityAgentAdapter)
+    assert FakeAsyncPriorityBackend.calls == []
+
+    codex = build_production_priority_agent(
+        ai_config={
+            "default_backend": "codex_cli",
+            "backends": {
+                "codex_cli": {
+                    "isolation_profile": "ISOLATED_SUBSCRIPTION_CLI_V1",
+                }
+            },
+        },
+        backend_registry={"codex_cli": FakeAsyncCodexPriorityBackend},
+        isolation_profile_registry=model_execution_isolation_profiles(
+            isolated_subscription_cli_runner_available=True,
+        ),
+    )
+    assert codex.call_metadata.backend_id == "codex_cli"
+    assert codex.call_metadata.authentication_mode == "SUBSCRIPTION_SESSION"
+    assert FakeAsyncCodexPriorityBackend.calls == []
+
+    with pytest.raises(ModelBackendResolutionError) as missing:
+        build_production_priority_agent(
+            ai_config={
+                "default_backend": "openai_api",
+                "components": {"priority_evaluation": "not_registered"},
+            },
+            backend_registry={
+                "openai_api": FakeAsyncPriorityBackend,
+            },
+            isolation_profile_registry=MODEL_EXECUTION_ISOLATION_PROFILES,
+        )
+    assert missing.value.reason is ModelBackendResolutionFailure.MISSING_BACKEND
+    assert missing.value.backend_id == "not_registered"

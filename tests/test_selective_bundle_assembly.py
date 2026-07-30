@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +33,14 @@ from core.selective_bundle_assembly import (
     SelectiveBundleAssemblyCommand,
     SelectiveBundleAssemblyStatus,
     run_selective_bundle_assembly,
+)
+from core.plan_assembly_execution_context_binding import (
+    PLAN_ASSEMBLY_EXECUTION_CONTEXT_BINDING_CONTRACT_VERSION,
+    BindPlanAssemblyExecutionContextResult,
+    BindPlanAssemblyExecutionContextStatus,
+    ExecutionPolicyRecordRef,
+    PlanAssemblyExecutionContextBinding,
+    VerifiedProfileRecordRef,
 )
 from tests.test_application_plan import NOW, SUBJECT
 
@@ -136,6 +146,75 @@ def _assembly_result(command, status):
     )
 
 
+def _digest(value) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+
+
+def _binding(command) -> PlanAssemblyExecutionContextBinding:
+    lineage = command.preparation_lineage
+    profile = VerifiedProfileRecordRef(
+        f"profile-{command.application_plan_id}", "profile-v1", "1" * 64
+    )
+    policy = ExecutionPolicyRecordRef(
+        f"policy-{command.application_plan_id}", "policy-v1", "2" * 64
+    )
+    identity = {
+        "application_assembly_context_hash": "3" * 64,
+        "application_plan_id": command.application_plan_id,
+        "binding_contract_version": (
+            PLAN_ASSEMBLY_EXECUTION_CONTEXT_BINDING_CONTRACT_VERSION
+        ),
+        "execution_policy_ref": policy.to_dict(),
+        "job_id": f"job-{command.application_plan_id}",
+        "plan_material_manifest_id": lineage.plan_material_manifest_id,
+        "policy_input_lineage_hash": "4" * 64,
+        "policy_plan_binding_hash": "5" * 64,
+        "preparation_lineage_hash": lineage.lineage_hash,
+        "preparation_run_id": lineage.preparation_run_id,
+        "prepared_application_answer_set_id": (
+            lineage.prepared_application_answer_set_id
+        ),
+        "profile_input_lineage_hash": "6" * 64,
+        "profile_plan_binding_hash": "7" * 64,
+        "subject_id": command.subject_id,
+        "verified_profile_ref": profile.to_dict(),
+    }
+    binding_hash = _digest(identity)
+    return PlanAssemblyExecutionContextBinding(
+        binding_id=f"plan-assembly-context-{binding_hash}",
+        subject_id=command.subject_id,
+        application_plan_id=command.application_plan_id,
+        job_id=f"job-{command.application_plan_id}",
+        preparation_run_id=lineage.preparation_run_id,
+        plan_material_manifest_id=lineage.plan_material_manifest_id,
+        prepared_application_answer_set_id=(
+            lineage.prepared_application_answer_set_id
+        ),
+        preparation_lineage_hash=lineage.lineage_hash,
+        verified_profile_ref=profile,
+        execution_policy_ref=policy,
+        application_assembly_context_hash="3" * 64,
+        profile_input_lineage_hash="6" * 64,
+        policy_input_lineage_hash="4" * 64,
+        profile_plan_binding_hash="7" * 64,
+        policy_plan_binding_hash="5" * 64,
+        created_at=command.now,
+        invocation_id=command.invocation_id,
+        binding_hash=binding_hash,
+    )
+
+
+def _bind(command):
+    return BindPlanAssemblyExecutionContextResult(
+        BindPlanAssemblyExecutionContextStatus.CREATED,
+        binding=_binding(command),
+    )
+
+
 @pytest.mark.asyncio
 async def test_completed_and_unchanged_call_p2c1_once_each_in_order():
     preparation = _preparation(
@@ -169,6 +248,7 @@ async def test_completed_and_unchanged_call_p2c1_once_each_in_order():
             preparation_result=preparation,
             max_assemblies=2,
         ),
+        plan_execution_context_binder=_bind,
         assemble_application_bundle=assemble,
     )
 
@@ -251,6 +331,7 @@ async def test_invalid_and_deferred_do_not_consume_budget_and_failure_continues(
             preparation_result=preparation,
             max_assemblies=2,
         ),
+        plan_execution_context_binder=_bind,
         assemble_application_bundle=assemble,
     )
 
@@ -277,6 +358,7 @@ async def test_invalid_and_deferred_do_not_consume_budget_and_failure_continues(
             preparation_result=preparation,
             max_assemblies=0,
         ),
+        plan_execution_context_binder=_bind,
         assemble_application_bundle=assemble,
     )
     assert zero_budget.status is SelectiveBundleAssemblyStatus.NOOP

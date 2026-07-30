@@ -1,14 +1,16 @@
-"""Bounded Greenhouse board listing search for configured companies."""
+"""Production bounded Greenhouse board listing search."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
-from urllib.parse import quote, urlsplit
-from uuid import uuid4
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -30,10 +32,262 @@ _GREENHOUSE_HOST_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MAX_RESPONSE_BYTES = 2_000_000
+GREENHOUSE_JOB_SEARCH_ADAPTER_VERSION = "greenhouse-board-search-v2"
+JOB_SEARCH_EXECUTION_POLICY_VERSION = "job-search-execution-policy-v1"
+_GREENHOUSE_API_HOST = "boards-api.greenhouse.io"
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+@dataclass(frozen=True, slots=True)
+class JobSearchExecutionPolicy:
+    """Versioned server-owned bounds for provider listing requests."""
+
+    contract_version: str = JOB_SEARCH_EXECUTION_POLICY_VERSION
+    max_queries_per_refresh: int = 20
+    max_results_per_query: int = 10
+    max_response_bytes: int = _MAX_RESPONSE_BYTES
+    connect_timeout_seconds: float = 5.0
+    read_timeout_seconds: float = 10.0
+    max_redirects: int = 2
+    max_concurrent_requests: int = 1
+    allowed_providers: tuple[str, ...] = ("GREENHOUSE",)
+    user_agent_version: str = "Jobops/2 GreenhouseBoardJobSearch"
+
+    def __post_init__(self) -> None:
+        if self.contract_version != JOB_SEARCH_EXECUTION_POLICY_VERSION:
+            raise ValueError("unsupported job search policy version")
+        for name, value, maximum in (
+            ("max_queries_per_refresh", self.max_queries_per_refresh, 100),
+            ("max_results_per_query", self.max_results_per_query, 10),
+            ("max_response_bytes", self.max_response_bytes, 25_000_000),
+            ("max_redirects", self.max_redirects, 5),
+            ("max_concurrent_requests", self.max_concurrent_requests, 8),
+        ):
+            if type(value) is not int or not 1 <= value <= maximum:
+                raise ValueError(f"{name} is outside the server policy")
+        for name, value in (
+            ("connect_timeout_seconds", self.connect_timeout_seconds),
+            ("read_timeout_seconds", self.read_timeout_seconds),
+        ):
+            if not isinstance(value, (int, float)) or not 0 < value <= 60:
+                raise ValueError(f"{name} is outside the server policy")
+        if (
+            not isinstance(self.allowed_providers, tuple)
+            or not self.allowed_providers
+            or any(
+                provider not in {"GREENHOUSE", "LEVER"}
+                for provider in self.allowed_providers
+            )
+            or len(set(self.allowed_providers)) != len(self.allowed_providers)
+        ):
+            raise ValueError("allowed_providers is invalid")
+        if (
+            not isinstance(self.user_agent_version, str)
+            or not self.user_agent_version.strip()
+            or len(self.user_agent_version) > 120
+        ):
+            raise ValueError("user_agent_version is invalid")
+
+
+class BoundedHttpStatus(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    TIMEOUT = "TIMEOUT"
+    NETWORK_UNAVAILABLE = "NETWORK_UNAVAILABLE"
+    REDIRECT_REJECTED = "REDIRECT_REJECTED"
+    RESPONSE_TOO_LARGE = "RESPONSE_TOO_LARGE"
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedHttpRequest:
+    url: str
+    allowed_hosts: tuple[str, ...]
+    headers: Mapping[str, str]
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    max_redirects: int
+    max_response_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class BoundedHttpResult:
+    status: BoundedHttpStatus
+    response_status: int | None = None
+    headers: Mapping[str, str] | None = None
+    content: bytes | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", BoundedHttpStatus(self.status))
+        if self.status is BoundedHttpStatus.SUCCEEDED:
+            if (
+                type(self.response_status) is not int
+                or self.headers is None
+                or self.content is None
+            ):
+                raise ValueError("successful HTTP result is incomplete")
+        elif any(
+            value is not None
+            for value in (self.response_status, self.headers, self.content)
+        ):
+            raise ValueError("failed HTTP result cannot contain response data")
+
+
+@runtime_checkable
+class BoundedJobSearchHttpPort(Protocol):
+    async def get(self, request: BoundedHttpRequest) -> BoundedHttpResult:
+        """Perform one bounded credential-free HTTP GET."""
+
+
+class HttpxBoundedJobSearchHttpClient:
+    """HTTPX transport with explicit redirect and decoded-byte bounds."""
+
+    def __init__(
+        self,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self._transport = transport
+
+    async def get(self, request: BoundedHttpRequest) -> BoundedHttpResult:
+        current_url = request.url
+        timeout = httpx.Timeout(
+            connect=request.connect_timeout_seconds,
+            read=request.read_timeout_seconds,
+            write=request.connect_timeout_seconds,
+            pool=request.connect_timeout_seconds,
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                transport=self._transport,
+                follow_redirects=False,
+            ) as client:
+                for redirect_count in range(request.max_redirects + 1):
+                    parsed = urlsplit(current_url)
+                    if (
+                        parsed.scheme != "https"
+                        or parsed.hostname not in request.allowed_hosts
+                        or parsed.username is not None
+                        or parsed.password is not None
+                        or parsed.port is not None
+                    ):
+                        return BoundedHttpResult(
+                            BoundedHttpStatus.REDIRECT_REJECTED
+                        )
+                    response = await client.send(
+                        client.build_request(
+                            "GET",
+                            current_url,
+                            headers=dict(request.headers),
+                        ),
+                        stream=True,
+                    )
+                    if response.status_code in _REDIRECT_STATUSES:
+                        location = response.headers.get("location")
+                        await response.aclose()
+                        if (
+                            redirect_count == request.max_redirects
+                            or not location
+                        ):
+                            return BoundedHttpResult(
+                                BoundedHttpStatus.REDIRECT_REJECTED
+                            )
+                        current_url = urljoin(current_url, location)
+                        continue
+
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > request.max_response_bytes:
+                                await response.aclose()
+                                return BoundedHttpResult(
+                                    BoundedHttpStatus.RESPONSE_TOO_LARGE
+                                )
+                        except ValueError:
+                            await response.aclose()
+                            return BoundedHttpResult(
+                                BoundedHttpStatus.NETWORK_UNAVAILABLE
+                            )
+                    chunks: list[bytes] = []
+                    size = 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > request.max_response_bytes:
+                            await response.aclose()
+                            return BoundedHttpResult(
+                                BoundedHttpStatus.RESPONSE_TOO_LARGE
+                            )
+                        chunks.append(chunk)
+                    headers = {
+                        key.casefold(): value
+                        for key, value in response.headers.items()
+                    }
+                    status_code = response.status_code
+                    await response.aclose()
+                    return BoundedHttpResult(
+                        BoundedHttpStatus.SUCCEEDED,
+                        response_status=status_code,
+                        headers=headers,
+                        content=b"".join(chunks),
+                    )
+        except httpx.TimeoutException:
+            return BoundedHttpResult(BoundedHttpStatus.TIMEOUT)
+        except httpx.HTTPError:
+            return BoundedHttpResult(BoundedHttpStatus.NETWORK_UNAVAILABLE)
+        return BoundedHttpResult(BoundedHttpStatus.REDIRECT_REJECTED)
 
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _candidate_set_id(
+    request: JobSearchRequest,
+    board: "GreenhouseBoardConfig",
+    candidates: Iterable[SearchCandidate],
+) -> str:
+    payload = {
+        "contract_version": GREENHOUSE_JOB_SEARCH_ADAPTER_VERSION,
+        "request": {
+            "company": canonicalize_search_company(request.company),
+            "location": (
+                canonicalize_search_match_text(
+                    request.location,
+                    name="location",
+                    maximum=320,
+                )
+                if request.location is not None
+                else None
+            ),
+            "request_id": request.request_id,
+            "title": canonicalize_search_match_text(
+                request.title,
+                name="title",
+                maximum=240,
+            ),
+        },
+        "board_token": board.board_token,
+        "candidate_ids": [
+            {
+                "candidate_id": candidate.candidate_id,
+                "source_job_id": candidate.source_job_id,
+                "source_url": candidate.source_url,
+            }
+            for candidate in candidates
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"candidate-set-{digest[:32]}"
+
+
+class _CandidateValidationError(ValueError):
+    pass
 
 
 def _normalize_company(value: str) -> str:
@@ -97,7 +351,7 @@ def _greenhouse_source_url(
     except ValueError as exc:
         raise ValueError("absolute_url is invalid") from exc
     if (
-        parsed.scheme.casefold() not in {"http", "https"}
+        parsed.scheme.casefold() != "https"
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
@@ -154,6 +408,8 @@ class GreenhouseBoardJobSearch:
         boards: Iterable[GreenhouseBoardConfig],
         timeout_seconds: float = 10.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        http_port: BoundedJobSearchHttpPort | None = None,
+        policy: JobSearchExecutionPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
         candidate_set_id_factory: Callable[[], str] | None = None,
     ) -> None:
@@ -168,12 +424,25 @@ class GreenhouseBoardJobSearch:
                 if normalized in self._boards_by_name:
                     raise ValueError("company board names must be globally unique")
                 self._boards_by_name[normalized] = board
-        self._timeout_seconds = timeout_seconds
-        self._transport = transport
-        self._clock = clock or _utc_now
-        self._candidate_set_id_factory = candidate_set_id_factory or (
-            lambda: f"candidate-set-{uuid4()}"
+        if not self._boards_by_name:
+            raise ValueError("at least one Greenhouse board is required")
+        if http_port is not None and transport is not None:
+            raise ValueError("http_port and transport cannot both be provided")
+        if http_port is not None and not isinstance(
+            http_port, BoundedJobSearchHttpPort
+        ):
+            raise TypeError("http_port must implement BoundedJobSearchHttpPort")
+        self._policy = policy or JobSearchExecutionPolicy(
+            connect_timeout_seconds=timeout_seconds,
+            read_timeout_seconds=timeout_seconds,
         )
+        if "GREENHOUSE" not in self._policy.allowed_providers:
+            raise ValueError("Greenhouse is disabled by the search policy")
+        self._http_port = http_port or HttpxBoundedJobSearchHttpClient(
+            transport=transport
+        )
+        self._clock = clock or _utc_now
+        self._candidate_set_id_factory = candidate_set_id_factory
 
     async def search(self, request: JobSearchRequest) -> JobSearchResult:
         board = self._boards_by_name.get(_normalize_company(request.company))
@@ -184,49 +453,99 @@ class GreenhouseBoardJobSearch:
             "https://boards-api.greenhouse.io/v1/boards/"
             f"{quote(board.board_token, safe='')}/jobs"
         )
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout_seconds,
-                transport=self._transport,
-                follow_redirects=False,
+        response = await self._http_port.get(
+            BoundedHttpRequest(
+                url=api_url,
+                allowed_hosts=(_GREENHOUSE_API_HOST,),
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "Jobops/1.0 GreenhouseBoardJobSearch",
+                    "User-Agent": self._policy.user_agent_version,
                 },
-            ) as client:
-                response = await client.get(api_url)
-        except httpx.TimeoutException:
-            return JobSearchResult.failed(JobSearchReason.SOURCE_TIMEOUT)
-        except httpx.HTTPError:
-            return JobSearchResult.failed(JobSearchReason.SOURCE_UNAVAILABLE)
-
-        if response.status_code in {408, 504}:
-            return JobSearchResult.failed(JobSearchReason.SOURCE_TIMEOUT)
-        if response.status_code == 429:
-            return JobSearchResult.failed(JobSearchReason.SOURCE_RATE_LIMITED)
-        if response.status_code >= 500:
-            return JobSearchResult.failed(JobSearchReason.SOURCE_UNAVAILABLE)
-        if response.status_code != 200:
+                connect_timeout_seconds=(
+                    self._policy.connect_timeout_seconds
+                ),
+                read_timeout_seconds=self._policy.read_timeout_seconds,
+                max_redirects=self._policy.max_redirects,
+                max_response_bytes=self._policy.max_response_bytes,
+            )
+        )
+        if not isinstance(response, BoundedHttpResult):
             return JobSearchResult.failed(
-                JobSearchReason.SOURCE_UNAVAILABLE,
+                JobSearchReason.NETWORK_UNAVAILABLE
+            )
+        if response.status is BoundedHttpStatus.TIMEOUT:
+            return JobSearchResult.failed(JobSearchReason.SOURCE_TIMEOUT)
+        if response.status is BoundedHttpStatus.NETWORK_UNAVAILABLE:
+            return JobSearchResult.failed(JobSearchReason.NETWORK_UNAVAILABLE)
+        if response.status is BoundedHttpStatus.REDIRECT_REJECTED:
+            return JobSearchResult.failed(JobSearchReason.REDIRECT_REJECTED)
+        if response.status is BoundedHttpStatus.RESPONSE_TOO_LARGE:
+            return JobSearchResult.failed(JobSearchReason.RESPONSE_TOO_LARGE)
+        if (
+            response.response_status is None
+            or response.headers is None
+            or response.content is None
+        ):
+            return JobSearchResult.failed(
+                JobSearchReason.NETWORK_UNAVAILABLE
+            )
+
+        if response.response_status in {408, 504}:
+            return JobSearchResult.failed(JobSearchReason.SOURCE_TIMEOUT)
+        if response.response_status == 429:
+            return JobSearchResult.failed(JobSearchReason.SOURCE_RATE_LIMITED)
+        if response.response_status >= 500:
+            return JobSearchResult.failed(
+                JobSearchReason.HTTP_ERROR,
+                retryable=True,
+            )
+        if response.response_status != 200:
+            return JobSearchResult.failed(
+                JobSearchReason.HTTP_ERROR,
                 retryable=False,
             )
-        if len(response.content) > _MAX_RESPONSE_BYTES:
+        content_type = response.headers.get("content-type", "")
+        if content_type.partition(";")[0].strip().casefold() not in {
+            "application/json",
+            "application/vnd.api+json",
+        }:
             return JobSearchResult.failed(
-                JobSearchReason.SOURCE_RESPONSE_INVALID
+                JobSearchReason.UNSUPPORTED_CONTENT_TYPE
             )
 
         try:
+            payload = json.loads(response.content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return JobSearchResult.failed(JobSearchReason.MALFORMED_RESPONSE)
+        try:
             candidates = self._candidates_from_payload(
-                payload=response.json(),
+                payload=payload,
                 board=board,
                 request=request,
             )
+        except _CandidateValidationError:
+            return JobSearchResult.failed(
+                JobSearchReason.CANDIDATE_VALIDATION_FAILED
+            )
+        except (TypeError, ValueError):
+            return JobSearchResult.failed(JobSearchReason.MALFORMED_RESPONSE)
+        try:
+            bounded_candidates = tuple(
+                candidates[: self._policy.max_results_per_query]
+            )
             created_at = self._clock()
             candidate_set = CandidateSet(
-                candidate_set_id=self._candidate_set_id_factory(),
+                candidate_set_id=(
+                    self._candidate_set_id_factory()
+                    if self._candidate_set_id_factory is not None
+                    else _candidate_set_id(
+                        request,
+                        board,
+                        bounded_candidates,
+                    )
+                ),
                 request_id=request.request_id,
-                candidates=tuple(candidates[:10]),
+                candidates=bounded_candidates,
                 created_at=created_at,
             )
         except (TypeError, ValueError):
@@ -255,21 +574,29 @@ class GreenhouseBoardJobSearch:
             else None
         )
         ranked: list[tuple[int, str, str, SearchCandidate]] = []
+        candidates_by_source_id: dict[str, SearchCandidate] = {}
         for item in jobs:
             if not isinstance(item, Mapping):
-                raise ValueError("Greenhouse board jobs must be objects")
-            source_job_id = _source_id(item.get("id"))
-            title = _normalized_text(
-                item.get("title"),
-                name="title",
-                maximum=240,
-            )
-            location = _location(item.get("location"))
-            source_url = _greenhouse_source_url(
-                item.get("absolute_url"),
-                board_token=board.board_token,
-                source_job_id=source_job_id,
-            )
+                raise _CandidateValidationError(
+                    "Greenhouse board jobs must be objects"
+                )
+            try:
+                source_job_id = _source_id(item.get("id"))
+                title = _normalized_text(
+                    item.get("title"),
+                    name="title",
+                    maximum=240,
+                )
+                location = _location(item.get("location"))
+                source_url = _greenhouse_source_url(
+                    item.get("absolute_url"),
+                    board_token=board.board_token,
+                    source_job_id=source_job_id,
+                )
+            except ValueError as exc:
+                raise _CandidateValidationError(
+                    "Greenhouse candidate is invalid"
+                ) from exc
 
             normalized_title = _normalize_match_text(title)
             exact = normalized_title == query_title
@@ -299,6 +626,14 @@ class GreenhouseBoardJobSearch:
                 source_url=source_url,
                 source_job_id=source_job_id,
             )
+            existing = candidates_by_source_id.get(source_job_id)
+            if existing is not None:
+                if existing.source_url != candidate.source_url:
+                    raise _CandidateValidationError(
+                        "job ID has conflicting canonical URLs"
+                    )
+                continue
+            candidates_by_source_id[source_job_id] = candidate
             ranked.append(
                 (
                     0 if exact else 1,
@@ -312,4 +647,15 @@ class GreenhouseBoardJobSearch:
         return [item[3] for item in ranked]
 
 
-__all__ = ["GreenhouseBoardConfig", "GreenhouseBoardJobSearch"]
+__all__ = [
+    "BoundedHttpRequest",
+    "BoundedHttpResult",
+    "BoundedHttpStatus",
+    "BoundedJobSearchHttpPort",
+    "GREENHOUSE_JOB_SEARCH_ADAPTER_VERSION",
+    "GreenhouseBoardConfig",
+    "GreenhouseBoardJobSearch",
+    "HttpxBoundedJobSearchHttpClient",
+    "JOB_SEARCH_EXECUTION_POLICY_VERSION",
+    "JobSearchExecutionPolicy",
+]

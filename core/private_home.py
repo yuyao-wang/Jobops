@@ -193,6 +193,8 @@ class PrivatePaths:
     candidate_source_projections: Path
     candidate_fact_proposals: Path
     candidate_fact_reviews: Path
+    plan_execution_policy_decisions: Path
+    plan_assembly_execution_context_bindings: Path
     policy: Path
     job_queue: Path
     event_ledger: Path
@@ -303,6 +305,12 @@ class PrivateHome:
             ),
             candidate_fact_reviews=(
                 profile / "candidate-fact-reviews.sqlite3"
+            ),
+            plan_execution_policy_decisions=(
+                state / "preparation" / "plan-execution-policy-decisions"
+            ),
+            plan_assembly_execution_context_bindings=(
+                state / "preparation" / "plan-assembly-execution-context-bindings"
             ),
             policy=profile / "policy.json",
             job_queue=queue / "job_pool.csv",
@@ -469,6 +477,8 @@ class PrivateHome:
             paths.priority_decisions,
             paths.preparation,
             paths.application_plans,
+            paths.plan_execution_policy_decisions,
+            paths.plan_assembly_execution_context_bindings,
             paths.resume_candidates,
             paths.resume_candidate_records,
             paths.resume_candidate_artifacts,

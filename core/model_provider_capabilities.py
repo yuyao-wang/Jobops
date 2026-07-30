@@ -478,6 +478,27 @@ PREPARATION_COMPONENT_REQUIREMENTS: Mapping[
     }
 )
 
+PRIORITY_MODEL_COMPONENT_ID = "priority_evaluation"
+PRIORITY_COMPONENT_REQUIREMENTS: Mapping[
+    str, ModelComponentRequirements
+] = MappingProxyType(
+    {
+        PRIORITY_MODEL_COMPONENT_ID: ModelComponentRequirements(
+            component_id=PRIORITY_MODEL_COMPONENT_ID,
+            input_trust=ComponentInputTrust.UNTRUSTED,
+            requires_text_input=True,
+            requires_image_input=False,
+            requires_strict_json_schema=True,
+            requires_single_semantic_generation=True,
+            required_tool_execution_mode=ToolExecutionMode.NONE,
+            required_filesystem_access_mode=FilesystemAccessMode.NONE,
+            required_shell_access_mode=ShellAccessMode.NONE,
+            required_browser_access_mode=AuxiliaryAccessMode.NONE,
+            required_external_function_access_mode=AuxiliaryAccessMode.NONE,
+        )
+    }
+)
+
 
 def _profile(
     profile_id: str,
@@ -1061,6 +1082,8 @@ __all__ = [
     "NativeModelBackendCapabilities",
     "PREPARATION_COMPONENT_REQUIREMENTS",
     "PREPARATION_MODEL_COMPONENT_IDS",
+    "PRIORITY_COMPONENT_REQUIREMENTS",
+    "PRIORITY_MODEL_COMPONENT_ID",
     "ResolvedComponentBackend",
     "ShellAccessMode",
     "ToolExecutionMode",

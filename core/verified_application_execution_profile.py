@@ -60,6 +60,7 @@ class ProjectVerifiedApplicationExecutionProfileStatus(StrEnum):
 class VerifiedApplicationExecutionProfileReadStatus(StrEnum):
     FOUND = "FOUND"
     NOT_FOUND = "NOT_FOUND"
+    CONFLICT = "CONFLICT"
     INTEGRITY_FAILURE = "INTEGRITY_FAILURE"
 
 
@@ -103,7 +104,13 @@ def _parse_time(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _plan_binding_hash(plan: ApplicationPlan) -> str:
+def verified_execution_profile_plan_binding_hash(
+    plan: ApplicationPlan,
+) -> str:
+    """Return the public exact Plan binding used by profile snapshots."""
+
+    if not isinstance(plan, ApplicationPlan):
+        raise TypeError("plan must be an ApplicationPlan")
     return _hash(
         {
             "application_plan_contract_version": plan.contract_version,
@@ -430,6 +437,11 @@ class VerifiedApplicationExecutionProfileReadResult:
         ):
             raise ValueError("not-found verified profile result is invalid")
         elif (
+            status is VerifiedApplicationExecutionProfileReadStatus.CONFLICT
+            and not self.failure_code
+        ):
+            raise ValueError("conflicting verified profile result is invalid")
+        elif (
             status is VerifiedApplicationExecutionProfileReadStatus.INTEGRITY_FAILURE
             and not self.failure_code
         ):
@@ -572,11 +584,23 @@ def to_application_bundle_profile(
 ) -> Mapping[str, object]:
     """Purely project verified values into the existing closed Bundle shape."""
 
+    return to_application_execution_identity_profile(
+        snapshot
+    ).to_application_bundle_profile()
+
+
+def to_application_execution_identity_profile(
+    snapshot: VerifiedApplicationExecutionProfile,
+) -> ApplicationExecutionIdentityProfile:
+    """Purely project a snapshot into the closed typed identity profile."""
+
     if not isinstance(snapshot, VerifiedApplicationExecutionProfile):
         raise TypeError("snapshot is invalid")
-    values = {item.field_key.value: item.normalized_value for item in snapshot.ordered_fields}
-    profile = ApplicationExecutionIdentityProfile(**values)
-    return profile.to_application_bundle_profile()
+    values = {
+        item.field_key.value: item.normalized_value
+        for item in snapshot.ordered_fields
+    }
+    return ApplicationExecutionIdentityProfile(**values)
 
 
 def project_verified_application_execution_profile(
@@ -707,7 +731,9 @@ def project_verified_application_execution_profile(
             "job_id": plan.job_id,
             "optional_field_keys": tuple(key.value for key in optional),
             "ordered_fields": tuple(item.to_dict() for item in fields),
-            "plan_binding_hash": _plan_binding_hash(plan),
+            "plan_binding_hash": (
+                verified_execution_profile_plan_binding_hash(plan)
+            ),
             "profile_contract_version": VERIFIED_APPLICATION_EXECUTION_PROFILE_CONTRACT_VERSION,
             "required_field_keys": tuple(key.value for key in required),
             "subject_id": subject_id,
@@ -774,5 +800,7 @@ __all__ = [
     "VerifiedApplicationExecutionProfileWriteResult",
     "VerifiedExecutionProfileField",
     "project_verified_application_execution_profile",
+    "to_application_execution_identity_profile",
     "to_application_bundle_profile",
+    "verified_execution_profile_plan_binding_hash",
 ]

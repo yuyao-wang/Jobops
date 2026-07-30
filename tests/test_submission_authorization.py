@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from core.application_bundle_assembly import ApplicationBundleFactoryRequest
-from core.bundles import ApplicationBundle, JobSpec
 from core.non_submit_application_execution import (
     NonSubmitApplicationExecutionReadResult,
     NonSubmitApplicationExecutionReadStatus,
@@ -24,10 +22,6 @@ from core.outcomes import (
 )
 from core.policy import (
     AutonomyMode,
-    JobTier,
-    PolicyConfig,
-    PolicyEngine,
-    RiskSignals,
 )
 from core.submission_authorization import (
     DecideSubmissionAuthorizationCommand,
@@ -64,29 +58,6 @@ class _RecordRepository:
     def get(self, *, subject_id: str, record_id: str):
         return NonSubmitApplicationExecutionReadResult(
             NonSubmitApplicationExecutionReadStatus.FOUND, self.record
-        )
-
-
-class _AutomaticFactory:
-    def create(
-        self, request: ApplicationBundleFactoryRequest
-    ) -> ApplicationBundle:
-        posting = request.job_posting
-        return ApplicationBundle(
-            run_id=request.run_id,
-            job=JobSpec(
-                url=posting.application_url or posting.source_url,
-                company=posting.company,
-                title=posting.title,
-                tier=JobTier.LOW,
-                job_id=posting.job_id,
-            ),
-            materials=request.materials,
-            profile={"source": "synthetic-execution-profile"},
-            answers=request.answers,
-            policy=PolicyEngine(
-                PolicyConfig(mode=AutonomyMode.FULL_AUTOPILOT)
-            ).decide(JobTier.LOW, RiskSignals()),
         )
 
 
@@ -179,8 +150,10 @@ async def test_human_policy_without_authorization_defers(
 async def test_formal_autonomous_policy_authorizes_automatically(
     tmp_path: Path,
 ) -> None:
-    parts = _assembly_setup(tmp_path)
-    parts["factory"] = _AutomaticFactory()
+    parts = _assembly_setup(
+        tmp_path,
+        execution_mode=AutonomyMode.FULL_AUTOPILOT,
+    )
     assembled = _assemble(parts)
     execution_repository = (
         PrivateHomeNonSubmitApplicationExecutionRepository(parts["home"])

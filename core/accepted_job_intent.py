@@ -677,6 +677,65 @@ class PrivateHomeAcceptedJobIntentRepository:
             intent=current,
         )
 
+    def get_by_id(
+        self,
+        *,
+        subject_id: str,
+        job_id: str,
+        accepted_job_intent_id: str,
+    ) -> AcceptedJobIntentReadResult:
+        """Read one exact immutable intent without consulting current order."""
+
+        subject = _clean_id("subject_id", subject_id)
+        job = _clean_id("job_id", job_id, maximum=160)
+        intent_id = _clean_id(
+            "accepted_job_intent_id",
+            accepted_job_intent_id,
+            maximum=128,
+        )
+        if _RECORD_ID_PATTERN.fullmatch(intent_id) is None:
+            raise ValueError("accepted_job_intent_id is invalid")
+        path = (
+            self._directory(subject_id=subject, job_id=job)
+            / f"{intent_id}.json"
+        )
+        if not path.exists():
+            return AcceptedJobIntentReadResult(
+                status=AcceptedJobIntentReadStatus.NOT_FOUND,
+                intent=None,
+            )
+        if path.is_symlink() or not path.is_file():
+            return AcceptedJobIntentReadResult(
+                status=AcceptedJobIntentReadStatus.INTEGRITY_FAILURE,
+                intent=None,
+                reason_code=AcceptedJobIntentFailureReason.INTEGRITY_FAILURE,
+            )
+        with self._lock:
+            try:
+                intent = self._read_path(path)
+            except RuntimeError:
+                return AcceptedJobIntentReadResult(
+                    status=AcceptedJobIntentReadStatus.INTEGRITY_FAILURE,
+                    intent=None,
+                    reason_code=(
+                        AcceptedJobIntentFailureReason.INTEGRITY_FAILURE
+                    ),
+                )
+        if (
+            intent.subject_id != subject
+            or intent.job_id != job
+            or intent.accepted_job_intent_id != intent_id
+        ):
+            return AcceptedJobIntentReadResult(
+                status=AcceptedJobIntentReadStatus.INTEGRITY_FAILURE,
+                intent=None,
+                reason_code=AcceptedJobIntentFailureReason.INTEGRITY_FAILURE,
+            )
+        return AcceptedJobIntentReadResult(
+            status=AcceptedJobIntentReadStatus.FOUND,
+            intent=intent,
+        )
+
 
 __all__ = [
     "ACCEPTED_JOB_INTENT_CONTRACT_VERSION",

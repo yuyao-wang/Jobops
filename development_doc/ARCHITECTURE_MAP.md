@@ -692,11 +692,11 @@ Application Preparation                                [部分]
 │   ├── existing ApplicationBundle + CanonicalApplicationAnswers
 │   ├── immutable provenance record + deterministic replay/current read
 │   └── no SemanticMapper / Gate / Browser / ATS / Engine
-├── Plan-scoped Execution Context                       [部分]
+├── Plan-scoped Execution Context                       [完成]
 │   ├── Verified identity profile snapshot              [完成 P2c1d1]
-│   ├── exact execution PolicyDecision projection       [计划 P2c1d2]
-│   ├── combined PlanExecutionContextProjection         [计划 P2c1d]
-│   └── Production ApplicationBundleFactory             [计划 P2c1c]
+│   ├── exact execution PolicyDecision projection       [完成 P2c1d2]
+│   ├── exact Assembly context handoff                   [完成 P2c1d3]
+│   └── Production ApplicationBundleFactory             [完成 P2c1c]
 ├── Recoverable Application Bundle Envelope              [完成 P2c1b]
 │   ├── complete existing ApplicationBundle snapshot
 │   ├── managed materials + canonical answers + profile + policy
@@ -770,11 +770,13 @@ Application Preparation                                [部分]
 │   ├── per-Plan defer/failure/uncertainty isolation
 │   ├── submitted/uncertain terminal skips
 │   └── zero batch store / retry / refresh / Scheduler
-├── Selective Bundle Assembly                            [完成 P2c10b]
+├── Selective Bundle Assembly                            [完成 P2c10b/P2c10b1]
 │   ├── one fixed P2b6 public result
 │   ├── exact Run / Manifest / AnswerSet lineage
+│   ├── Profile → Policy → P2c1d3 exact context binding
+│   ├── immutable ID/version/hash-only binding record
 │   ├── bounded serial P2c1 public calls
-│   ├── no Preparation / Assembly repository scan
+│   ├── no latest Profile/Policy/Preparation/Assembly scan
 │   └── per-Plan failure isolation before P2c9
 ├── End-to-end Automation Cycle                          [完成 P2c10a/P2c10b]
 │   ├── P1d3 → P2a1b → P2b6 → Bundle → P2c9

@@ -24,7 +24,8 @@ from .job_prioritization import (
 
 DEFAULT_AGENT_VERSION = "priority-agent-v1"
 DEFAULT_PROMPT_VERSION = "priority-agent-prompt-v2"
-_OUTPUT_SCHEMA_NAME = "jobops_priority_agent_output"
+PRIORITY_AGENT_OUTPUT_SCHEMA_NAME = "jobops_priority_agent_output"
+PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION = "priority-agent-output-schema-v1"
 
 _SYSTEM_PROMPT_LINES = (
     *PRIORITY_AGENT_SYSTEM_RULES,
@@ -522,7 +523,7 @@ class OpenAIPriorityAgentAdapter:
                 self._client.ask_structured,
                 system_prompt=PRIORITY_AGENT_SYSTEM_PROMPT,
                 input_data=payload,
-                schema_name=_OUTPUT_SCHEMA_NAME,
+                schema_name=PRIORITY_AGENT_OUTPUT_SCHEMA_NAME,
                 schema=PRIORITY_AGENT_OUTPUT_SCHEMA,
                 timeout=self._timeout,
             )
@@ -590,6 +591,8 @@ __all__ = [
     "DEFAULT_AGENT_VERSION",
     "DEFAULT_PROMPT_VERSION",
     "OpenAIPriorityAgentAdapter",
+    "PRIORITY_AGENT_OUTPUT_SCHEMA_NAME",
+    "PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION",
     "PRIORITY_AGENT_OUTPUT_SCHEMA",
     "PRIORITY_AGENT_SYSTEM_PROMPT",
     "priority_agent_output_from_data",

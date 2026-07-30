@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 from dataclasses import FrozenInstanceError, replace
@@ -36,6 +37,21 @@ from core.application_bundle_assembly import (
     PrivateHomeApplicationBundleAssemblyRepository,
     assemble_application_bundle,
 )
+from core.application_assembly_execution_context import (
+    LoadApplicationAssemblyExecutionContextCommand,
+    LoadApplicationAssemblyExecutionContextStatus,
+    load_application_assembly_execution_context,
+)
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityFieldKey,
+)
+from core.candidate_identity_facts import (
+    CandidateIdentityFactSourceKind,
+    CandidateIdentityFactSourceRef,
+    CandidateIdentityFactVerificationStatus,
+    PrivateHomeCandidateIdentityFactRepository,
+    WriteCandidateIdentityFactCommand,
+)
 from core.bundles import (
     ApplicationBundle,
     JobSpec,
@@ -53,9 +69,23 @@ from core.policy import (
     PolicyEngine,
     RiskSignals,
 )
+from core.plan_execution_policy import (
+    PLAN_EXECUTION_POLICY_RECORD_CONTRACT_VERSION,
+    PlanExecutionPolicyDecisionRecord,
+    PrivateHomePlanExecutionPolicyDecisionRepository,
+    plan_execution_policy_plan_binding_hash,
+    plan_execution_policy_record_hash,
+    policy_decision_to_dict,
+)
 from core.private_home import PrivateHome
 from core.recoverable_application_bundle import (
     PrivateHomeRecoverableApplicationBundleEnvelopeRepository,
+)
+from core.verified_application_execution_profile import (
+    PrivateHomeVerifiedApplicationExecutionProfileRepository,
+    ProjectVerifiedApplicationExecutionProfileCommand,
+    ProjectVerifiedApplicationExecutionProfileStatus,
+    project_verified_application_execution_profile,
 )
 
 from test_plan_material_manifest_cover_letter import (
@@ -77,6 +107,7 @@ class _Factory:
     ) -> ApplicationBundle:
         self.requests.append(request)
         posting = request.job_posting
+        profile = request.identity_profile.to_application_bundle_profile()
         return ApplicationBundle(
             run_id=request.run_id,
             job=JobSpec(
@@ -87,12 +118,143 @@ class _Factory:
                 job_id=posting.job_id,
             ),
             materials=request.materials,
-            profile={"personal": {}},
+            profile={"personal": dict(profile["personal"])},
             answers=request.answers,
-            policy=PolicyEngine(
-                PolicyConfig(mode=AutonomyMode.SUPERVISED)
-            ).decide(JobTier.LOW, RiskSignals()),
+            policy=request.policy_decision,
         )
+
+
+def _mapping_hash(value) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _execution_context(
+    home: PrivateHome,
+    plan,
+    plan_repository,
+    *,
+    mode: AutonomyMode = AutonomyMode.SUPERVISED,
+):
+    facts = PrivateHomeCandidateIdentityFactRepository(home)
+    for key, value in (
+        (ApplicationExecutionIdentityFieldKey.FIRST_NAME, "Synthetic"),
+        (ApplicationExecutionIdentityFieldKey.LAST_NAME, "Candidate"),
+        (
+            ApplicationExecutionIdentityFieldKey.EMAIL,
+            "synthetic@example.test",
+        ),
+    ):
+        source = CandidateIdentityFactSourceRef(
+            source_kind=CandidateIdentityFactSourceKind.USER_CONFIRMATION,
+            source_id=f"confirmation-{key.value}",
+            source_version="v1",
+            source_hash=hashlib.sha256(
+                f"source-{key.value}".encode()
+            ).hexdigest(),
+            source_locator=f"review:{key.value}",
+            source_subject_id=plan.subject_id,
+        )
+        facts.write(
+            WriteCandidateIdentityFactCommand(
+                subject_id=plan.subject_id,
+                field_key=key,
+                submitted_value=value,
+                verification_status=(
+                    CandidateIdentityFactVerificationStatus.USER_CONFIRMED
+                ),
+                source_ref=source,
+                expected_current_fact_id=None,
+                invocation_id=f"fact-{key.value}",
+                now=NOW,
+            )
+        )
+    profiles = PrivateHomeVerifiedApplicationExecutionProfileRepository(home)
+    projected = project_verified_application_execution_profile(
+        ProjectVerifiedApplicationExecutionProfileCommand(
+            subject_id=plan.subject_id,
+            application_plan_id=plan.plan_id,
+            invocation_id="bundle-test-profile",
+            now=NOW,
+        ),
+        plan_repository=plan_repository,
+        fact_repository=facts,
+        repository=profiles,
+    )
+    assert (
+        projected.status
+        is ProjectVerifiedApplicationExecutionProfileStatus.CREATED
+    )
+    profile = projected.snapshot
+    assert profile is not None
+
+    decision = PolicyEngine(
+        PolicyConfig(mode=mode)
+    ).decide(JobTier.MEDIUM, RiskSignals())
+    decision_hash = _mapping_hash(policy_decision_to_dict(decision))
+    input_hash = hashlib.sha256(b"synthetic-policy-input").hexdigest()
+    record_id = "plan-execution-policy-" + _mapping_hash(
+        {
+            "input_binding_hash": input_hash,
+            "policy_decision_hash": decision_hash,
+            "record_contract_version": (
+                PLAN_EXECUTION_POLICY_RECORD_CONTRACT_VERSION
+            ),
+        }
+    )
+    policy = PlanExecutionPolicyDecisionRecord(
+        record_id=record_id,
+        subject_id=plan.subject_id,
+        application_plan_id=plan.plan_id,
+        job_id=plan.job_id,
+        accepted_intent_id=plan.accepted_job_intent_id,
+        accepted_intent_hash=hashlib.sha256(b"intent").hexdigest(),
+        priority_decision_id=plan.priority_decision_id,
+        priority_decision_hash=hashlib.sha256(b"priority").hexdigest(),
+        prioritization_policy_id=plan.policy_id,
+        prioritization_policy_version=plan.policy_version,
+        prioritization_policy_hash=plan.policy_content_hash,
+        plan_binding_hash=plan_execution_policy_plan_binding_hash(plan),
+        execution_rules_version="plan-execution-policy-rules-v1",
+        execution_configuration_id="synthetic-execution-policy",
+        execution_configuration_version=1,
+        execution_configuration_hash=hashlib.sha256(
+            b"configuration"
+        ).hexdigest(),
+        policy_decision=decision,
+        policy_decision_hash=decision_hash,
+        input_binding_hash=input_hash,
+        created_at=NOW,
+        invocation_id="bundle-test-policy",
+    )
+    policies = PrivateHomePlanExecutionPolicyDecisionRepository(home)
+    policies.save(policy)
+    policy_hash = plan_execution_policy_record_hash(policy)
+    loaded = load_application_assembly_execution_context(
+        LoadApplicationAssemblyExecutionContextCommand(
+            subject_id=plan.subject_id,
+            application_plan=plan,
+            job_id=plan.job_id,
+            verified_profile_id=profile.profile_snapshot_id,
+            verified_profile_hash=profile.profile_snapshot_hash,
+            execution_policy_record_id=policy.record_id,
+            execution_policy_record_hash=policy_hash,
+        ),
+        verified_profile_provider=profiles,
+        execution_policy_provider=policies,
+    )
+    assert (
+        loaded.status
+        is LoadApplicationAssemblyExecutionContextStatus.READY
+    )
+    assert loaded.context is not None
+    return profiles, policies, profile, policy, policy_hash, loaded.context
 
 
 def _write_facts(
@@ -142,7 +304,12 @@ def _write_facts(
     )
 
 
-def _setup(tmp_path: Path, *, blocking: bool = False):
+def _setup(
+    tmp_path: Path,
+    *,
+    blocking: bool = False,
+    execution_mode: AutonomyMode = AutonomyMode.SUPERVISED,
+):
     parts = _manifest_setup(tmp_path)
     manifest_result = _include(parts)
     manifest = manifest_result.manifest
@@ -181,6 +348,19 @@ def _setup(tmp_path: Path, *, blocking: bool = False):
     envelope_repository = (
         PrivateHomeRecoverableApplicationBundleEnvelopeRepository(home)
     )
+    (
+        profile_repository,
+        policy_repository,
+        profile,
+        execution_policy,
+        execution_policy_hash,
+        execution_context,
+    ) = _execution_context(
+        home,
+        plan,
+        parts["resume"]["plan_repository"],
+        mode=execution_mode,
+    )
     return {
         "answer_repository": answer_repository,
         "answer_set": prepared.answer_set,
@@ -191,6 +371,12 @@ def _setup(tmp_path: Path, *, blocking: bool = False):
         "job_repository": parts["cover"]["job_repository"],
         "manifest": manifest,
         "manifest_repository": parts["resume"]["manifest_repository"],
+        "profile_repository": profile_repository,
+        "policy_repository": policy_repository,
+        "profile": profile,
+        "execution_policy": execution_policy,
+        "execution_policy_hash": execution_policy_hash,
+        "execution_context": execution_context,
         "parts": parts,
         "plan": plan,
         "plan_repository": parts["resume"]["plan_repository"],
@@ -208,13 +394,51 @@ def _run(parts, **overrides):
                 parts["answer_set"].answer_set_id
             ),
             now=NOW,
+            verified_profile_id=parts["profile"].profile_snapshot_id,
+            verified_profile_version=(
+                parts["profile"].profile_contract_version
+            ),
+            verified_profile_hash=parts["profile"].profile_snapshot_hash,
+            execution_policy_record_id=(
+                parts["execution_policy"].record_id
+            ),
+            execution_policy_record_version=(
+                parts["execution_policy"].record_contract_version
+            ),
+            execution_policy_record_hash=parts["execution_policy_hash"],
+            execution_context_binding_hash=(
+                parts["execution_context"].context_binding_hash
+            ),
         ),
     )
+    if command.verified_profile_id is None:
+        command = replace(
+            command,
+            verified_profile_id=parts["profile"].profile_snapshot_id,
+            verified_profile_version=(
+                parts["profile"].profile_contract_version
+            ),
+            verified_profile_hash=parts["profile"].profile_snapshot_hash,
+            execution_policy_record_id=(
+                parts["execution_policy"].record_id
+            ),
+            execution_policy_record_version=(
+                parts["execution_policy"].record_contract_version
+            ),
+            execution_policy_record_hash=parts["execution_policy_hash"],
+            execution_context_binding_hash=(
+                parts["execution_context"].context_binding_hash
+            ),
+        )
     values = {
         "application_plan_repository": parts["plan_repository"],
         "job_posting_repository": parts["job_repository"],
         "plan_material_manifest_repository": parts["manifest_repository"],
         "answer_set_repository": parts["answer_repository"],
+        "verified_execution_profile_provider": (
+            parts["profile_repository"]
+        ),
+        "plan_execution_policy_provider": parts["policy_repository"],
         "bundle_factory": parts["factory"],
         "assembly_repository": parts["assembly_repository"],
         "bundle_envelope_repository": parts["envelope_repository"],
@@ -647,7 +871,7 @@ def test_corrupt_record_and_factory_input_change_fail_closed(
         ApplicationBundleAssemblyReadStatus.INTEGRITY_FAILURE
     )
     assert changed.failure_reason is (
-        ApplicationBundleAssemblyFailureReason.BUNDLE_CONTRACT_MISMATCH
+        ApplicationBundleAssemblyFailureReason.RECORD_INTEGRITY_FAILURE
     )
 
 

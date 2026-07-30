@@ -2,7 +2,13 @@
 
 > A Codex-native job application operating system for lazy job seekers: deterministic ATS automation that balances speed and application quality while keeping JavaScript-heavy browser work—and token use—low.
 
-Jobops turns a private CSV queue into resumable, evidence-backed job applications. Codex plans and handles exceptions; deterministic Playwright adapters perform routine form work. The first release focuses on reaching Review reliably on Greenhouse, Lever, Ashby, Jobvite, and Workday—not pretending every website can be submitted autonomously.
+Jobops turns authenticated job intake and a private queue into resumable,
+evidence-backed application plans. Codex handles bounded interpretation and
+exceptions; deterministic services own source registration, prioritization,
+material preparation, policy, assembly, permits, and ATS execution. The first
+release focuses on reaching Review reliably on Greenhouse, Lever, Ashby,
+Jobvite, and Workday—not pretending every website can be submitted
+autonomously.
 
 The repository is public-safe by design. Candidate facts, verified answers, resumes, generated materials, queue state, browser sessions, evidence, and logs live in a repository-external Private Home. ATS and mailbox account passwords plus the permit HMAC key live in macOS Keychain. Optional AI-provider API tokens are read from runtime environment variables only and are never persisted in the repository or Private Home.
 
@@ -13,6 +19,21 @@ Login and account registration are automated states, not routine user tasks. Job
 The implementation now includes:
 
 - a secure Private Home and migration from the existing ApplyPilot/MR.Jobs profile;
+- subject-scoped Search Profiles, bounded typed Greenhouse board search, manual
+  Job Library refresh, deterministic candidate validation, and immutable
+  JobPosting lineage;
+- a reviewed, versioned Prioritization Policy; a provider-neutral async
+  Priority Agent over the same capability resolver used by Preparation; a
+  deterministic validation gate; and immutable P0–P3 decisions;
+- immutable Application Plans and an 18-stage async Preparation recipe whose
+  nine Agent-backed stages use strict, single-generation structured adapters;
+- a Candidate Information Source registry for files, URLs, and user
+  statements; deterministic source projections; evidence-bound Agent fact
+  proposals; authenticated review decisions; and immutable verified identity
+  facts;
+- Plan-scoped verified execution profiles, Plan-bound execution-policy
+  decisions, exact Profile/Policy context bindings, assembly-v2 lineage, and a
+  stateless production `ApplicationBundle` factory;
 - a versioned `ApplicationOutcome`, stable exit codes, append-only Event Ledger, compare-and-swap run state, exclusive run/browser leases, and duplicate-submit protection;
 - two HMAC-signed, expiring, one-time permits bound to job, material, answer, policy, and Review hashes;
 - a shared Adapter Protocol with deterministic Greenhouse, Lever, Ashby, and Jobvite adapters;
@@ -25,7 +46,15 @@ The implementation now includes:
 - five thin Codex Skills: `job-orchestrate`, `job-materials`, `job-apply`, `job-profile`, and `job-status`;
 - sanitized HTML/Playwright contract fixtures and synthetic identities.
 
-This is an early local release. Fixture success is not a claim of current production-site reliability; ATS markup changes and live account flows still require observation before a real ≥95% Review-arrival claim.
+The production automation composition root is not complete yet. The remaining
+blocking boundary is a server-owned, typed Browser runtime/lease provider for
+the P2c3/P2c6 execution ports. Consequently, the authenticated Refresh and
+Automation Dashboard routes retain their fail-closed unavailable behavior
+until that boundary and the final composition wiring are implemented.
+
+This is an early local release. Fixture success is not a claim of current
+production-site reliability; ATS markup changes and live account flows still
+require observation before a real ≥95% Review-arrival claim.
 
 ## Principles
 
@@ -42,11 +71,19 @@ This is an early local release. Fixture success is not a claim of current produc
 
 ```mermaid
 flowchart TB
-    User["User"] --> Codex["Codex control plane"]
+    User["Authenticated user / CLI"] --> Intake["Search and Candidate Intake"]
+    Intake --> Priority["Reviewed policy → Priority proposal → deterministic gate"]
+    Priority --> Plan["Immutable Application Plan"]
+    Plan --> Preparation["18-stage async Preparation"]
+    Preparation --> Context["Verified Profile + Plan Execution Policy"]
+    Context --> Assembly["Exact context binding → ApplicationBundle assembly-v2"]
+    Assembly --> Queue["Current Execution Queue"]
+
+    User --> Codex["Codex control plane"]
     Codex --> Skills["Five Codex Skills"]
     Skills --> CLI["jobctl"]
-
-    CLI --> Engine["Application engine"]
+    Queue --> Engine["Application engine"]
+    CLI --> Engine
     Engine --> Policy["Tier policy and two permits"]
     Engine --> Ledger["Event Ledger, outcomes, and leases"]
     Engine --> Registry["Adapter registry"]
@@ -60,9 +97,12 @@ flowchart TB
     Broker --> Chromium["Persistent Chromium"]
     Broker -. "human handoff" .-> Safari["Safari"]
 
-    Engine --> Home["Private Home"]
-    Home --> Facts["Facts, answers, policies, queue, documents"]
-    Home --> State["Ledger, browser state, private recipes, evidence"]
+    Intake --> Home["Subject-isolated Private Home"]
+    Preparation --> Home
+    Assembly --> Home
+    Engine --> Home
+    Home --> Facts["Sources, facts, answers, policies, plans, documents"]
+    Home --> State["Runs, lineage, ledger, browser state, evidence"]
     ATS --> Auth["Authentication layer"]
     Auth --> Keychain["macOS Keychain"]
     Auth --> Mailbox["Optional least-privilege mailbox verifier"]

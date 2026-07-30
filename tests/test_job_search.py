@@ -95,8 +95,16 @@ def test_search_contract_is_independent_from_public_read_contract() -> None:
     assert [reason.value for reason in JobSearchReason] == [
         "INVALID_REQUEST",
         "UNSUPPORTED_COMPANY",
+        "PROVIDER_CONFIGURATION_ERROR",
         "SOURCE_TIMEOUT",
         "SOURCE_RATE_LIMITED",
+        "NETWORK_UNAVAILABLE",
+        "HTTP_ERROR",
+        "REDIRECT_REJECTED",
+        "RESPONSE_TOO_LARGE",
+        "UNSUPPORTED_CONTENT_TYPE",
+        "MALFORMED_RESPONSE",
+        "CANDIDATE_VALIDATION_FAILED",
         "SOURCE_RESPONSE_INVALID",
         "SOURCE_UNAVAILABLE",
     ]
@@ -458,8 +466,8 @@ async def test_multiple_candidates_are_returned_without_selection() -> None:
     ("status_code", "reason", "retryable"),
     (
         (429, JobSearchReason.SOURCE_RATE_LIMITED, True),
-        (503, JobSearchReason.SOURCE_UNAVAILABLE, True),
-        (403, JobSearchReason.SOURCE_UNAVAILABLE, False),
+        (503, JobSearchReason.HTTP_ERROR, True),
+        (403, JobSearchReason.HTTP_ERROR, False),
     ),
 )
 @pytest.mark.asyncio
@@ -523,7 +531,10 @@ async def test_invalid_board_response_is_not_empty_success(payload) -> None:
     )
 
     assert result.status is JobSearchStatus.FAILED
-    assert result.reason_code is JobSearchReason.SOURCE_RESPONSE_INVALID
+    assert result.reason_code in {
+        JobSearchReason.MALFORMED_RESPONSE,
+        JobSearchReason.CANDIDATE_VALIDATION_FAILED,
+    }
     assert result.retryable is False
     assert result.candidate_set is None
 

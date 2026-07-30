@@ -747,9 +747,18 @@ version without rewriting its content or historical decisions.
   skip does not. Prepared values remain typed `CanonicalApplicationAnswers`
   and are never converted to arbitrary string-key mappings.
 - The existing ApplicationBundle is created only through an injected factory
-  and must preserve the exact prepared job, materials and answers. The
-  immutable assembly record provides Plan, Manifest, both material lineages,
-  AnswerSet, taxonomy and bundle-hash provenance.
+  and must preserve the exact prepared job, materials, answers, verified
+  identity profile and Plan-bound execution policy. The immutable assembly-v2
+  record also binds exact profile/policy IDs, versions and hashes without
+  copying PII or policy content into diagnostics.
+- The production Factory is a pure typed mapping. It takes the exact
+  P2c1-validated inputs, uses the existing execution PolicyDecision for the
+  Job tier, and creates the existing ApplicationBundle without reading a
+  repository, artifact bytes, legacy profile, environment or runtime state.
+  It never selects alternate material, answers, profile or policy and never
+  persists an AssemblyRecord.
+- Legacy assembly-v1 records remain readable but do not claim verified
+  execution-context provenance and cannot satisfy a new production replay.
 - Assembly identity excludes time. Exact replay preserves the original
   assembly time; changes create immutable history, and current selection uses
   persisted domain ordering rather than filesystem metadata.
@@ -929,11 +938,17 @@ version without rewriting its content or historical decisions.
   and P2c9 batch boundaries, once each and in fixed order. Every enabled stage
   receives the same subject and explicit timezone-aware timestamp.
 - Selective Bundle Assembly consumes only the fixed public P2b6 result. It
-  calls public P2c1 serially for completed/unchanged items with exact
-  Run/Manifest/AnswerSet lineage; it never scans Preparation or Assembly
-  repositories and never constructs an AssemblyRecord itself.
+  selects completed/unchanged items with exact Run/Manifest/AnswerSet
+  lineage, then serially generates/reuses the Plan-scoped verified profile,
+  generates/reuses the Plan-bound execution policy, validates both through
+  P2c1d3, persists one immutable ID/version/hash-only context binding and
+  calls public P2c1-v2 with those exact refs. It never scans a profile,
+  policy, Preparation or Assembly repository and never constructs an
+  AssemblyRecord itself.
 - Missing lineage, non-prepared items and invalid bindings do not consume the
-  P2c1 call budget. A single P2c1 failure does not stop later candidates.
+  selection budget. Once a candidate invokes the context binder it consumes
+  one slot even if context generation or P2c1 fails. A single failure does
+  not stop later candidates within the already bounded selection.
   P2c9 always runs after this boundary and reads its own then-current P2c8
   snapshot, including newly created and previously READY Assemblies.
 - Each stage has an independent non-negative budget. Zero records a typed
@@ -1583,7 +1598,13 @@ they truthfully match verified experience, and avoid weak verbs where a
 truthful precise verb exists. Every Outcome must come from CandidateEvidence;
 the model may not invent metrics, scope or impact.
 
-This is the target P0–P3 policy. The current legacy High/Medium/Low projection is incompatible and must not consume a new `PriorityDecision`; the migration gap is recorded in `CONTRACTS_AND_TESTS.md`.
+This is the target P0–P3 policy. P2c1d2 is the only production migration
+boundary allowed to feed a new `PriorityDecision` into the existing execution
+policy type: P0/P1/P2 map deterministically to the existing material tiers,
+P3 is rejected until explicitly promoted, and Gate/submit actors come only
+from explicit versioned server configuration. The older generic
+High/Medium/Low compatibility projection must not consume a new
+`PriorityDecision`.
 
 ### Resume selection
 

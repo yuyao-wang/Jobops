@@ -258,6 +258,17 @@ select the highest valid version per logical profile and order current/enabled
 profiles by canonical display name and profile ID rather than filesystem
 metadata.
 
+S3b1 supplies the production source boundary consumed by that executor.
+`build_production_job_search_ports(...)` binds each exact typed Greenhouse
+source reference to a board-scoped `JobSearchPort`; it does not infer provider
+identity from a URL or company string. The injected HTTP port enforces fixed
+HTTPS hosts, per-hop redirect validation, timeouts and decoded-response bounds.
+Greenhouse JSON is structurally validated, candidates are deterministically
+matched, de-duplicated, sorted and bounded, and transport/content failures stay
+typed. SearchProfile v1 has no Lever tenant source, so factory capability
+metadata explicitly reports Lever search as unsupported rather than falling
+back to Browser, Agent or legacy discovery.
+
 S3b is the explicit manual refresh boundary above those enabled profiles. It
 reads one fixed enabled snapshot, invokes a provider-neutral profile search
 executor once per profile, canonicalizes and de-duplicates candidate URLs,
@@ -416,7 +427,8 @@ chosen URL through the unified Public Job Reader.
 - Implemented: I2b persists the accepted action only after Discovery acceptance,
   using explicit subject/job/proposal/run bindings and deterministic read
   precedence. `REQUEST_APPLICATION` still stops before Priority or preparation.
-- Missing: JobSearchPort.
+- Implemented: S3b1 production Greenhouse `JobSearchPort` construction with
+  exact SearchProfile source bindings and explicit unsupported Lever capability.
 - `GreenhousePublicJobReader` remains exported for connector tests and legacy
   compatibility. `LeverPublicJobReader` is internal. New business callers use
   `read_public_job(...)` for both.
@@ -527,6 +539,15 @@ a formal `PriorityDecision`. Proposal validation also requires explicit
 eligibility coverage for work authorization, citizenship/permanent residency,
 student status and security clearance. These are evidence-backed findings, not
 new system layers or automatic execution rules.
+
+P1b3 supplies the production `PriorityAgentPort`. Its one factory resolves
+the `priority_evaluation` component through the same M1a/M1a2 capability and
+isolation boundary used by Preparation, then constructs an async-only adapter
+over `complete_structured_request(...)`. The adapter reuses the P1b prompt,
+context projection, strict schema and parser; it performs no repository read,
+tool call, fallback, retry or repair generation. Codex subscription execution
+therefore uses M1b isolation, while explicitly configured direct API and future
+compatible backends retain the same Priority contract.
 
 Preparation admission is reviewed policy data. The default draft admits
 P0/P1/P2 directly and places P3 behind a future explicit-promotion fact, but
@@ -988,11 +1009,32 @@ legacy manifest, job directory or fallback material is consulted.
 
 Blocking AnswerSet unresolved items return typed `NOT_READY`; non-blocking
 safe skips remain outside the execution answers and do not prevent assembly.
-Prepared values stay in `CanonicalApplicationAnswers`. An injected
-composition-root `ApplicationBundleFactory` supplies the existing execution
-profile and legacy policy without making P2c1 translate the new priority
-contract. P2c1 verifies that the returned existing `ApplicationBundle`
-preserves the exact prepared materials, answers and JobPosting identity.
+Prepared values stay in `CanonicalApplicationAnswers`. P2c1d3 now loads the
+exact P2c1d1 verified profile snapshot and P2c1d2 execution-policy record
+through their public providers, verifies their shared subject/Plan/Job and
+hash bindings, and passes the closed typed identity profile plus the existing
+`PolicyDecision` to `ApplicationBundleFactoryRequest`. P2c1 verifies that the
+returned existing `ApplicationBundle` preserves the exact prepared
+materials, answers, identity profile, policy and JobPosting identity.
+
+P2c1c provides the stateless production implementation of that Factory
+Protocol. `ProductionApplicationBundleFactory` accepts only the complete
+typed P2c1d3 request, rechecks its subject/Plan/Job, verified-profile,
+execution-policy and context-hash bindings, and maps those exact values into
+the existing `ApplicationBundle`. Job tier comes from the already-decided
+execution `PolicyDecision`; the closed identity profile is projected only to
+the existing `{"personal": ...}` runtime mapping; canonical answers and
+managed materials are preserved unchanged. The Factory owns no repository,
+clock, random source, filesystem reader, Agent, compiler, renderer, Gate,
+Permit, Browser, ATS or persistence capability. Construction failures expose
+only a versioned typed reason.
+
+New assembly-v2 records bind the verified profile ID/version/hash, execution
+policy record ID/version/hash and canonical execution-context binding hash.
+An exact command binding permits pre-context replay after prepared material
+validation, so both context providers and the Factory receive zero calls for
+a completed assembly. Legacy assembly-v1 records remain readable but have no
+execution-context provenance and cannot satisfy a new v2 replay.
 
 P2c1d1a separates the formerly mixed execution-profile mapping at the
 production adapter boundary. `ApplicationExecutionIdentityProfile` is the
@@ -1054,6 +1096,34 @@ produces the existing closed `{"personal": ...}` ApplicationBundle mapping;
 fact IDs and provenance remain in the snapshot and never become ATS values.
 The legacy `CandidateVault.application_profile()` mapping remains a
 separate compatibility surface and is not accepted as verified input.
+
+P2c1d2 provides the other independent Plan Execution Context input.
+`decide_plan_execution_policy()` resolves the exact immutable
+ApplicationPlan, JobPosting, AcceptedJobIntent, PriorityDecision and
+PrioritizationPolicy named by the Plan. It never consults an active/latest
+policy alias. A versioned server configuration is mandatory and
+`PlanExecutionPolicyRulesV1` maps P0/P1/P2 to the existing HIGH/MEDIUM/LOW
+`PolicyEngine` material semantics; P3 remains unsupported until an explicit
+promotion produces a new Plan.
+
+The resulting value is the existing `core.policy.PolicyDecision`, wrapped in
+an immutable `PlanExecutionPolicyDecisionRecord` that binds every upstream
+ID/version/hash, the sanitized Plan binding, rules/configuration versions and
+canonical decision hash. REQUEST_APPLICATION and AUTOMATION_FIRST contribute
+lineage but never select submit authority; only the explicit versioned
+`PolicyConfig` does, and all authority remains permit-bound. Subject-isolated
+Private Home persistence provides exact reads, deterministic replay,
+invocation-conflict detection and conflict-on-multiple-record current reads.
+No Gate, Permit, Browser, ATS, ApplicationBundle or historical Plan is
+created or modified here.
+
+`ApplicationAssemblyExecutionContext` is the pure P2c1d3 joining boundary.
+It contains the P2c1d1 snapshot and its closed typed identity projection, the
+P2c1d2 record and its existing `PolicyDecision`, and PII-free exact reference
+fields used by assembly identity. Missing profile/policy records remain typed
+`NOT_READY`; conflicts, contract drift and any cross subject/Plan/Job binding
+fail before Factory invocation or AssemblyRecord persistence. The Factory
+receives no provider, repository, fact index or policy engine.
 
 C1a adds the raw-information boundary before fact projection. The
 `CandidateInformationSource` registry accepts only explicit FILE, URL or
@@ -1348,11 +1418,17 @@ snapshot and P2c7's terminal replay contract.
 P2c10b adds the bounded Preparation-to-Execution handoff without giving the
 cycle repository access. `run_selective_bundle_assembly()` consumes one fixed
 public P2b6 result, retains its deterministic Plan order, de-duplicates by
-first occurrence and calls public P2c1 serially only for completed/unchanged
-items carrying valid exact `PreparationAssemblyLineage`. Missing bindings and
-non-prepared items do not consume the P2c1 call budget; one failure does not
-stop later candidates. P2c1 remains the sole owner of AssemblyRecord creation
-and immutable `UNCHANGED` replay.
+first occurrence and selects completed/unchanged items carrying valid exact
+`PreparationAssemblyLineage`. Each selected slot now runs the P2c10b1 ordered
+prefix: public verified-profile projection, public Plan execution-policy
+decision, P2c1d3 exact context validation, immutable subject-scoped binding
+persistence, then public P2c1-v2. The binding contains only exact IDs,
+versions and hashes; P2c10b copies its Profile/Policy refs and P2c1d3 context
+hash into the P2c1 command without a latest-record scan or value payload.
+Profile, policy, context or binding failure prevents P2c1 for that item but
+does not stop later already-selected candidates. Selection slots, rather than
+successful assemblies, consume `max_assemblies`; P2c1 remains the sole owner
+of AssemblyRecord creation and immutable `UNCHANGED` replay.
 
 P2c10a is now the business-level cycle boundary above five selective batch
 services. One explicit invocation runs P1d3, P2a1b, P2b6, selective Bundle
@@ -1431,6 +1507,20 @@ validator and lineage logic run. Stages and Plans remain strictly serial.
 Cancellation propagates, while ordinary stage exceptions retain the existing
 typed failure semantics. P2b6 directly awaits the single-Plan callable, so no
 thread, executor, nested-loop, or synchronous event-loop bridge exists.
+
+P2b4g provides the production side of that boundary. A single typed
+`ProductionPreparationStageDependencies` bundle supplies all repositories,
+managed-artifact ports, compiler/renderer ports, policies and the complete
+P2a10 nine-adapter Agent bundle. The authoritative factory maps every
+`ApplicationPreparationStageRequest` to the existing stage command, public
+service and public-result converter. Its 18 definitions are derived in the
+same order as `APPLICATION_PREPARATION_STAGE_ORDER`; nine Agent-backed
+callables remain async and deterministic callables remain sync. Construction
+validates all mandatory dependencies and Agent metadata without running an
+Agent, compiler, renderer or repository write. Recipe identity binds explicit
+domain contract/policy versions, the production adapter version and a
+composition-supplied dependency configuration hash; it never uses callable
+representations, paths, time or secrets.
 
 P2b4a adds a v2 stage-result schema that separates typed stage outcome from a
 versioned, stage-specific `PreparationStopReasonEnvelope`. A closed registry
