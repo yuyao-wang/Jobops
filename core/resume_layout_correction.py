@@ -675,8 +675,7 @@ QueueReader = Callable[
 ]
 PreparationCallable = Callable[
     ...,
-    RunApplicationPreparationResult
-    | Awaitable[RunApplicationPreparationResult],
+    Awaitable[RunApplicationPreparationResult],
 ]
 
 
@@ -875,13 +874,11 @@ async def resolve_resume_layout_correction(
                 "This Resume layout correction is unchanged.",
             )
         try:
-            preparation = await _resolve(
-                preparation_callable(
-                    RunApplicationPreparationCommand(
-                        subject_id=subject,
-                        application_plan_id=item.application_plan_id,
-                        now=now,
-                    )
+            preparation = await preparation_callable(
+                RunApplicationPreparationCommand(
+                    subject_id=subject,
+                    application_plan_id=item.application_plan_id,
+                    now=now,
                 )
             )
             if not isinstance(preparation, RunApplicationPreparationResult):

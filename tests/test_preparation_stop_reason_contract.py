@@ -79,7 +79,7 @@ def _invocation_ref():
     ).reference
 
 
-def test_typed_completed_deferred_and_failed_results_round_trip() -> None:
+async def test_typed_completed_deferred_and_failed_results_round_trip() -> None:
     public_results = (
         PublicPreparationStageResult.completed(
             stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
@@ -147,7 +147,7 @@ def test_typed_completed_deferred_and_failed_results_round_trip() -> None:
     )
 
 
-def test_typed_reason_registry_fails_closed() -> None:
+async def test_typed_reason_registry_fails_closed() -> None:
     with pytest.raises(TypeError):
         PreparationStopReasonEnvelope(
             stage=ApplicationPreparationStage.BASE_LATEX_SELECTION,
@@ -302,7 +302,7 @@ def _legacy_run() -> ApplicationPreparationRun:
     )
 
 
-def test_v1_run_bytes_and_untyped_reason_survive_restart(tmp_path) -> None:
+async def test_v1_run_bytes_and_untyped_reason_survive_restart(tmp_path) -> None:
     home = PrivateHome(tmp_path / "private")
     repository = PrivateHomeApplicationPreparationRunRepository(home)
     legacy = _legacy_run()
@@ -343,7 +343,7 @@ _OUTPUTS = {
 }
 
 
-def test_orchestrator_consumes_typed_and_explicit_legacy_results(
+async def test_orchestrator_consumes_typed_and_explicit_legacy_results(
     tmp_path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -403,7 +403,7 @@ def test_orchestrator_consumes_typed_and_explicit_legacy_results(
         ),
         required_material_policy=RequiredApplicationMaterialPolicy.v1(),
     )
-    result = run_application_preparation(
+    result = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,

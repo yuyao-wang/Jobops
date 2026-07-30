@@ -57,6 +57,9 @@ from core.outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.bundles import MaterialBundle
 from core.private_home import PrivateHome
 from utils.keychain import (
@@ -70,6 +73,8 @@ from utils.keychain import (
 
 
 ADAPTER_NAME = "workday"
+WORKDAY_RUNTIME_CONFIG_CONTRACT_VERSION = "workday-runtime-config-v1"
+WORKDAY_REVIEW_IDENTITY_CONTRACT_VERSION = "workday-review-identity-v2"
 
 
 class WorkdayStage(StrEnum):
@@ -211,13 +216,35 @@ class RegistrationFillResult:
     unresolved_required: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class WorkdayRuntimeConfig:
+    """Server-owned Workday behavior, separate from candidate identity."""
+
+    auto_login: bool = True
+    auto_register: bool = True
+    generated_password_length: int = 24
+    contract_version: str = WORKDAY_RUNTIME_CONFIG_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if self.contract_version != WORKDAY_RUNTIME_CONFIG_CONTRACT_VERSION:
+            raise ValueError("Workday runtime config version is unsupported")
+        if type(self.auto_login) is not bool or type(self.auto_register) is not bool:
+            raise TypeError("Workday runtime booleans are invalid")
+        if (
+            type(self.generated_password_length) is not int
+            or not 20 <= self.generated_password_length <= 128
+        ):
+            raise ValueError("Workday generated password length is invalid")
+
+
 @dataclass
 class WorkdayApplicationContext:
     page: Any
     job_url: str
-    profile: Mapping[str, Any]
+    profile: ApplicationExecutionIdentityProfile | Mapping[str, Any]
     job_id: str
     run_id: str
+    company: str = ""
     resume_path: str | None = None
     cover_letter: str = ""
     answers: Mapping[str, Any] = field(default_factory=dict)
@@ -238,6 +265,19 @@ class WorkdayApplicationContext:
     settle_timeout_ms: int = 750
     materials: MaterialBundle | None = None
     private_home: PrivateHome | None = None
+    runtime_config: WorkdayRuntimeConfig = field(
+        default_factory=WorkdayRuntimeConfig
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, ApplicationExecutionIdentityProfile):
+            self.profile = (
+                ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                    self.profile
+                )
+            )
+        if not isinstance(self.runtime_config, WorkdayRuntimeConfig):
+            raise TypeError("runtime_config must be WorkdayRuntimeConfig")
 
 
 def classify_workday_state(signals: WorkdayPageSignals) -> str:
@@ -836,8 +876,8 @@ class WorkdayAdapter(BaseATSAdapter):
         context: WorkdayApplicationContext,
         signals: WorkdayPageSignals,
     ) -> ApplicationOutcome | None:
-        config = _workday_config(context.profile)
-        if not bool(config.get("auto_login", True)):
+        config = context.runtime_config
+        if not config.auto_login:
             return _needs_user(
                 context,
                 OutcomeStatus.NEEDS_USER_LOGIN,
@@ -873,7 +913,7 @@ class WorkdayAdapter(BaseATSAdapter):
                 )
             return None
 
-        if bool(config.get("auto_register", True)) and signals.has_create_account:
+        if config.auto_register and signals.has_create_account:
             if await _click_named(context.page, ("Create Account", "Create an Account")):
                 return None
         return _needs_user(
@@ -889,8 +929,8 @@ class WorkdayAdapter(BaseATSAdapter):
         context: WorkdayApplicationContext,
         generated_password: str | None,
     ) -> tuple[ApplicationOutcome | None, str | None]:
-        config = _workday_config(context.profile)
-        if not bool(config.get("auto_register", True)):
+        config = context.runtime_config
+        if not config.auto_register:
             return (
                 _needs_user(
                     context,
@@ -925,7 +965,7 @@ class WorkdayAdapter(BaseATSAdapter):
             )
         previous_password = existing.password if existing is not None else None
         password = generated_password or generate_strong_password(
-            int(config.get("generated_password_length", 24))
+            config.generated_password_length
         )
         # Persist first. If the Keychain write or read-back fails, never enter
         # this generated secret into Workday and never create an unrecoverable
@@ -1058,7 +1098,7 @@ class WorkdayAdapter(BaseATSAdapter):
                 details={"mailbox_agent": "disabled" if verifier is None else "missing_recipient"},
             )
         host = (urlparse(context.job_url).hostname or "").casefold()
-        company = str(_nested(context.profile, "application.company") or "").strip()
+        company = str(context.company or "").strip()
         result = await verifier.find_verification(VerificationRequest(
             recipient=email,
             tenant_host=host,
@@ -1522,9 +1562,6 @@ def _expected_readbacks_for_fields(
     fields: Sequence[WorkdayField],
 ) -> tuple[tuple[WorkdayExpectedReadback, ...], tuple[str, ...]]:
     answers = dict(context.answers or {})
-    common = context.profile.get("common_answers", {})
-    if isinstance(common, Mapping):
-        answers = {**common, **answers}
     expected: list[WorkdayExpectedReadback] = []
     unresolved: list[str] = []
     for item in fields:
@@ -1563,8 +1600,7 @@ def _context_has_verified_application_values(
         context.resume_path
         or context.cover_letter
         or context.answers
-        or context.profile.get("personal")
-        or context.profile.get("common_answers")
+        or context.profile.redaction_values()
     )
 
 
@@ -1583,9 +1619,6 @@ async def fill_workday_fields(
     expected_readbacks: list[WorkdayExpectedReadback] = []
     seen_radio_groups: set[str] = set()
     answers = dict(context.answers or {})
-    common = context.profile.get("common_answers", {})
-    if isinstance(common, Mapping):
-        answers = {**common, **answers}
 
     for field in fields:
         if field.kind in {"password", "submit", "button"}:
@@ -1736,14 +1769,15 @@ def _workday_binding_attestation(
         "requisition_id": identity.requisition_id if identity else "",
     })
     return _sha256_json({
-        "schema": "jobops.workday-review-binding/v1",
+        "schema": WORKDAY_REVIEW_IDENTITY_CONTRACT_VERSION,
         "job_identity_sha256": identity_digest,
         "review_surface_sha256": review_surface_digest,
         "resume_sha256": _file_sha256(context.resume_path),
         "cover_letter_sha256": _sha256_text(context.cover_letter),
         "candidate_projection_sha256": _sha256_json({
-            "personal": context.profile.get("personal", {}),
-            "common_answers": context.profile.get("common_answers", {}),
+            "identity_profile": dict(
+                context.profile.to_application_bundle_profile()["personal"]
+            ),
             "answers": context.answers,
         }),
     })
@@ -1793,6 +1827,7 @@ async def workday_review_fingerprint(
     except Exception:
         current_values = []
     projection = {
+        "schema": WORKDAY_REVIEW_IDENTITY_CONTRACT_VERSION,
         "job_url": context.job_url,
         "stage": WorkdayStage.REVIEW.value,
         "review_surface_sha256": review_surface_digest,
@@ -1807,8 +1842,9 @@ async def workday_review_fingerprint(
         "resume_sha256": _file_sha256(context.resume_path),
         "cover_letter_sha256": _sha256_text(context.cover_letter),
         "candidate_projection_sha256": _sha256_json({
-            "personal": context.profile.get("personal", {}),
-            "common_answers": context.profile.get("common_answers", {}),
+            "identity_profile": dict(
+                context.profile.to_application_bundle_profile()["personal"]
+            ),
             "answers": context.answers,
         }),
     }
@@ -1835,13 +1871,28 @@ async def apply_workday(
     context = WorkdayApplicationContext(
         page=page,
         job_url=job_url,
-        profile=profile,
+        profile=ApplicationExecutionIdentityProfile.from_legacy_profile(
+            profile
+        ),
         job_id=_legacy_job_id(job_url),
         run_id=f"legacy-{uuid4().hex}",
         resume_path=profile.get("resume_path"),
         cover_letter=cover_letter,
         answers=profile.get("common_answers", {}),
         request_submit=not dry_run,
+        runtime_config=WorkdayRuntimeConfig(
+            auto_login=bool(
+                (profile.get("workday") or {}).get("auto_login", True)
+            ),
+            auto_register=bool(
+                (profile.get("workday") or {}).get("auto_register", True)
+            ),
+            generated_password_length=int(
+                (profile.get("workday") or {}).get(
+                    "generated_password_length", 24
+                )
+            ),
+        ),
     )
     outcome = await WorkdayAdapter().run(context)
     return outcome.status in {
@@ -2262,22 +2313,8 @@ def _mailbox_reason(status: MailboxVerificationStatus) -> str:
     }.get(status, ReasonCode.EMAIL_VERIFICATION.value)
 
 
-def _profile_email(profile: Mapping[str, Any]) -> str:
-    return str(_nested(profile, "personal.email") or _nested(profile, "email") or "").strip()
-
-
-def _workday_config(profile: Mapping[str, Any]) -> Mapping[str, Any]:
-    value = profile.get("workday", {})
-    return value if isinstance(value, Mapping) else {}
-
-
-def _nested(mapping: Mapping[str, Any], path: str) -> Any:
-    current: Any = mapping
-    for part in path.split("."):
-        if not isinstance(current, Mapping) or part not in current:
-            return None
-        current = current[part]
-    return current
+def _profile_email(profile: ApplicationExecutionIdentityProfile) -> str:
+    return str(profile.email or "").strip()
 
 
 def _strict_bool(value: Any) -> bool | None:
@@ -2534,6 +2571,7 @@ def _coerce_context(
         profile=context.profile,
         job_id=context.job_id,
         run_id=context.run_id,
+        company=getattr(context, "company", ""),
         resume_path=str(context.resume_path) if context.resume_path else None,
         cover_letter=context.cover_letter,
         answers=context.answers,
@@ -2552,6 +2590,11 @@ def _coerce_context(
         settle_timeout_ms=context.settle_timeout_ms,
         materials=context.materials,
         private_home=context.private_home,
+        runtime_config=getattr(
+            context,
+            "runtime_config",
+            WorkdayRuntimeConfig(),
+        ),
     )
 
 

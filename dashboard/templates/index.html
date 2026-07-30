@@ -1532,6 +1532,80 @@
             </div>
         </div>
 
+        <!-- Candidate Fact Review Queue (C1d) -->
+        <div class="mc-panel mb-4">
+            <div class="mc-panel-header">
+                <span class="dot" style="background:#a78bfa;box-shadow:0 0 6px rgba(167,139,250,.5)"></span>
+                CANDIDATE FACT REVIEW
+                <button class="ml-auto cmd-btn secondary" @click="fetchCandidateFactReview()">Refresh</button>
+            </div>
+            <div class="p-4 space-y-3">
+                <div class="flex flex-wrap gap-3 text-[0.65rem] font-mono text-[#94a3b8]">
+                    <span>Pending: <b class="text-white" x-text="candidateFactReview.counts.pending"></b></span>
+                    <span>Conflicts: <b class="text-amber-400" x-text="candidateFactReview.counts.conflicts"></b></span>
+                    <span>Missing: <b class="text-rose-400" x-text="candidateFactReview.counts.missing_required"></b></span>
+                    <span>Resolved: <b class="text-emerald-400" x-text="candidateFactReview.counts.resolved"></b></span>
+                </div>
+                <p x-show="candidateFactReview.status !== 'READY'"
+                   class="text-xs text-[#64748b] font-mono"
+                   x-text="candidateFactReview.message"></p>
+                <template x-for="item in candidateFactReview.items" :key="item.review_item_id">
+                    <article class="rounded-lg border border-[#293548] bg-[#0a0e17] p-4 space-y-3">
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm font-semibold text-white" x-text="item.field_label"></span>
+                            <span class="text-[0.58rem] font-mono px-2 py-0.5 rounded bg-violet-500/10 text-violet-300"
+                                  x-text="item.item_kind"></span>
+                        </div>
+                        <div x-show="item.current_value" class="text-xs">
+                            <span class="text-[#64748b]">Current verified value:</span>
+                            <span class="ml-1 text-emerald-300" x-text="item.current_value"></span>
+                        </div>
+                        <div x-show="item.proposal" class="space-y-2">
+                            <div class="text-xs">
+                                <span class="text-[#64748b]">Proposed value:</span>
+                                <span class="ml-1 text-cyan-300" x-text="item.proposal?.proposed_value"></span>
+                                <span class="ml-2 text-[0.58rem] text-[#64748b]" x-text="item.proposal?.confidence"></span>
+                            </div>
+                            <template x-for="preview in (item.proposal?.previews || [])" :key="preview.evidence_id">
+                                <div class="rounded border border-[#1e293b] p-2">
+                                    <p x-show="preview.kind === 'TEXT'" class="text-[0.7rem] text-[#94a3b8] whitespace-pre-wrap"
+                                       x-text="preview.text_excerpt"></p>
+                                    <img x-show="preview.kind === 'IMAGE'" :src="preview.asset_url"
+                                         class="max-h-40 max-w-full object-contain" alt="Bounded candidate source preview" />
+                                    <p class="mt-1 text-[0.55rem] font-mono text-[#475569]" x-text="preview.locator"></p>
+                                </div>
+                            </template>
+                        </div>
+                        <div x-show="item.item_kind === 'CONFLICTING_PROPOSALS'" class="space-y-1">
+                            <p class="text-[0.62rem] font-mono text-amber-300">Conflicting source values:</p>
+                            <template x-for="proposal in item.conflicting_proposals" :key="proposal.proposal_id">
+                                <p class="text-xs text-[#94a3b8]" x-text="proposal.proposed_value"></p>
+                            </template>
+                        </div>
+                        <input x-show="item.available_actions.includes('ACCEPT_WITH_EDIT') || item.available_actions.includes('PROVIDE_MISSING_VALUE')"
+                               :type="item.input_type"
+                               x-model="candidateFactReviewValues[item.review_item_id]"
+                               class="mc-input"
+                               placeholder="Enter an explicit user-confirmed value" />
+                        <div class="flex flex-wrap gap-2">
+                            <button x-show="item.available_actions.includes('ACCEPT_PROPOSED')"
+                                    @click="resolveCandidateFactReview(item, 'ACCEPT_PROPOSED')" class="cmd-btn primary">Accept</button>
+                            <button x-show="item.available_actions.includes('REPLACE_CURRENT')"
+                                    @click="resolveCandidateFactReview(item, 'REPLACE_CURRENT')" class="cmd-btn primary">Replace current</button>
+                            <button x-show="item.available_actions.includes('ACCEPT_WITH_EDIT')"
+                                    @click="resolveCandidateFactReview(item, 'ACCEPT_WITH_EDIT')" class="cmd-btn secondary">Accept edited value</button>
+                            <button x-show="item.available_actions.includes('PROVIDE_MISSING_VALUE')"
+                                    @click="resolveCandidateFactReview(item, 'PROVIDE_MISSING_VALUE')" class="cmd-btn primary">Save missing value</button>
+                            <button x-show="item.available_actions.includes('KEEP_CURRENT')"
+                                    @click="resolveCandidateFactReview(item, 'KEEP_CURRENT')" class="cmd-btn secondary">Keep current</button>
+                            <button x-show="item.available_actions.includes('REJECT_PROPOSAL')"
+                                    @click="resolveCandidateFactReview(item, 'REJECT_PROPOSAL')" class="cmd-btn secondary">Reject</button>
+                        </div>
+                    </article>
+                </template>
+            </div>
+        </div>
+
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
             <!-- ============== LEFT COLUMN ============== -->

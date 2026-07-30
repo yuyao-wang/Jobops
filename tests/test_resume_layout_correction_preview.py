@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -104,7 +103,7 @@ class _Renderer:
         )
 
 
-def _visual_target(tmp_path):
+async def _visual_target(tmp_path):
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-layout-preview")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
@@ -135,7 +134,7 @@ def _visual_target(tmp_path):
         source_artifact_content_hash=compilation.pdf_sha256,
         blocking_lineage_ids=("visual-finding-1",),
     )
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -188,10 +187,10 @@ def _preview_provider(
     )
 
 
-def test_exact_visual_target_creates_and_reuses_immutable_preview(
+async def test_exact_visual_target_creates_and_reuses_immutable_preview(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, artifact = _visual_target(tmp_path)
+    home, item, target, target_provider, artifact = await _visual_target(tmp_path)
     renderer = _Renderer()
     provider = _preview_provider(
         home, item, target_provider, artifact, renderer
@@ -215,10 +214,10 @@ def test_exact_visual_target_creates_and_reuses_immutable_preview(
     ) == PNG
 
 
-def test_stale_cross_subject_renderer_and_unsafe_output_fail_closed(
+async def test_stale_cross_subject_renderer_and_unsafe_output_fail_closed(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, artifact = _visual_target(tmp_path)
+    home, item, target, target_provider, artifact = await _visual_target(tmp_path)
     stale = replace(artifact, pdf_hash="9" * 64)
     assert (
         _preview_provider(
@@ -258,10 +257,10 @@ def test_stale_cross_subject_renderer_and_unsafe_output_fail_closed(
     )
 
 
-def test_authenticated_ui_returns_opaque_safe_reference_and_png_only(
+async def test_authenticated_ui_returns_opaque_safe_reference_and_png_only(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, artifact = _visual_target(tmp_path)
+    home, item, target, target_provider, artifact = await _visual_target(tmp_path)
     provider = _preview_provider(
         home, item, target_provider, artifact, _Renderer()
     )
@@ -286,10 +285,8 @@ def test_authenticated_ui_returns_opaque_safe_reference_and_png_only(
             "app": app,
         }
     )
-    payload = asyncio.run(
-        resume_layout_correction_preview_ui(
-            target.target_id, request, context
-        )
+    payload = await resume_layout_correction_preview_ui(
+        target.target_id, request, context
     )
     assert payload["status"] == "AVAILABLE"
     assert set(payload["preview"]) == {
@@ -300,10 +297,8 @@ def test_authenticated_ui_returns_opaque_safe_reference_and_png_only(
     }
     opaque = payload["preview"]["preview_reference"]
     assert "/" not in opaque
-    response = asyncio.run(
-        resume_layout_correction_preview_page_ui(
-            opaque, 1, request, context
-        )
+    response = await resume_layout_correction_preview_page_ui(
+        opaque, 1, request, context
     )
     assert response.body == PNG
     assert response.media_type == "image/png"

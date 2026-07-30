@@ -98,7 +98,7 @@ def _plan(
     return plan, repository
 
 
-def _invoke(
+async def _invoke(
     *,
     plan: ApplicationPlan,
     plan_repository,
@@ -106,7 +106,7 @@ def _invoke(
     recipe,
     now: datetime = NOW,
 ):
-    result = run_application_preparation(
+    result = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=plan.subject_id,
             application_plan_id=plan.plan_id,
@@ -248,7 +248,7 @@ def _write_vault(home: PrivateHome, *, subject_id: str = SUBJECT) -> None:
     )
 
 
-def _completed_with_real_answers(
+async def _completed_with_real_answers(
     home: PrivateHome,
     *,
     job_id: str = "job-answer-attention",
@@ -290,7 +290,7 @@ def _completed_with_real_answers(
             ),
         )
 
-    run = _invoke(
+    run = await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -305,7 +305,7 @@ def _completed_with_real_answers(
     return plan, run, plans, runs, answers
 
 
-def test_current_deferred_run_creates_typed_user_fact_item(
+async def test_current_deferred_run_creates_typed_user_fact_item(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -316,7 +316,7 @@ def test_current_deferred_run_creates_typed_user_fact_item(
         reason=CandidateEvidenceSnapshotStopReason.NO_USABLE_EVIDENCE,
         contract_version=CANDIDATE_EVIDENCE_STOP_REASON_CONTRACT_VERSION,
     )
-    run = _invoke(
+    run = await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -335,10 +335,10 @@ def test_current_deferred_run_creates_typed_user_fact_item(
     assert item.reason_code is HumanAttentionReasonCode.MISSING_TRUSTED_FACT
 
 
-def test_completed_without_attention_is_absent(tmp_path: Path) -> None:
+async def test_completed_without_attention_is_absent(tmp_path: Path) -> None:
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-clean")
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=PrivateHomeApplicationPreparationRunRepository(home),
@@ -352,11 +352,11 @@ def test_completed_without_attention_is_absent(tmp_path: Path) -> None:
     assert result.item_count == result.affected_plan_count == 0
 
 
-def test_completed_answer_set_expands_only_blocking_items(
+async def test_completed_answer_set_expands_only_blocking_items(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
-    _plan_value, run, *_ = _completed_with_real_answers(home)
+    _plan_value, run, *_ = await _completed_with_real_answers(home)
 
     result = _queue(home)
 
@@ -421,7 +421,7 @@ def test_completed_answer_set_expands_only_blocking_items(
         ),
     ),
 )
-def test_explicit_defer_mapping_categories(
+async def test_explicit_defer_mapping_categories(
     tmp_path: Path,
     stage,
     reason,
@@ -437,7 +437,7 @@ def test_explicit_defer_mapping_categories(
         reason=reason,
         contract_version=contract_version,
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=PrivateHomeApplicationPreparationRunRepository(home),
@@ -452,14 +452,14 @@ def test_explicit_defer_mapping_categories(
     assert result.items[0].source_stage is stage
 
 
-def test_failed_run_is_always_operator_item(tmp_path: Path) -> None:
+async def test_failed_run_is_always_operator_item(tmp_path: Path) -> None:
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-failed")
     _recorder, recipe = _failed_recipe(
         stage=ApplicationPreparationStage.RESUME_PUBLICATION,
         input_binding="failed",
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=PrivateHomeApplicationPreparationRunRepository(home),
@@ -477,7 +477,7 @@ def test_failed_run_is_always_operator_item(tmp_path: Path) -> None:
     )
 
 
-def test_unknown_typed_defer_reason_fails_safe_to_operator(
+async def test_unknown_typed_defer_reason_fails_safe_to_operator(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -487,7 +487,7 @@ def test_unknown_typed_defer_reason_fails_safe_to_operator(
         public_status="DEFERRED_NEW_TYPED_REASON_V2",
         reason_code="NEW_TYPED_REASON_V2",
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=PrivateHomeApplicationPreparationRunRepository(home),
@@ -507,7 +507,7 @@ def test_unknown_typed_defer_reason_fails_safe_to_operator(
     )
 
 
-def test_new_clean_run_makes_old_deferred_item_disappear(
+async def test_new_clean_run_makes_old_deferred_item_disappear(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -519,7 +519,7 @@ def test_new_clean_run_makes_old_deferred_item_disappear(
         reason_code="NO_EVIDENCE",
         input_binding="old",
     )
-    old = _invoke(
+    old = await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -527,7 +527,7 @@ def test_new_clean_run_makes_old_deferred_item_disappear(
         now=NOW,
     )
     assert _queue(home).item_count == 1
-    new = _invoke(
+    new = await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -555,7 +555,7 @@ class _ReversedListRepository:
         return self.delegate.find_current_for_plan(**values)
 
 
-def test_item_identity_snapshot_and_current_ignore_mtime_and_list_order(
+async def test_item_identity_snapshot_and_current_ignore_mtime_and_list_order(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -566,7 +566,7 @@ def test_item_identity_snapshot_and_current_ignore_mtime_and_list_order(
         public_status="DEFERRED_NEEDS_HUMAN",
         reason_code="QA_UNCERTAIN",
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -595,7 +595,7 @@ def test_item_identity_snapshot_and_current_ignore_mtime_and_list_order(
     assert first.evaluated_at != reversed_result.evaluated_at
 
 
-def test_sorting_uses_priority_then_audience_kind_and_ties(
+async def test_sorting_uses_priority_then_audience_kind_and_ties(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -655,7 +655,7 @@ def test_sorting_uses_priority_then_audience_kind_and_ties(
             contract_version=contract_version,
             input_binding=f"binding-{index}",
         )
-        _invoke(
+        await _invoke(
             plan=plan,
             plan_repository=plans,
             run_repository=runs,
@@ -674,7 +674,7 @@ def test_sorting_uses_priority_then_audience_kind_and_ties(
     ]
 
 
-def test_subject_isolation_excludes_other_subject(tmp_path: Path) -> None:
+async def test_subject_isolation_excludes_other_subject(tmp_path: Path) -> None:
     home = PrivateHome(tmp_path / "private")
     for subject, job_id in (
         (SUBJECT, "job-owned"),
@@ -689,7 +689,7 @@ def test_subject_isolation_excludes_other_subject(tmp_path: Path) -> None:
             reason_code="NO_EVIDENCE",
             input_binding=job_id,
         )
-        _invoke(
+        await _invoke(
             plan=plan,
             plan_repository=plans,
             run_repository=(
@@ -722,12 +722,12 @@ class _StaticAnswerRepository:
         )
 
 
-def test_missing_or_mismatched_answer_binding_fails_closed(
+async def test_missing_or_mismatched_answer_binding_fails_closed(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     _plan_value, _run_value, plans, runs, _answers = (
-        _completed_with_real_answers(home)
+        await _completed_with_real_answers(home)
     )
     result = build_current_human_attention_queue(
         subject_id=SUBJECT,
@@ -744,12 +744,12 @@ def test_missing_or_mismatched_answer_binding_fails_closed(
     assert result.items == ()
 
 
-def test_answer_set_plan_binding_mismatch_fails_closed(
+async def test_answer_set_plan_binding_mismatch_fails_closed(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     _plan_value, _run_value, plans, runs, answer_repository = (
-        _completed_with_real_answers(home)
+        await _completed_with_real_answers(home)
     )
     other_plan, _ = _plan(home, job_id="job-other-answer")
     other_result = prepare_application_answers(
@@ -781,7 +781,7 @@ def test_answer_set_plan_binding_mismatch_fails_closed(
     )
 
 
-def test_build_is_zero_write_and_calls_no_preparation_surface(
+async def test_build_is_zero_write_and_calls_no_preparation_surface(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -791,7 +791,7 @@ def test_build_is_zero_write_and_calls_no_preparation_surface(
         public_status="DEFERRED_NO_EVIDENCE",
         reason_code="NO_EVIDENCE",
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=PrivateHomeApplicationPreparationRunRepository(home),

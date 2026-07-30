@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -174,7 +173,7 @@ def _queue(home, finding_provider, projector):
     )
 
 
-def test_registry_is_10_of_10_and_fact_targets_bind_exact_findings(
+async def test_registry_is_10_of_10_and_fact_targets_bind_exact_findings(
     tmp_path,
 ) -> None:
     assert len(CORRECT_MATERIAL_TARGET_KIND_REGISTRY) == 10
@@ -193,7 +192,7 @@ def test_registry_is_10_of_10_and_fact_targets_bind_exact_findings(
     plan, plans = _plan(home, job_id="job-correction-finding")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
     qa_id, qa_hash = "resume-qa-target", "a" * 64
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -246,7 +245,7 @@ def test_registry_is_10_of_10_and_fact_targets_bind_exact_findings(
     assert replay.items[0].correction_target_ref == item.correction_target_ref
 
 
-def test_publication_visual_layout_and_overflow_use_formal_lineage(
+async def test_publication_visual_layout_and_overflow_use_formal_lineage(
     tmp_path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -279,7 +278,7 @@ def test_publication_visual_layout_and_overflow_use_formal_lineage(
         source_artifact_content_hash=compilation.pdf_sha256,
         blocking_lineage_ids=("visual-finding-1",),
     )
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -327,7 +326,7 @@ def test_publication_visual_layout_and_overflow_use_formal_lineage(
         source_artifact_version="cover-letter-template-v1",
         source_artifact_content_hash="9" * 64,
     )
-    _deferred_run(
+    await _deferred_run(
         plan=cover_plan,
         plans=plans,
         runs=runs,
@@ -387,7 +386,7 @@ def test_publication_visual_layout_and_overflow_use_formal_lineage(
         source_artifact_version=layout_compilation.latex_version_id,
         source_artifact_content_hash=layout_compilation.pdf_sha256,
     )
-    _deferred_run(
+    await _deferred_run(
         plan=layout_plan,
         plans=plans,
         runs=runs,
@@ -445,7 +444,7 @@ def test_publication_visual_layout_and_overflow_use_formal_lineage(
     )
 
 
-def test_compilation_target_binds_stopped_source_and_drift_fails_closed(
+async def test_compilation_target_binds_stopped_source_and_drift_fails_closed(
     tmp_path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -482,7 +481,7 @@ def test_compilation_target_binds_stopped_source_and_drift_fails_closed(
             stopped_source_repository=stopped_repository,
         )
 
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -536,7 +535,7 @@ def test_compilation_target_binds_stopped_source_and_drift_fails_closed(
     assert public.status is MaterialCorrectionTargetStatus.TARGET_STALE
 
 
-def test_current_safe_result_hides_internal_identity_and_preview_absence(
+async def test_current_safe_result_hides_internal_identity_and_preview_absence(
     tmp_path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -548,7 +547,7 @@ def test_current_safe_result_hides_internal_identity_and_preview_absence(
         ResumeFactQAStopReason,
     )
 
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -618,24 +617,22 @@ def test_current_safe_result_hides_internal_identity_and_preview_absence(
         )
     )
 
-    ui = asyncio.run(
-        MaterialCorrectionTargetUIController(
-            target_reader=(
-                projector.get_current_material_correction_target
-            )
-        ).get(
-            context=AuthenticatedSubjectContext(
-                session_id="session_reference_0123456789abcdef",
-                subject_id=plan.subject_id,
-                authentication_method=(
-                    AuthenticationMethod.LOCAL_KEYCHAIN_SESSION
-                ),
-                issued_at=NOW - timedelta(minutes=1),
-                expires_at=NOW + timedelta(minutes=10),
-            ),
-            attention_item_id=item.item_id,
+    ui = (await MaterialCorrectionTargetUIController(
+        target_reader=(
+            projector.get_current_material_correction_target
         )
-    ).to_dict()
+    ).get(
+        context=AuthenticatedSubjectContext(
+            session_id="session_reference_0123456789abcdef",
+            subject_id=plan.subject_id,
+            authentication_method=(
+                AuthenticationMethod.LOCAL_KEYCHAIN_SESSION
+            ),
+            issued_at=NOW - timedelta(minutes=1),
+            expires_at=NOW + timedelta(minutes=10),
+        ),
+        attention_item_id=item.item_id,
+    )).to_dict()
     assert ui["status"] == "AVAILABLE"
     assert set(ui["target"]) == {
         "attempt_count",

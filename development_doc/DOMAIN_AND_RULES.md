@@ -925,9 +925,17 @@ version without rewriting its content or historical decisions.
 
 ### End-to-end automation cycle
 
-- P2c10a calls only the public P1d3, P2a1b, P2b6 and P2c9 batch boundaries,
-  once each and in fixed order. Every enabled stage receives the same subject
-  and explicit timezone-aware timestamp.
+- P2c10a calls only the public P1d3, P2a1b, P2b6, selective Bundle Assembly
+  and P2c9 batch boundaries, once each and in fixed order. Every enabled stage
+  receives the same subject and explicit timezone-aware timestamp.
+- Selective Bundle Assembly consumes only the fixed public P2b6 result. It
+  calls public P2c1 serially for completed/unchanged items with exact
+  Run/Manifest/AnswerSet lineage; it never scans Preparation or Assembly
+  repositories and never constructs an AssemblyRecord itself.
+- Missing lineage, non-prepared items and invalid bindings do not consume the
+  P2c1 call budget. A single P2c1 failure does not stop later candidates.
+  P2c9 always runs after this boundary and reads its own then-current P2c8
+  snapshot, including newly created and previously READY Assemblies.
 - Each stage has an independent non-negative budget. Zero records a typed
   skipped stage; at least one budget must be positive.
 - A failed batch stage is audited but does not prevent later stages from using
@@ -936,7 +944,9 @@ version without rewriting its content or historical decisions.
 - Every scheduler tick or explicit cycle has a caller-supplied invocation ID.
   It creates a new immutable audit Run even when configuration is unchanged.
   Replaying the same invocation ID and binding returns the existing Run before
-  any batch call. Audit time is not logical identity.
+  any of the five batch calls. Audit time is not logical identity. Current
+  five-stage v2 identity includes the Bundle budget and public contract;
+  historical four-stage v1 records remain readable without synthetic fields.
 - The cycle never searches for jobs, resolves Human Attention, retries an
   uncertain submission, or calls a single-job service, Agent, compiler,
   Browser, Gate, permit, ATS or submit path directly.
@@ -1322,6 +1332,15 @@ messages, manual-review items and OPERATOR items are not resolved by this path.
 After a successful authoritative write, P2b4 is rerun once; the Queue remains a
 derived read model and is never edited directly.
 
+Candidate Identity proposals use a separate authenticated review boundary.
+Agent confidence and source presence never verify a proposal. Only an explicit
+single-item user action may create a `USER_CONFIRMED` identity fact, and it
+must do so through the Candidate Identity Fact writer with the server-read
+expected current fact ID. Reject and keep-current decisions never write a
+fact. A concurrent current-head change makes replacement stale; it is never
+silently overwritten. Identity review cannot answer application questions,
+attest, authorize submission or bulk-accept proposals.
+
 ResumeCandidate and LaTeX version choices use a distinct plan-scoped override.
 Only options returned by the current subject-specific selectable provider are
 eligible. A unique ID or display label is resolved deterministically; otherwise
@@ -1403,6 +1422,14 @@ override into a new immutable selection decision before P2b4 continues.
   safety comes from P2b5's current projection and P2b4 replay. `NOOP` means no
   P2b4 call occurred; it does not mean attention was resolved. No result
   expresses Gate A, ATS execution, attestation or submission authority.
+- A newly completed or unchanged P2b6 item is eligible for a later Assembly
+  handoff only when its public P2b4 result carries a valid
+  `PreparationAssemblyLineage` for the same subject, Plan and Run, including
+  the exact final Manifest and AnswerSet IDs. P2b6 never reconstructs this
+  lineage from a repository, current alias or path.
+- Missing, partial or drifted assembly lineage fails only that selected item
+  closed and exposes no partial references. Deferred, failed, skipped and
+  historical results carry no usable assembly lineage.
 
 ### `MaterialPackage`
 

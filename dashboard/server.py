@@ -131,6 +131,8 @@ from dashboard.application_answer_resolution import (
 from dashboard.version_choice_resolution import (
     VersionChoiceResolutionUIController,
 )
+from dashboard.candidate_fact_reviews import CandidateFactReviewUIController
+from core.candidate_fact_reviews import CandidateFactReviewAction
 
 BASE_DIR = Path(__file__).parent
 RESUMES_DIR = BASE_DIR.parent / "resumes"
@@ -202,6 +204,23 @@ def configure_human_attention_inbox_ui(
     if not callable(authenticated_subject):
         raise TypeError("authenticated_subject must be callable")
     app.state.human_attention_inbox_controller = controller
+    app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_candidate_fact_review_ui(
+    *,
+    controller: CandidateFactReviewUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Inject the authenticated C1d Candidate Fact review boundary."""
+
+    if not isinstance(controller, CandidateFactReviewUIController):
+        raise TypeError(
+            "controller must be a CandidateFactReviewUIController"
+        )
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject must be callable")
+    app.state.candidate_fact_review_controller = controller
     app.state.authenticated_subject_dependency = authenticated_subject
 
 
@@ -540,7 +559,7 @@ EventBus.subscribe(_on_event)
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     """Serve the single-page dashboard."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.post("/api/job-library/refresh")
@@ -620,6 +639,142 @@ async def human_attention_inbox_ui(
         )
     result = await controller.load(context=context)
     return result.to_dict()
+
+
+@app.get("/api/candidate-facts/review")
+async def candidate_fact_review_queue_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Read the authenticated subject's bounded Candidate Fact review queue."""
+
+    controller = getattr(
+        request.app.state, "candidate_fact_review_controller", None
+    )
+    if not isinstance(controller, CandidateFactReviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Candidate fact review is unavailable."
+        )
+    return controller.load(context=context).to_dict()
+
+
+@app.get("/api/candidate-facts/review/{review_item_id}")
+async def candidate_fact_review_item_ui(
+    review_item_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Read one exact authenticated Candidate Fact review item."""
+
+    controller = getattr(
+        request.app.state, "candidate_fact_review_controller", None
+    )
+    if not isinstance(controller, CandidateFactReviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Candidate fact review is unavailable."
+        )
+    result = controller.load(context=context).to_dict()
+    item = next(
+        (
+            value
+            for value in result["items"]
+            if value["review_item_id"] == review_item_id
+        ),
+        None,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="Review item not found.")
+    return {
+        "item": item,
+        "queue_snapshot_hash": result["queue_snapshot_hash"],
+        "status": result["status"],
+    }
+
+
+@app.post("/api/candidate-facts/review/{review_item_id}/resolve")
+async def resolve_candidate_fact_review_ui(
+    review_item_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Resolve one Candidate Fact review with an explicit typed action."""
+
+    controller = getattr(
+        request.app.state, "candidate_fact_review_controller", None
+    )
+    if not isinstance(controller, CandidateFactReviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Candidate fact review is unavailable."
+        )
+    if "subject_id" in body or any(
+        key in body
+        for key in (
+            "proposal_hash",
+            "current_fact_id",
+            "source_hash",
+            "verification_status",
+        )
+    ):
+        raise HTTPException(status_code=422, detail="Invalid review request.")
+    try:
+        action = CandidateFactReviewAction(body.get("action", ""))
+        result = controller.resolve(
+            context=context,
+            review_item_id=review_item_id,
+            queue_snapshot_hash=body.get("queue_snapshot_hash", ""),
+            action=action,
+            invocation_id=body.get("invocation_id", ""),
+            submitted_value=body.get("value"),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid review request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get(
+    "/api/candidate-facts/review/{review_item_id}/assets/{evidence_id}"
+)
+async def candidate_fact_review_asset_ui(
+    review_item_id: str,
+    evidence_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> Response:
+    """Return one bounded managed preview asset without revealing its path."""
+
+    controller = getattr(
+        request.app.state, "candidate_fact_review_controller", None
+    )
+    if not isinstance(controller, CandidateFactReviewUIController):
+        raise HTTPException(
+            status_code=503, detail="Candidate fact review is unavailable."
+        )
+    payload = controller.read_asset(
+        context=context,
+        review_item_id=review_item_id,
+        evidence_id=evidence_id,
+    )
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Preview not found.")
+    return Response(
+        content=payload.content,
+        media_type=payload.asset.media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @app.post("/api/human-attention-inbox/{attention_item_id}/resolve")

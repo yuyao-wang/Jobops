@@ -42,6 +42,11 @@ Jobops V1
 │   │   │   ├── one injected P2b5 read-only snapshot
 │   │   │   ├── USER / OPERATOR groups in P2b5 order
 │   │   │   └── initial / explicit / one post-S3e refresh
+│   │   ├── Candidate Profile Review UI                [完成 C1d]
+│   │   │   ├── proposal / conflict / missing-field queue
+│   │   │   ├── bounded source evidence previews
+│   │   │   ├── explicit accept / edit / reject / keep / replace
+│   │   │   └── USER_CONFIRMATION → public fact writer
 │   │   ├── Application Answer Resolution              [完成 S3g1]
 │   │   └── Resume / LaTeX Choice Resolution           [完成 S3g2]
 │   ├── Conversational Intake
@@ -476,6 +481,39 @@ Application Preparation                                [部分]
 │       ├── verified/user-confirmed safe summary
 │       ├── immutable CREATED / UNCHANGED records
 │       └── typed get + stable list_selectable
+├── Candidate Information and Identity                 [部分]
+│   ├── Closed Execution Identity Taxonomy             [完成 P2c1d1a]
+│   │   ├── identity/contact fields only
+│   │   ├── answers / materials / runtime config separated
+│   │   └── explicit legacy mixed-profile compatibility
+│   ├── Candidate Identity Fact Lineage                [完成 P2c1d1b]
+│   │   ├── immutable per-field facts + exact source lineage
+│   │   ├── proposed / legacy-unverified / verified separation
+│   │   ├── expected-current atomic CAS
+│   │   └── typed subject-scoped current index
+│   ├── Candidate Information Source Registry          [完成 C1a]
+│   │   ├── FILE / URL / USER_STATEMENT
+│   │   ├── managed path-free payloads
+│   │   └── deterministic source ID / version / hash
+│   ├── Deterministic Source Projection                [完成 C1b]
+│   │   ├── document / image / web capture / statement
+│   │   ├── ordered blocks + stable locators
+│   │   └── bounded managed visual assets
+│   ├── Agent-assisted Fact Proposal                   [完成 C1c]
+│   │   ├── bounded exact projection input
+│   │   ├── closed-field strict structured output
+│   │   ├── exact block / asset evidence lineage
+│   │   └── immutable proposal/run; zero verified writes
+│   ├── Fact Review and Verification                   [完成 C1d]
+│   │   ├── subject-scoped queue + bounded previews
+│   │   ├── immutable review decisions
+│   │   └── USER_CONFIRMED facts only through P2c1d1b
+│   └── Verified Application Execution Profile        [完成 P2c1d1]
+│       ├── exact subject / Plan / Job binding
+│       ├── required current verified facts only
+│       ├── per-field fact ID / version / hash lineage
+│       ├── immutable Plan-scoped snapshot + replay
+│       └── pure closed ApplicationBundle profile Mapping
 ├── Resume Preparation                                 [部分]
 │   ├── Automatic Base Resume Selection                [完成 P2a3]
 │   │   ├── Plan + exact typed JobPosting binding check
@@ -654,6 +692,11 @@ Application Preparation                                [部分]
 │   ├── existing ApplicationBundle + CanonicalApplicationAnswers
 │   ├── immutable provenance record + deterministic replay/current read
 │   └── no SemanticMapper / Gate / Browser / ATS / Engine
+├── Plan-scoped Execution Context                       [部分]
+│   ├── Verified identity profile snapshot              [完成 P2c1d1]
+│   ├── exact execution PolicyDecision projection       [计划 P2c1d2]
+│   ├── combined PlanExecutionContextProjection         [计划 P2c1d]
+│   └── Production ApplicationBundleFactory             [计划 P2c1c]
 ├── Recoverable Application Bundle Envelope              [完成 P2c1b]
 │   ├── complete existing ApplicationBundle snapshot
 │   ├── managed materials + canonical answers + profile + policy
@@ -727,12 +770,18 @@ Application Preparation                                [部分]
 │   ├── per-Plan defer/failure/uncertainty isolation
 │   ├── submitted/uncertain terminal skips
 │   └── zero batch store / retry / refresh / Scheduler
-├── End-to-end Automation Cycle                          [完成 P2c10a]
-│   ├── P1d3 → P2a1b → P2b6 → P2c9 public batches only
+├── Selective Bundle Assembly                            [完成 P2c10b]
+│   ├── one fixed P2b6 public result
+│   ├── exact Run / Manifest / AnswerSet lineage
+│   ├── bounded serial P2c1 public calls
+│   ├── no Preparation / Assembly repository scan
+│   └── per-Plan failure isolation before P2c9
+├── End-to-end Automation Cycle                          [完成 P2c10a/P2c10b]
+│   ├── P1d3 → P2a1b → P2b6 → Bundle → P2c9
 │   ├── independent bounded stage budgets
 │   ├── one shared subject + explicit now
 │   ├── stage failure isolation / later stages continue
-│   ├── immutable invocation-scoped cycle audit
+│   ├── immutable five-stage v2 audit + four-stage v1 read
 │   └── zero Discovery / Scheduler / retry / direct execution
 ├── Application Answers                               [部分]
 │   ├── Unified Canonical Answer Taxonomy              [完成 P2b3a]
@@ -793,6 +842,11 @@ Application Preparation                                [部分]
 │   ├── stable identity, priority/audience/kind ordering
 │   └── zero store / write / retry / resolution
 ├── Selective Batch Preparation                        [完成 P2b6]
+│   ├── Preparation Assembly Lineage Projection         [完成 P2b6a]
+│       ├── exact Run + final Manifest + final AnswerSet
+│       ├── completed / unchanged only
+│       ├── public-result projection without repository scan
+│       └── damaged or historical lineage fails closed
 │   ├── explicit allowlist or bounded subject Plan list
 │   ├── one fixed P2b5 snapshot + current-attention skip
 │   ├── deterministic serial P2b4 calls, max concurrency one
@@ -887,12 +941,19 @@ Application Execution                                  [完成]
 │           ...
 │       ) → SelectiveBatchExecutionResult
 │
-├── End-to-end Automation Cycle                         [完成 P2c10a]
+├── Selective Bundle Assembly                           [完成 P2c10b]
+│   └── async run_selective_bundle_assembly(
+│           command: SelectiveBundleAssemblyCommand,
+│           assemble_application_bundle: P2c1 public callable,
+│       ) → SelectiveBundleAssemblyResult
+│
+├── End-to-end Automation Cycle                         [完成 P2c10a/P2c10b]
 │   └── async run_automation_cycle(
 │           command: RunAutomationCycleCommand,
 │           priority_refresh: P1d3 public callable,
 │           plan_creation: P2a1b public callable,
 │           preparation: P2b6 public callable,
+│           bundle_assembly: selective P2c1 public callable,
 │           execution: P2c9 public callable,
 │           repository: AutomationCycleRunRepository,
 │       ) → RunAutomationCycleResult
@@ -984,7 +1045,10 @@ Data & Infrastructure
 │
 ├── Private Home                                       [完成]
 │   ├── PrivateHome.discover(...) -> PrivateHome
-│   └── PrivateHome.ensure() -> PrivatePaths
+│   ├── PrivateHome.ensure() -> PrivatePaths
+│   ├── Candidate source / projection / proposal / review stores
+│   ├── Candidate Identity Fact current-lineage store
+│   └── Verified Execution Profile immutable snapshots
 │
 ├── Event Ledger                                       [完成]
 │   ├── EventLedger.create_run(...) -> RunRecord
@@ -999,6 +1063,13 @@ Data & Infrastructure
 │
 ├── Keychain / Mailbox                                 [完成]
 ├── Model Provider                                     [部分]
+│   ├── native / isolation / effective capability     [完成 M1a/M1a2]
+│   └── isolated subscription CLI structured runner   [完成 M1b]
+│
+├── Production Preparation Agent Adapters             [完成 P2a10]
+│   ├── nine existing typed Agent ports
+│   ├── independent prompt / strict schema bindings
+│   └── fail-fast complete production bundle
 └── Documents / Artifacts                              [部分]
 ```
 
@@ -1031,10 +1102,14 @@ Job Prioritization
   ↓
 按 P0–P3 选择材料策略
   ↓
+ApplicationPlan
+  ↓
 Application Preparation
   ↓
-ApplicationPlan 与审批
-  ↓
+Candidate Identity Facts
+  ↓ exact current verified facts
+Verified Application Execution Profile
+  ↓ Plan-scoped identity snapshot
 P2c1 ApplicationBundle Assembly
   ↓
 P2c1b Recoverable Bundle Envelope

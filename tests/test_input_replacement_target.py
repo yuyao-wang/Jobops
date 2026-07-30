@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from core.application_answers import (
@@ -80,7 +79,7 @@ def _provider(home, candidates, versions):
     )
 
 
-def test_source_resume_reasons_bind_exact_candidate_and_replay(
+async def test_source_resume_reasons_bind_exact_candidate_and_replay(
     tmp_path: Path,
 ) -> None:
     for reason in (
@@ -125,7 +124,7 @@ def test_source_resume_reasons_bind_exact_candidate_and_replay(
                 ),
             )
 
-        _invoke(
+        await _invoke(
             plan=plan,
             plan_repository=plans,
             run_repository=runs,
@@ -168,24 +167,22 @@ def test_source_resume_reasons_bind_exact_candidate_and_replay(
         assert safe.status is InputReplacementTargetStatus.AVAILABLE
         assert safe.safe_target.display_name == candidate.display_name
         assert "artifact_reference" not in str(safe.safe_target)
-        ui = asyncio.run(
-            InputReplacementTargetUIController(
-                target_reader=(
-                    provider.get_current_input_replacement_target
-                )
-            ).get(
-                context=AuthenticatedSubjectContext(
-                    session_id="session-input-replacement-0123456789",
-                    subject_id=SUBJECT,
-                    authentication_method=(
-                        AuthenticationMethod.LOCAL_KEYCHAIN_SESSION
-                    ),
-                    issued_at=NOW,
-                    expires_at=NOW.replace(year=NOW.year + 1),
-                ),
-                attention_item_id=item.item_id,
+        ui = (await InputReplacementTargetUIController(
+            target_reader=(
+                provider.get_current_input_replacement_target
             )
-        ).to_dict()
+        ).get(
+            context=AuthenticatedSubjectContext(
+                session_id="session-input-replacement-0123456789",
+                subject_id=SUBJECT,
+                authentication_method=(
+                    AuthenticationMethod.LOCAL_KEYCHAIN_SESSION
+                ),
+                issued_at=NOW,
+                expires_at=NOW.replace(year=NOW.year + 1),
+            ),
+            attention_item_id=item.item_id,
+        )).to_dict()
         serialized = str(ui).casefold()
         assert "artifact_reference" not in serialized
         assert "source_content_hash" not in serialized
@@ -200,7 +197,7 @@ def test_source_resume_reasons_bind_exact_candidate_and_replay(
         assert stale.status is InputReplacementTargetStatus.TARGET_STALE
 
 
-def test_base_latex_reason_binds_exact_version_and_source_record(
+async def test_base_latex_reason_binds_exact_version_and_source_record(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "latex")
@@ -240,7 +237,7 @@ def test_base_latex_reason_binds_exact_version_and_source_record(
             ),
         )
 
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -269,7 +266,7 @@ def test_base_latex_reason_binds_exact_version_and_source_record(
     assert stored.payload.source_content_hash == version.source_sha256
 
 
-def test_incomplete_lineage_and_identity_drift_fail_closed(
+async def test_incomplete_lineage_and_identity_drift_fail_closed(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "incomplete")
@@ -303,7 +300,7 @@ def test_incomplete_lineage_and_identity_drift_fail_closed(
             ),
         )
 
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -327,7 +324,7 @@ def test_incomplete_lineage_and_identity_drift_fail_closed(
     assert result.status is InputReplacementTargetStatus.TARGET_INCOMPLETE
 
 
-def test_registry_coverage_and_safe_projection_are_exact() -> None:
+async def test_registry_coverage_and_safe_projection_are_exact() -> None:
     expected = {
         (
             ApplicationPreparationStage.SOURCE_RESUME_PROJECTION,

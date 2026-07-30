@@ -187,6 +187,12 @@ class PrivatePaths:
     logs: Path
     profile_facts: Path
     verified_answers: Path
+    candidate_identity_facts: Path
+    verified_application_execution_profiles: Path
+    candidate_information_sources: Path
+    candidate_source_projections: Path
+    candidate_fact_proposals: Path
+    candidate_fact_reviews: Path
     policy: Path
     job_queue: Path
     event_ledger: Path
@@ -282,6 +288,22 @@ class PrivateHome:
             logs=root / "logs",
             profile_facts=profile / "facts.json",
             verified_answers=profile / "verified-answers.json",
+            candidate_identity_facts=profile / "candidate-identity-facts.sqlite3",
+            verified_application_execution_profiles=(
+                profile / "verified-application-execution-profiles"
+            ),
+            candidate_information_sources=(
+                profile / "candidate-information-sources.sqlite3"
+            ),
+            candidate_source_projections=(
+                profile / "candidate-source-projections.sqlite3"
+            ),
+            candidate_fact_proposals=(
+                profile / "candidate-fact-proposals.sqlite3"
+            ),
+            candidate_fact_reviews=(
+                profile / "candidate-fact-reviews.sqlite3"
+            ),
             policy=profile / "policy.json",
             job_queue=queue / "job_pool.csv",
             event_ledger=state / "events.sqlite3",
@@ -431,6 +453,7 @@ class PrivateHome:
         _validate_or_claim_private_root(paths.root)
         for directory in (
             paths.profile,
+            paths.verified_application_execution_profiles,
             paths.queue,
             paths.documents,
             paths.master_documents,

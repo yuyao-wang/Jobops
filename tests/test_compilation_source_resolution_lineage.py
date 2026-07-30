@@ -60,7 +60,7 @@ def _binding(*, plan_id: str, invocation_id: str) -> PreparationInvocationBindin
     )
 
 
-def test_pre_run_binding_is_shared_by_every_stage_and_final_run(
+async def test_pre_run_binding_is_shared_by_every_stage_and_final_run(
     tmp_path,
 ) -> None:
     home = preparation.PrivateHome(tmp_path / "private")
@@ -77,7 +77,7 @@ def test_pre_run_binding_is_shared_by_every_stage_and_final_run(
         invocation_id=invocation_id,
     )
 
-    result = run_application_preparation(
+    result = await run_application_preparation(
         command,
         application_plan_repository=plan_repository,
         recipe=_recipe(recorder),
@@ -109,7 +109,7 @@ def test_pre_run_binding_is_shared_by_every_stage_and_final_run(
     assert "run_id" not in binding.to_dict()
     assert "stage_hashes" not in binding.to_dict()
     call_count = len(recorder.requests)
-    replay = run_application_preparation(
+    replay = await run_application_preparation(
         command,
         application_plan_repository=plan_repository,
         recipe=_recipe(recorder),
@@ -119,7 +119,7 @@ def test_pre_run_binding_is_shared_by_every_stage_and_final_run(
     assert len(recorder.requests) == call_count
 
 
-def test_resolved_content_stops_bind_exact_source_and_distinct_reason(
+async def test_resolved_content_stops_bind_exact_source_and_distinct_reason(
     tmp_path,
 ) -> None:
     unmanaged = _setup(
@@ -189,7 +189,7 @@ def test_resolved_content_stops_bind_exact_source_and_distinct_reason(
         )
 
 
-def test_early_stops_use_closed_unresolved_lineage_without_source_hash(
+async def test_early_stops_use_closed_unresolved_lineage_without_source_hash(
     tmp_path,
 ) -> None:
     parts = _setup(tmp_path)
@@ -269,7 +269,7 @@ def test_early_stops_use_closed_unresolved_lineage_without_source_hash(
         assert "construction_result_id" not in serialized
 
 
-def test_binding_mismatch_and_resolution_state_conflicts_fail_closed(
+async def test_binding_mismatch_and_resolution_state_conflicts_fail_closed(
     tmp_path,
 ) -> None:
     parts = _setup(tmp_path)

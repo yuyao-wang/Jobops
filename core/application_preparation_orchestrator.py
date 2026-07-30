@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import re
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -200,6 +202,9 @@ class ApplicationPreparationStage(StrEnum):
 
 
 APPLICATION_PREPARATION_STAGE_ORDER = tuple(ApplicationPreparationStage)
+PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION = (
+    "preparation-assembly-lineage-v1"
+)
 
 
 class PublicStageStatus(StrEnum):
@@ -2561,7 +2566,10 @@ class ApplicationPreparationStageRequest:
 class ApplicationPreparationPublicCallable(Protocol):
     def __call__(
         self, request: ApplicationPreparationStageRequest
-    ) -> PublicPreparationStageResult: ...
+    ) -> (
+        PublicPreparationStageResult
+        | Awaitable[PublicPreparationStageResult]
+    ): ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -2573,7 +2581,8 @@ class ApplicationPreparationStageDefinition:
     configuration_hash: str
     invoke: Callable[
         [ApplicationPreparationStageRequest],
-        PublicPreparationStageResult,
+        PublicPreparationStageResult
+        | Awaitable[PublicPreparationStageResult],
     ] = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -3548,12 +3557,106 @@ class RunApplicationPreparationCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparationAssemblyLineage:
+    subject_id: str
+    application_plan_id: str
+    preparation_run_id: str
+    preparation_run_contract_version: str
+    plan_material_manifest_id: str
+    prepared_application_answer_set_id: str
+    preparation_completion_hash: str
+    contract_version: str
+    lineage_hash: str
+
+    def __post_init__(self) -> None:
+        _clean_text("subject_id", self.subject_id, 160)
+        _clean_text("application_plan_id", self.application_plan_id, 180)
+        _clean_text("preparation_run_id", self.preparation_run_id, 240)
+        _clean_text(
+            "plan_material_manifest_id",
+            self.plan_material_manifest_id,
+            240,
+        )
+        _clean_text(
+            "prepared_application_answer_set_id",
+            self.prepared_application_answer_set_id,
+            240,
+        )
+        if (
+            self.preparation_run_contract_version
+            != APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION
+        ):
+            raise ValueError("preparation run contract is unsupported")
+        if (
+            self.contract_version
+            != PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION
+        ):
+            raise ValueError("assembly lineage contract is unsupported")
+        _require_hash(
+            "preparation_completion_hash",
+            self.preparation_completion_hash,
+        )
+        _require_hash("lineage_hash", self.lineage_hash)
+        if self.lineage_hash != _canonical_hash(self.identity_dict()):
+            raise ValueError("assembly lineage hash is invalid")
+
+    def identity_dict(self) -> dict[str, str]:
+        return {
+            "application_plan_id": self.application_plan_id,
+            "contract_version": self.contract_version,
+            "plan_material_manifest_id": self.plan_material_manifest_id,
+            "preparation_completion_hash": self.preparation_completion_hash,
+            "preparation_run_contract_version": (
+                self.preparation_run_contract_version
+            ),
+            "preparation_run_id": self.preparation_run_id,
+            "prepared_application_answer_set_id": (
+                self.prepared_application_answer_set_id
+            ),
+            "subject_id": self.subject_id,
+        }
+
+    def to_dict(self) -> dict[str, str]:
+        return {**self.identity_dict(), "lineage_hash": self.lineage_hash}
+
+    @classmethod
+    def from_run(
+        cls, run: ApplicationPreparationRun
+    ) -> PreparationAssemblyLineage:
+        if (
+            not isinstance(run, ApplicationPreparationRun)
+            or run.overall_status is not ApplicationPreparationRunStatus.COMPLETED
+            or not run.final_plan_material_manifest_id
+            or not run.final_prepared_application_answer_set_id
+        ):
+            raise ValueError("completed preparation lineage is unavailable")
+        values = {
+            "application_plan_id": run.application_plan_id,
+            "contract_version": (
+                PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION
+            ),
+            "plan_material_manifest_id": (
+                run.final_plan_material_manifest_id
+            ),
+            "preparation_completion_hash": run.run_content_hash,
+            "preparation_run_contract_version": run.contract_version,
+            "preparation_run_id": run.run_id,
+            "prepared_application_answer_set_id": (
+                run.final_prepared_application_answer_set_id
+            ),
+            "subject_id": run.subject_id,
+        }
+        return cls(**values, lineage_hash=_canonical_hash(values))
+
+
+@dataclass(frozen=True, slots=True)
 class RunApplicationPreparationResult:
     status: ApplicationPreparationStatus
     run: ApplicationPreparationRun | None
     reason_code: ApplicationPreparationFailureReason | None
     retryable: bool
     message: str
+    assembly_lineage: PreparationAssemblyLineage | None = None
 
 
 def _preparation_binding(
@@ -3757,16 +3860,43 @@ def _persist_outcome(
         status = ApplicationPreparationStatus.UNCHANGED
     else:
         status = ApplicationPreparationStatus(run.overall_status.value)
+    try:
+        assembly_lineage = (
+            PreparationAssemblyLineage.from_run(write.run)
+            if status
+            in {
+                ApplicationPreparationStatus.COMPLETED,
+                ApplicationPreparationStatus.UNCHANGED,
+            }
+            else None
+        )
+    except (TypeError, ValueError):
+        return _run_result_failure(
+            ApplicationPreparationFailureReason.RUN_INTEGRITY_FAILURE
+        )
     return RunApplicationPreparationResult(
         status=status,
         run=write.run,
         reason_code=operation_reason,
         retryable=False,
         message=f"Application preparation is {status.value}.",
+        assembly_lineage=assembly_lineage,
     )
 
 
-def run_application_preparation(
+async def _invoke_preparation_stage(
+    definition: ApplicationPreparationStageDefinition,
+    request: ApplicationPreparationStageRequest,
+) -> PublicPreparationStageResult:
+    """Invoke one stage once and normalize sync/async implementations."""
+
+    value = definition.invoke(request)
+    if inspect.isawaitable(value):
+        value = await value
+    return value
+
+
+async def run_application_preparation(
     command: RunApplicationPreparationCommand,
     *,
     application_plan_repository: ApplicationPlanRepository,
@@ -3850,12 +3980,21 @@ def run_application_preparation(
         is ApplicationPreparationRunStatus.COMPLETED
         and current.run.preparation_binding == binding
     ):
+        try:
+            assembly_lineage = PreparationAssemblyLineage.from_run(
+                current.run
+            )
+        except (TypeError, ValueError):
+            return _run_result_failure(
+                ApplicationPreparationFailureReason.RUN_INTEGRITY_FAILURE
+            )
         return RunApplicationPreparationResult(
             status=ApplicationPreparationStatus.UNCHANGED,
             run=current.run,
             reason_code=None,
             retryable=False,
             message="Completed application preparation is unchanged.",
+            assembly_lineage=assembly_lineage,
         )
 
     outputs: dict[str, str] = {}
@@ -3943,7 +4082,9 @@ def run_application_preparation(
             preparation_invocation_binding=invocation_binding,
         )
         try:
-            public_result = definition.invoke(request)
+            public_result = await _invoke_preparation_stage(
+                definition, request
+            )
         except Exception:
             failed = ApplicationPreparationStageResult.from_public(
                 PublicPreparationStageResult.failed(
@@ -4134,6 +4275,8 @@ __all__ = [
     "PREVIOUS_APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION",
     "PREVIOUS_PREPARATION_STAGE_RESULT_SCHEMA_VERSION",
     "PREPARATION_STAGE_RESULT_SCHEMA_VERSION",
+    "PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION",
+    "PreparationAssemblyLineage",
     "PreparationStageOutcome",
     "PreparationStageExecutionStatus",
     "PreparationStopReasonEnvelope",

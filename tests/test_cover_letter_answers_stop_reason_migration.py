@@ -75,7 +75,7 @@ def _hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def test_all_four_stage_mappings_and_mixed_p2b4_run(
+async def test_all_four_stage_mappings_and_mixed_p2b4_run(
     tmp_path,
 ) -> None:
     mappings = (
@@ -186,7 +186,7 @@ def test_all_four_stage_mappings_and_mixed_p2b4_run(
         ),
         required_material_policy=RequiredApplicationMaterialPolicy.v1(),
     )
-    run = run_application_preparation(
+    run = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=plan.subject_id,
             application_plan_id=plan.plan_id,
@@ -205,7 +205,7 @@ def test_all_four_stage_mappings_and_mixed_p2b4_run(
     ].is_legacy_untyped
 
 
-def test_cover_letter_evidence_and_draft_deferrals_are_typed() -> None:
+async def test_cover_letter_evidence_and_draft_deferrals_are_typed() -> None:
     evidence = cover_letter_evidence_public_result(
         CreateCoverLetterEvidenceSnapshotResult(
             status=CoverLetterEvidenceSnapshotStatus.DEFERRED_NO_EVIDENCE,
@@ -243,7 +243,7 @@ def test_cover_letter_evidence_and_draft_deferrals_are_typed() -> None:
     assert draft.outcome is PreparationStageOutcome.DEFERRED
 
 
-def test_application_answer_fact_choice_and_attestation_stay_distinct() -> None:
+async def test_application_answer_fact_choice_and_attestation_stay_distinct() -> None:
     cases = (
         (
             (UnresolvedAnswerReason.MISSING_FACT,),
@@ -285,7 +285,7 @@ def test_application_answer_fact_choice_and_attestation_stay_distinct() -> None:
         assert public.outcome is PreparationStageOutcome.DEFERRED
 
 
-def test_unsupported_claim_and_internal_failure_remain_separate() -> None:
+async def test_unsupported_claim_and_internal_failure_remain_separate() -> None:
     unsupported = PreparationStopReasonEnvelope(
         stage=ApplicationPreparationStage.COVER_LETTER_FACT_QA,
         code=CoverLetterFactQAStopReason.UNSUPPORTED_CLAIM,

@@ -90,7 +90,7 @@ def _finding_set(plan, material, qa_id, qa_hash, names=("one", "two")):
     )
 
 
-def _deferred_run(
+async def _deferred_run(
     *,
     plan,
     plans,
@@ -119,7 +119,7 @@ def _deferred_run(
             human_attention_required=True,
         )
 
-    return _invoke(
+    return await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -146,7 +146,7 @@ def _queue(home, provider, *, subject_id):
     )
 
 
-def test_direct_resume_and_cover_letter_findings_split_without_aggregate(
+async def test_direct_resume_and_cover_letter_findings_split_without_aggregate(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -155,7 +155,7 @@ def test_direct_resume_and_cover_letter_findings_split_without_aggregate(
     runs = PrivateHomeApplicationPreparationRunRepository(home)
     resume_id, cover_id = "resume-qa-1", "cover-qa-1"
     resume_hash, cover_hash = _hash(resume_id), _hash(cover_id)
-    _deferred_run(
+    await _deferred_run(
         plan=resume_plan,
         plans=plans,
         runs=runs,
@@ -165,7 +165,7 @@ def test_direct_resume_and_cover_letter_findings_split_without_aggregate(
         result_id=resume_id,
         result_hash=resume_hash,
     )
-    _deferred_run(
+    await _deferred_run(
         plan=cover_plan,
         plans=plans,
         runs=runs,
@@ -206,7 +206,7 @@ def test_direct_resume_and_cover_letter_findings_split_without_aggregate(
     assert len({item.item_id for item in result.items}) == 4
 
 
-def test_resume_and_cover_publication_lineage_resolves_exact_findings(
+async def test_resume_and_cover_publication_lineage_resolves_exact_findings(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -268,7 +268,7 @@ def test_resume_and_cover_publication_lineage_resolves_exact_findings(
                 item.finding_id for item in finding_set.findings
             ),
         )
-        _deferred_run(
+        await _deferred_run(
             plan=plan,
             plans=plans,
             runs=runs,
@@ -296,14 +296,14 @@ def test_resume_and_cover_publication_lineage_resolves_exact_findings(
     }
 
 
-def test_damaged_finding_collection_fails_closed_as_one_system_item(
+async def test_damaged_finding_collection_fails_closed_as_one_system_item(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-damaged-findings")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
     qa_id, qa_hash = "resume-qa-damaged", _hash("resume-qa-damaged")
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -333,14 +333,14 @@ def test_damaged_finding_collection_fails_closed_as_one_system_item(
     assert item.fact_qa_finding_ref is None
 
 
-def test_finding_item_identity_order_and_replay_are_stable(
+async def test_finding_item_identity_order_and_replay_are_stable(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-stable-findings")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
     qa_id, qa_hash = "resume-qa-stable", _hash("resume-qa-stable")
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,

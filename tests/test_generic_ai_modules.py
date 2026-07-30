@@ -36,6 +36,7 @@ from adapters.generic_ai.resolver import (
     AnswerResolver,
     ResolvedField,
     Sensitivity,
+    UnresolvedField as ResolverUnresolvedField,
     map_unknown_controls,
 )
 from adapters.generic_ai.semantic_mapper import (
@@ -106,8 +107,7 @@ def _profile() -> dict:
         "personal": {
             "email": SYNTHETIC_EMAIL,
             "phone": SYNTHETIC_PHONE,
-        },
-        "common_answers": {},
+        }
     }
 
 
@@ -454,8 +454,7 @@ def test_company_name_and_specific_address_do_not_inherit_personal_fallbacks():
                 "first_name": "Synthetic",
                 "last_name": "Candidate",
                 "location": "Example City",
-            },
-            "common_answers": {},
+            }
         }
     )
     form = FormIR(
@@ -552,15 +551,9 @@ def test_model_mapping_needs_candidate_self_semantics_not_input_type_alone():
     assert candidate_result.value == SYNTHETIC_EMAIL
 
 
-def test_exact_verified_question_answer_is_allowed_without_fuzzy_matching():
+def test_dynamic_question_without_canonical_mapping_requires_attention():
     question = "How did you hear about this specific role?"
-    resolver = AnswerResolver(
-        {
-            "verified_question_answers": {
-                question: {"value": "Company careers page", "verified": True}
-            }
-        }
-    )
+    resolver = AnswerResolver({})
     control = FormControl(
         index=0,
         role="textbox",
@@ -572,8 +565,8 @@ def test_exact_verified_question_answer_is_allowed_without_fuzzy_matching():
 
     result = resolver.resolve(control)
 
-    assert isinstance(result, ResolvedField)
-    assert result.value == "Company careers page"
+    assert isinstance(result, ResolverUnresolvedField)
+    assert result.reason == "no unambiguous canonical mapping"
 
 
 @pytest.mark.asyncio
@@ -893,13 +886,10 @@ async def test_nonmapped_protocol_responses_never_reach_browser_execution(
 
 def test_prompt_redactions_cover_all_locally_injected_answer_sources():
     resolver = AnswerResolver(
-        {
-            "personal": {"email": SYNTHETIC_EMAIL},
-            "canonical_answers": {"salary": {"value": "Synthetic salary"}},
-            "common_answers": {"require_sponsorship": "Synthetic answer"},
-            "verified_question_answers": {
-                "Synthetic question": {"value": "Synthetic exact response"}
-            },
+        {"personal": {"email": SYNTHETIC_EMAIL}},
+        answers={
+            "salary": "Synthetic salary",
+            "sponsorship": "Synthetic answer",
         },
         cover_letter="Synthetic narrative letter",
     )
@@ -909,7 +899,6 @@ def test_prompt_redactions_cover_all_locally_injected_answer_sources():
     assert SYNTHETIC_EMAIL in redactions
     assert "Synthetic salary" in redactions
     assert "Synthetic answer" in redactions
-    assert "Synthetic exact response" in redactions
     assert "Synthetic narrative letter" in redactions
 
 
@@ -1242,12 +1231,11 @@ async def test_model_cannot_auto_answer_new_sensitive_required_wording(
         AsyncMock(return_value=None),
     )
 
-    profile = _profile()
-    profile["common_answers"]["require_sponsorship"] = "No"
     outcome = await GenericAIAdapter(cache=RecipeCache(tmp_path / "cache")).run(
         page=page,
         job_url=page.url,
-        profile=profile,
+        profile=_profile(),
+        answers={"sponsorship": "No"},
         brain=brain,
         run_id="run-new-sensitive",
         job_id="job-new-sensitive",

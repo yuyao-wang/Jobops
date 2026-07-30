@@ -87,7 +87,7 @@ class _Factory:
                 job_id=posting.job_id,
             ),
             materials=request.materials,
-            profile={"source": "synthetic-execution-profile"},
+            profile={"personal": {}},
             answers=request.answers,
             policy=PolicyEngine(
                 PolicyConfig(mode=AutonomyMode.SUPERVISED)

@@ -19,7 +19,7 @@ from core.automation_cycle import (
 )
 
 
-AUTOMATION_CYCLE_UI_CONFIG_VERSION = "automation-cycle-ui-budgets-v1"
+AUTOMATION_CYCLE_UI_CONFIG_VERSION = "automation-cycle-ui-budgets-v2"
 
 
 class ContinueAutomationUIStatus(StrEnum):
@@ -38,7 +38,8 @@ class AutomationCycleUIBudgetConfig:
     max_plan_creations: int = 10
     max_preparations: int = 5
     max_executions: int = 2
-    composition_binding: str = "jobops-dashboard-automation-v1"
+    max_bundle_assemblies: int = 5
+    composition_binding: str = "jobops-dashboard-automation-v2"
     contract_version: str = AUTOMATION_CYCLE_UI_CONFIG_VERSION
 
     def __post_init__(self) -> None:
@@ -47,6 +48,7 @@ class AutomationCycleUIBudgetConfig:
             self.max_plan_creations,
             self.max_preparations,
             self.max_executions,
+            self.max_bundle_assemblies,
         )
         if any(type(value) is not int or value < 0 for value in budgets):
             raise ValueError("automation budgets must be non-negative")
@@ -97,6 +99,8 @@ class AutomationCycleUISummary:
     preparation_completed: int = 0
     preparation_deferred: int = 0
     preparation_failed: int = 0
+    bundles_assembled: int = 0
+    bundles_reused: int = 0
     execution_completed: int = 0
     execution_deferred: int = 0
     execution_failed: int = 0
@@ -150,6 +154,7 @@ _STAGE_LABELS = {
     AutomationCycleStage.PRIORITY_REFRESH: "优先级刷新",
     AutomationCycleStage.APPLICATION_PLAN_CREATION: "申请计划创建",
     AutomationCycleStage.APPLICATION_PREPARATION: "申请材料准备",
+    AutomationCycleStage.BUNDLE_ASSEMBLY: "申请包组装",
     AutomationCycleStage.APPLICATION_EXECUTION: "申请执行",
 }
 
@@ -186,6 +191,7 @@ def map_automation_cycle_result(
     by_stage = {item.stage: item for item in run.stage_results}
     plan = by_stage[AutomationCycleStage.APPLICATION_PLAN_CREATION]
     preparation = by_stage[AutomationCycleStage.APPLICATION_PREPARATION]
+    bundle = by_stage.get(AutomationCycleStage.BUNDLE_ASSEMBLY)
     execution = by_stage[AutomationCycleStage.APPLICATION_EXECUTION]
     stages = tuple(
         AutomationCycleUIStage(
@@ -207,6 +213,12 @@ def map_automation_cycle_result(
         preparation_completed=preparation.completed,
         preparation_deferred=preparation.deferred,
         preparation_failed=preparation.failed,
+        bundles_assembled=(
+            _count(bundle, "assembled") if bundle is not None else 0
+        ),
+        bundles_reused=(
+            _count(bundle, "unchanged") if bundle is not None else 0
+        ),
         execution_completed=execution.completed,
         execution_deferred=execution.deferred,
         execution_failed=execution.failed,
@@ -324,6 +336,7 @@ class ContinueAutomationUIController:
             max_reprioritizations=self._budgets.max_reprioritizations,
             max_plan_creations=self._budgets.max_plan_creations,
             max_preparations=self._budgets.max_preparations,
+            max_bundle_assemblies=self._budgets.max_bundle_assemblies,
             max_executions=self._budgets.max_executions,
             composition_binding=self._budgets.composition_binding,
         )

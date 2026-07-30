@@ -23,6 +23,9 @@ from uuid import uuid4
 
 from adapters.generic_ai.verifier import detect_submission_evidence
 from adapters.registry import AdapterRegistry, AdapterRunRequest
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.outcomes import ApplicationOutcome, OutcomeStatus
 
 
@@ -100,7 +103,9 @@ async def _run_routed(
         job_url=job_url,
         job_id=resolved_job_id,
         run_id=resolved_run_id,
-        profile=runtime_profile,
+        profile=ApplicationExecutionIdentityProfile.from_legacy_profile(
+            runtime_profile
+        ),
         resume_path=str(runtime_profile.get("resume_path") or ""),
         cover_letter=cover_letter,
         answers=runtime_profile.get("common_answers", {}),

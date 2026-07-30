@@ -364,8 +364,7 @@ class InputReplacementResolutionResult:
 QueueReader = Callable[..., HumanAttentionQueueResult | Awaitable[HumanAttentionQueueResult]]
 PreparationCallable = Callable[
     ...,
-    RunApplicationPreparationResult
-    | Awaitable[RunApplicationPreparationResult],
+    Awaitable[RunApplicationPreparationResult],
 ]
 
 
@@ -738,13 +737,11 @@ async def _run_preparation(
     now: datetime,
 ) -> tuple[ApplicationPreparationStatus, str | None]:
     try:
-        value = await _resolve(
-            callable_(
-                RunApplicationPreparationCommand(
-                    subject_id=subject,
-                    application_plan_id=application_plan_id,
-                    now=now,
-                )
+        value = await callable_(
+            RunApplicationPreparationCommand(
+                subject_id=subject,
+                application_plan_id=application_plan_id,
+                now=now,
             )
         )
         if not isinstance(value, RunApplicationPreparationResult):

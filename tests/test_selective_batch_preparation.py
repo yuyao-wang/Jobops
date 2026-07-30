@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import core.application_preparation_orchestrator as orchestrator_module
 import core.selective_batch_preparation as batch_module
 from core.application_answers import (
     PrivateHomePreparedApplicationAnswerSetRepository,
@@ -20,9 +22,12 @@ from core.application_plan import (
     PrivateHomeApplicationPlanRepository,
 )
 from core.application_preparation_orchestrator import (
+    APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION,
+    PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION,
     ApplicationPreparationFailureReason,
     ApplicationPreparationStage,
     ApplicationPreparationStatus,
+    PreparationAssemblyLineage,
     PrivateHomeApplicationPreparationRunRepository,
     PublicStageStatus,
     RunApplicationPreparationCommand,
@@ -139,14 +144,41 @@ class _Preparation:
                 command.application_plan_id,
                 ApplicationPreparationStatus.COMPLETED,
             )
+            run_id = (
+                "application-preparation-run-"
+                f"{_hash(command.application_plan_id)}"
+            )
+            run_hash = _hash(f"run-{command.application_plan_id}")
+            manifest_id = f"manifest-{command.application_plan_id}"
+            answer_set_id = f"answers-{command.application_plan_id}"
+            run = SimpleNamespace(
+                run_id=run_id,
+                subject_id=SUBJECT,
+                application_plan_id=command.application_plan_id,
+                run_content_hash=run_hash,
+                contract_version=(
+                    APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION
+                ),
+                final_plan_material_manifest_id=manifest_id,
+                final_prepared_application_answer_set_id=answer_set_id,
+            )
+            lineage_values = {
+                "subject_id": SUBJECT,
+                "application_plan_id": command.application_plan_id,
+                "preparation_run_id": run_id,
+                "preparation_run_contract_version": (
+                    APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION
+                ),
+                "plan_material_manifest_id": manifest_id,
+                "prepared_application_answer_set_id": answer_set_id,
+                "preparation_completion_hash": run_hash,
+                "contract_version": (
+                    PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION
+                ),
+            }
             return RunApplicationPreparationResult(
                 status=status,
-                run=SimpleNamespace(
-                    run_id=(
-                        "application-preparation-run-"
-                        f"{_hash(command.application_plan_id)}"
-                    )
-                ),
+                run=run,
                 reason_code=(
                     ApplicationPreparationFailureReason.PUBLIC_STAGE_EXCEPTION
                     if status is ApplicationPreparationStatus.FAILED
@@ -154,6 +186,20 @@ class _Preparation:
                 ),
                 retryable=False,
                 message=f"synthetic {status.value}",
+                assembly_lineage=(
+                    PreparationAssemblyLineage(
+                        **lineage_values,
+                        lineage_hash=orchestrator_module._canonical_hash(
+                            lineage_values
+                        ),
+                    )
+                    if status
+                    in {
+                        ApplicationPreparationStatus.COMPLETED,
+                        ApplicationPreparationStatus.UNCHANGED,
+                    }
+                    else None
+                ),
             )
         finally:
             self.active -= 1
@@ -236,7 +282,7 @@ async def test_attention_plan_is_skipped_once_with_all_item_ids(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
-    plan, *_ = _completed_with_real_answers(home)
+    plan, *_ = await _completed_with_real_answers(home)
     queue = build_current_human_attention_queue(
         subject_id=plan.subject_id,
         now=NOW,
@@ -288,7 +334,7 @@ async def test_attention_skip_does_not_consume_execution_limit(
         public_status="DEFERRED_NO_EVIDENCE",
         reason_code="NO_TRUSTED_EVIDENCE",
     )
-    _invoke(
+    await _invoke(
         plan=skipped,
         plan_repository=plans,
         run_repository=runs,
@@ -568,7 +614,7 @@ async def test_real_p2b4_defer_does_not_stop_next_plan(
             if command.application_plan_id == first.plan_id
             else completed_recipe
         )
-        return run_application_preparation(
+        return await run_application_preparation(
             command,
             application_plan_repository=plans,
             recipe=recipe,
@@ -591,11 +637,72 @@ async def test_real_p2b4_defer_does_not_stop_next_plan(
         BatchPlanExecutionStatus.COMPLETED,
     ]
     assert result.items[0].source_reason_code == "NO_TRUSTED_EVIDENCE"
+    assert result.items[0].assembly_lineage is None
+    assert result.items[1].assembly_lineage is not None
+    assert (
+        result.items[1].assembly_lineage.preparation_run_id
+        == result.items[1].preparation_run_id
+    )
     assert result.status is SelectiveBatchPreparationStatus.PARTIAL_FAILURE
     refreshed = _queue(home)
     assert {
         item.application_plan_id for item in refreshed.items
     } == {first.plan_id}
+
+
+@pytest.mark.asyncio
+async def test_missing_or_cross_subject_lineage_fails_one_item_closed(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "private")
+    missing, plans = _plan(home, job_id="job-missing-lineage")
+    drifted, _ = _plan(home, job_id="job-drifted-lineage")
+    valid, _ = _plan(home, job_id="job-valid-lineage")
+    preparation = _Preparation()
+
+    async def corrupting_p2b4(command):
+        result = await preparation(command)
+        if command.application_plan_id == missing.plan_id:
+            return replace(result, assembly_lineage=None)
+        if command.application_plan_id == drifted.plan_id:
+            lineage = result.assembly_lineage
+            values = {
+                **lineage.identity_dict(),
+                "subject_id": OTHER_SUBJECT,
+            }
+            return replace(
+                result,
+                assembly_lineage=PreparationAssemblyLineage(
+                    **values,
+                    lineage_hash=orchestrator_module._canonical_hash(values),
+                ),
+            )
+        return result
+
+    result = await run_selective_batch_preparation(
+        SelectiveBatchPreparationCommand(
+            subject_id=SUBJECT,
+            now=NOW,
+            application_plan_ids=(
+                missing.plan_id,
+                drifted.plan_id,
+                valid.plan_id,
+            ),
+        ),
+        application_plan_repository=plans,
+        human_attention_queue_reader=_QueueReader(_queue(home)),
+        single_job_preparation=corrupting_p2b4,
+    )
+
+    assert [item.execution_status for item in result.items] == [
+        BatchPlanExecutionStatus.FAILED,
+        BatchPlanExecutionStatus.FAILED,
+        BatchPlanExecutionStatus.COMPLETED,
+    ]
+    assert result.items[0].assembly_lineage is None
+    assert result.items[1].assembly_lineage is None
+    assert result.items[2].assembly_lineage is not None
+    assert len(preparation.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -609,7 +716,7 @@ async def test_completed_plan_replay_relies_on_p2b4_unchanged(
     recipe = _recipe(recorder, input_binding="batch-replay")
 
     async def real_p2b4(command):
-        return run_application_preparation(
+        return await run_application_preparation(
             command,
             application_plan_repository=plans,
             recipe=recipe,
@@ -644,7 +751,7 @@ async def test_completed_plan_replay_relies_on_p2b4_unchanged(
     assert len(recorder.requests) == call_count
 
 
-def test_application_plan_subject_list_is_stable_and_isolated(
+async def test_application_plan_subject_list_is_stable_and_isolated(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -669,7 +776,7 @@ def test_application_plan_subject_list_is_stable_and_isolated(
     assert first.plans == second.plans == (p0, p1)
 
 
-def test_command_requires_bounded_selection() -> None:
+async def test_command_requires_bounded_selection() -> None:
     with pytest.raises(ValueError):
         SelectiveBatchPreparationCommand(subject_id=SUBJECT, now=NOW)
     with pytest.raises(ValueError):
@@ -684,7 +791,7 @@ def test_command_requires_bounded_selection() -> None:
         )
 
 
-def test_batch_source_imports_only_public_orchestration_contracts() -> None:
+async def test_batch_source_imports_only_public_orchestration_contracts() -> None:
     tree = ast.parse(Path(batch_module.__file__).read_text(encoding="utf-8"))
     imports = {
         node.module

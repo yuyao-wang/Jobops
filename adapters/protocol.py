@@ -31,6 +31,9 @@ from core.application_answer_taxonomy import (
     CanonicalApplicationAnswerKey,
     normalize_canonical_application_answer_key,
 )
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.bundles import MaterialBundle
 from core.private_home import PrivateHome
 
@@ -42,7 +45,6 @@ from .shared import (
     first_locator,
     invoke_gate_b_validator,
     is_sensitive_question,
-    nested_value,
     normalize_text,
     resolve_confirmed_value,
     select_exact_option,
@@ -126,7 +128,7 @@ class ApplicationContext:
     job_url: str
     job_id: str
     run_id: str
-    profile: Mapping[str, Any]
+    profile: ApplicationExecutionIdentityProfile | Mapping[str, Any]
     resume_path: str | Path | None = None
     cover_letter: str = ""
     answers: Mapping[str, Any] = field(default_factory=dict)
@@ -139,6 +141,16 @@ class ApplicationContext:
     settle_timeout_ms: int = 250
     materials: MaterialBundle | None = None
     private_home: PrivateHome | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, ApplicationExecutionIdentityProfile):
+            object.__setattr__(
+                self,
+                "profile",
+                ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                    self.profile
+                ),
+            )
 
 
 @dataclass(frozen=True)
@@ -421,7 +433,7 @@ class BaseATSAdapter(ABC):
         uploaded: list[str] = []
         unresolved: list[UnresolvedField] = []
         errors: list[str] = []
-        resume_path = context.resume_path or nested_value(context.profile, "resume_path", "documents.resume")
+        resume_path = context.resume_path
         document_upload_failure = None
         upload_items = {}
         if context.materials is not None:
@@ -1026,9 +1038,7 @@ def _expected_field_value(context: ApplicationContext, field: FieldIR) -> Any:
                     return None
             return None
         if field.canonical_key is CanonicalApplicationAnswerKey.RESUME:
-            return context.resume_path or nested_value(
-                context.profile, "resume_path", "documents.resume"
-            )
+            return context.resume_path
     return resolve_confirmed_value(
         field.canonical_key,
         field.label,

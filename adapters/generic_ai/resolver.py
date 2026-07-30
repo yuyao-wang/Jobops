@@ -6,12 +6,16 @@ import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from core.application_answer_taxonomy import (
     CanonicalApplicationAnswerKey,
     normalize_canonical_application_answer_key,
 )
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
+from adapters.shared import resolve_confirmed_value
 from .models import FormControl, FormIR
 
 
@@ -187,71 +191,41 @@ def semantic_mapping_is_compatible(
     return False
 
 
-def _legacy_value(
-    profile: dict[str, Any],
-    key: CanonicalApplicationAnswerKey,
-    cover_letter: str,
-) -> str:
-    personal = profile.get("personal", {})
-    common = profile.get("common_answers", {})
-    values = {
-        "first_name": personal.get("first_name", ""),
-        "last_name": personal.get("last_name", ""),
-        "preferred_name": personal.get("preferred_name", ""),
-        "full_name": " ".join(filter(None, (personal.get("first_name"), personal.get("last_name")))),
-        "email": personal.get("email", ""),
-        "phone": personal.get("phone", ""),
-        "location": personal.get("location", ""),
-        "linkedin": personal.get("linkedin", ""),
-        "github": personal.get("github", ""),
-        "portfolio": personal.get("portfolio", ""),
-        "resume": profile.get("resume_path", ""),
-        "cover_letter": cover_letter,
-        "work_authorization": common.get("authorized_to_work", ""),
-        "sponsorship": common.get("require_sponsorship", ""),
-        "relocation": common.get("willing_to_relocate", ""),
-        "salary": common.get("salary_expectation", ""),
-        "start_date": common.get("earliest_start_date", ""),
-        "gender": common.get("gender", ""),
-        "race_ethnicity": common.get("race_ethnicity", ""),
-        "veteran_status": common.get("veteran_status", ""),
-        "disability_status": common.get("disability_status", ""),
-    }
-    return str(values.get(key.value) or "").strip()
-
-
 class AnswerResolver:
     """Map controls to canonical keys; values never enter semantic prompts."""
 
     def __init__(
         self,
-        profile: dict[str, Any],
+        profile: ApplicationExecutionIdentityProfile | Mapping[str, Any],
         *,
+        answers: Mapping[str, Any] | None = None,
         cover_letter: str = "",
         resume_path: str = "",
     ):
-        # Keep the artifact path only in this process-local projection.  It is
-        # never included in the value-free FormIR, cache, prompt, or outcome.
-        self.profile = dict(profile)
-        if resume_path:
-            self.profile["resume_path"] = resume_path
+        self.identity_profile = (
+            profile
+            if isinstance(profile, ApplicationExecutionIdentityProfile)
+            else ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                profile
+            )
+        )
+        self.answers = dict(answers or {})
         self.cover_letter = cover_letter
+        self.resume_path = str(resume_path or "")
 
     def prompt_redactions(self) -> tuple[str, ...]:
         """Return every locally injected value that a page must not echo."""
 
         values: set[str] = set()
         pending: list[Any] = [
-            self.profile.get("personal", {}),
-            self.profile.get("canonical_answers", {}),
-            self.profile.get("common_answers", {}),
-            self.profile.get("verified_question_answers", {}),
-            self.profile.get("resume_path", ""),
+            self.identity_profile.redaction_values(),
+            self.answers,
+            self.resume_path,
             self.cover_letter,
         ]
         while pending:
             value = pending.pop()
-            if isinstance(value, dict):
+            if isinstance(value, Mapping):
                 pending.extend(value.values())
             elif isinstance(value, (list, tuple, set)):
                 pending.extend(value)
@@ -267,40 +241,16 @@ class AnswerResolver:
         normalized_key = normalize_canonical_application_answer_key(
             key, allow_legacy_alias=True
         )
-        canonical = self.profile.get("canonical_answers", {})
-        if normalized_key.value in canonical:
-            value = canonical[normalized_key.value]
-            if isinstance(value, dict):
-                value = value.get("value", "")
-            return str(value or "").strip()
-        return _legacy_value(
-            self.profile, normalized_key, self.cover_letter
+        if normalized_key is CanonicalApplicationAnswerKey.RESUME:
+            return self.resume_path
+        value = resolve_confirmed_value(
+            normalized_key,
+            normalized_key.value,
+            profile=self.identity_profile,
+            answers=self.answers,
+            cover_letter=self.cover_letter,
         )
-
-    def exact_verified_answer(self, question: str) -> str:
-        """Return only an explicitly verified answer for the exact prompt.
-
-        Broad keyword matching is intentionally excluded here.  For example,
-        "Company name" must never inherit the candidate's full name, and a
-        technology-specific experience question must never inherit a generic
-        years-of-experience answer.
-        """
-
-        normalized = " ".join(str(question or "").casefold().split())
-        if not normalized:
-            return ""
-        answers = self.profile.get("verified_question_answers", {})
-        if not isinstance(answers, dict):
-            return ""
-        for stored_question, stored in answers.items():
-            if " ".join(str(stored_question).casefold().split()) != normalized:
-                continue
-            if isinstance(stored, dict):
-                if stored.get("verified") is False:
-                    return ""
-                stored = stored.get("value", "")
-            return str(stored or "").strip()
-        return ""
+        return "" if value is None else str(value).strip()
 
     def resolve(
         self,
@@ -356,17 +306,6 @@ class AnswerResolver:
                 return ResolvedField(control, key, value, "verified_profile", sensitivity)
             return UnresolvedField(control, f"verified value missing for {key}", sensitivity)
 
-        exact_answer = self.exact_verified_answer(
-            control.label or control.aria_label or control.placeholder
-        )
-        if exact_answer:
-            return ResolvedField(
-                control,
-                CanonicalApplicationAnswerKey.UNKNOWN,
-                exact_answer,
-                "verified_answer_bank",
-                Sensitivity.PERSONAL,
-            )
         return UnresolvedField(control, "no unambiguous canonical mapping", Sensitivity.PERSONAL)
 
     def resolve_form(

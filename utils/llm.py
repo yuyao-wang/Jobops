@@ -23,6 +23,7 @@ Configuration in profile.yaml:
         cover_letter: openai_api
 """
 
+import asyncio
 import os
 import subprocess
 import json
@@ -34,6 +35,19 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from core.model_provider_capabilities import (
+    AuxiliaryAccessMode,
+    BackendCredentialUnavailableError,
+    CredentialSourcePolicy,
+    BackendAccessLevel,
+    FilesystemAccessMode,
+    ModelBackendCapabilities,
+    ModelBackendAuthenticationMode,
+    ModelBackendTransport,
+    NativeModelBackendCapabilities,
+    ShellAccessMode,
+    ToolExecutionMode,
+)
 
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _MINIMAL_ENV_KEYS = (
@@ -168,6 +182,48 @@ class ClaudeCLIBackend(LLMBackend):
 class CodexCLIBackend(LLMBackend):
     """Codex CLI backend for trusted prompts only."""
 
+    capabilities = ModelBackendCapabilities(
+        backend_id="codex_cli",
+        supports_text_input=True,
+        supports_image_input=True,
+        supports_strict_json_schema=True,
+        supports_single_semantic_generation=True,
+        safe_for_untrusted_input=False,
+        tool_execution_mode=ToolExecutionMode.HOST_AGENT_TOOLS,
+        filesystem_access_mode=FilesystemAccessMode.READ_ONLY,
+        shell_access_mode=ShellAccessMode.AVAILABLE,
+        browser_access_mode=AuxiliaryAccessMode.NONE,
+        external_function_access_mode=AuxiliaryAccessMode.NONE,
+        credential_source_policy=CredentialSourcePolicy.LOCAL_CLI_AUTH,
+        provider_family="openai",
+        transport=ModelBackendTransport.SUBSCRIPTION_CLI,
+        authentication_mode=(
+            ModelBackendAuthenticationMode.SUBSCRIPTION_SESSION
+        ),
+    )
+    native_capabilities = NativeModelBackendCapabilities(
+        backend_id="codex_cli",
+        provider_family="openai",
+        transport=ModelBackendTransport.SUBSCRIPTION_CLI,
+        authentication_mode=(
+            ModelBackendAuthenticationMode.SUBSCRIPTION_SESSION
+        ),
+        supports_text_input=True,
+        supports_image_input=True,
+        supports_schema_constrained_output=True,
+        supports_provider_native_strict_schema=True,
+        supports_single_semantic_generation=True,
+        supports_ephemeral_workspace=True,
+        supports_non_interactive_execution=True,
+        supports_bounded_output=True,
+        supports_subscription_authentication=True,
+        native_tool_access=BackendAccessLevel.PRESENT,
+        native_filesystem_access=BackendAccessLevel.PRESENT,
+        native_shell_access=BackendAccessLevel.PRESENT,
+        native_browser_access=BackendAccessLevel.NONE,
+        native_external_function_access=BackendAccessLevel.NONE,
+    )
+
     def __init__(self, config: dict = None):
         self.config = config or {}
         self.default_timeout = self.config.get("timeout", 180)
@@ -209,9 +265,7 @@ class CodexCLIBackend(LLMBackend):
                 text=True,
                 timeout=timeout,
                 env=_minimal_cli_env(
-                    "CODEX_API_KEY",
                     "CODEX_HOME",
-                    "OPENAI_API_KEY",
                 ),
                 cwd=workspace,
             )
@@ -224,6 +278,44 @@ class CodexCLIBackend(LLMBackend):
             raise RuntimeError(f"Codex CLI error: {error_msg}")
         return result.stdout.strip()
 
+    async def ask_structured_isolated(self, request):
+        """Execute one structured request through the configured M1b boundary."""
+
+        from core.model_provider_capabilities import (
+            model_execution_isolation_profiles,
+        )
+        from utils.isolated_subscription_cli import (
+            CodexSubscriptionCLIInvocationAdapter,
+            IsolatedSubscriptionCLIRunner,
+            probe_isolated_subscription_cli_runtime,
+        )
+
+        configured_profile = str(
+            self.config.get("isolation_profile", "")
+        ).strip().upper()
+        if configured_profile != "ISOLATED_SUBSCRIPTION_CLI_V1":
+            raise RuntimeError(
+                "codex_cli structured execution requires "
+                "ISOLATED_SUBSCRIPTION_CLI_V1"
+            )
+        adapter = CodexSubscriptionCLIInvocationAdapter(
+            executable=self.executable,
+        )
+        available = probe_isolated_subscription_cli_runtime(adapter)
+        profiles = model_execution_isolation_profiles(
+            isolated_subscription_cli_runner_available=available,
+        )
+        return await IsolatedSubscriptionCLIRunner().execute(
+            request,
+            backend_adapter=adapter,
+            isolation_profile=profiles[configured_profile],
+        )
+
+    async def complete_structured_request(self, request):
+        """M1b provider-neutral structured request entry point."""
+
+        return await self.ask_structured_isolated(request)
+
 
 class OpenAIAPIBackend(LLMBackend):
     """OpenAI Responses API backend using the existing httpx dependency."""
@@ -231,6 +323,45 @@ class OpenAIAPIBackend(LLMBackend):
     # This client deliberately sends a plain Responses request: no tools,
     # files, remote MCP servers, computer use, or local execution context.
     safe_for_untrusted_input = True
+    capabilities = ModelBackendCapabilities(
+        backend_id="openai_api",
+        supports_text_input=True,
+        supports_image_input=False,
+        supports_strict_json_schema=True,
+        supports_single_semantic_generation=True,
+        safe_for_untrusted_input=True,
+        tool_execution_mode=ToolExecutionMode.NONE,
+        filesystem_access_mode=FilesystemAccessMode.NONE,
+        shell_access_mode=ShellAccessMode.NONE,
+        browser_access_mode=AuxiliaryAccessMode.NONE,
+        external_function_access_mode=AuxiliaryAccessMode.NONE,
+        credential_source_policy=(
+            CredentialSourcePolicy.RUNTIME_ENVIRONMENT_ONLY
+        ),
+        provider_family="openai",
+        transport=ModelBackendTransport.DIRECT_API,
+        authentication_mode=ModelBackendAuthenticationMode.API_KEY_ENV,
+    )
+    native_capabilities = NativeModelBackendCapabilities(
+        backend_id="openai_api",
+        provider_family="openai",
+        transport=ModelBackendTransport.DIRECT_API,
+        authentication_mode=ModelBackendAuthenticationMode.API_KEY_ENV,
+        supports_text_input=True,
+        supports_image_input=False,
+        supports_schema_constrained_output=True,
+        supports_provider_native_strict_schema=True,
+        supports_single_semantic_generation=True,
+        supports_ephemeral_workspace=False,
+        supports_non_interactive_execution=True,
+        supports_bounded_output=True,
+        supports_subscription_authentication=False,
+        native_tool_access=BackendAccessLevel.NONE,
+        native_filesystem_access=BackendAccessLevel.NONE,
+        native_shell_access=BackendAccessLevel.NONE,
+        native_browser_access=BackendAccessLevel.NONE,
+        native_external_function_access=BackendAccessLevel.NONE,
+    )
 
     def __init__(self, config: dict = None):
         self.config = config or {}
@@ -257,7 +388,7 @@ class OpenAIAPIBackend(LLMBackend):
 
         if not self.api_key:
             env_name = self.config.get("api_key_env", "OPENAI_API_KEY")
-            raise RuntimeError(
+            raise BackendCredentialUnavailableError(
                 f"OpenAI API key not found. Set {env_name} or configure "
                 "ai.backends.openai_api.api_key_env."
             )
@@ -321,6 +452,7 @@ class OpenAIAPIBackend(LLMBackend):
         schema_name: str,
         schema: dict,
         timeout: int = None,
+        max_output_tokens: int | None = None,
     ) -> dict:
         """Make one tool-free Responses API call with strict JSON Schema output."""
 
@@ -357,6 +489,16 @@ class OpenAIAPIBackend(LLMBackend):
                 "strict": True,
             }
         }
+        if max_output_tokens is not None:
+            if (
+                type(max_output_tokens) is not int
+                or max_output_tokens < 1
+            ):
+                raise ValueError("max_output_tokens must be positive")
+            payload["max_output_tokens"] = min(
+                max_output_tokens,
+                self.max_output_tokens or max_output_tokens,
+            )
         data = self._post_response(payload, timeout=timeout)
         raw = self._extract_response_text(data)
         try:
@@ -370,6 +512,24 @@ class OpenAIAPIBackend(LLMBackend):
                 "OpenAI API structured output must be a JSON object"
             )
         return parsed
+
+    async def complete_structured_request(self, request):
+        """Execute one text-only provider-neutral structured request."""
+
+        if request.images:
+            raise ValueError("OpenAI Responses image transport is unsupported")
+        return await asyncio.to_thread(
+            self.ask_structured,
+            system_prompt=request.system_prompt,
+            input_data=dict(request.input_data),
+            schema_name=request.output_schema_name,
+            schema=dict(request.output_schema),
+            timeout=request.timeout_seconds,
+            max_output_tokens=min(
+                8_192,
+                max(1, request.max_output_bytes // 4),
+            ),
+        )
 
     def _base_payload(self, input_value) -> dict:
         payload = {
@@ -484,6 +644,12 @@ _BACKENDS = {
 
 # Cache instantiated backends
 _backend_cache: dict[str, LLMBackend] = {}
+
+
+def model_backend_registry() -> dict[str, type[LLMBackend]]:
+    """Return the production backend types for capability-aware resolution."""
+
+    return dict(_BACKENDS)
 
 
 def get_backend(

@@ -994,6 +994,182 @@ profile and legacy policy without making P2c1 translate the new priority
 contract. P2c1 verifies that the returned existing `ApplicationBundle`
 preserves the exact prepared materials, answers and JobPosting identity.
 
+P2c1d1a separates the formerly mixed execution-profile mapping at the
+production adapter boundary. `ApplicationExecutionIdentityProfile` is the
+closed, versioned identity/contact contract: first/last/preferred name,
+email, phone, location, address components, and LinkedIn/GitHub/portfolio.
+Production adapters receive this typed value rather than freely traversing
+`ApplicationBundle.profile`. Canonical and job-specific answers travel
+through `CanonicalApplicationAnswers`; Resume and Cover Letter inputs travel
+through `MaterialBundle` and P2c2; job/run/company come from the exact
+execution request; and Workday login/registration behavior comes from an
+injected `WorkdayRuntimeConfig`. Workday review binding uses an explicit v2
+identity contract for this separated projection; existing persisted v1
+reviews are not rewritten or silently treated as v2.
+
+Historical mixed-profile bundles remain serializable and retain their
+original bundle hash. Reading one as a new production identity profile fails
+closed unless an explicitly named legacy compatibility wrapper projects only
+the old `personal` values. The legacy MR.Jobs wrappers remain compatibility
+surfaces, but the production `AdapterRegistry` does not consume
+`common_answers`, `verified_question_answers`, profile document paths,
+Workday configuration, or job/run metadata from them.
+
+P2c1d1b reuses that exact closed field enum as the only writable Candidate
+Identity Fact taxonomy. Each fact is an immutable, subject-scoped record with
+deterministic normalization, verification status, exact source
+ID/version/hash/locator, per-field monotonic version, parent/supersedes
+lineage, invocation binding and a canonical content hash. Proposed and
+legacy-unverified facts remain historical inputs only; only explicitly
+user-confirmed or trusted-connector-verified facts can become a current
+execution head. No Agent confidence or legacy normalized profile value is
+promoted to verified status.
+
+Candidate Identity Facts live in a repository-external Private Home SQLite
+store. One `BEGIN IMMEDIATE` transaction appends the immutable fact, checks
+the caller's expected current fact ID and compare-and-sets the exact current
+head, so correctness does not depend on an in-process lock or file mtime.
+Typed reads verify every fact/source hash, contiguous field versions,
+parent/supersedes bindings and a unique verified lineage head. The
+subject-level index is deterministically sorted, binds only fact identities
+and source references, and does not duplicate normalized PII values.
+`CandidateVault.normalized.personal` and `application_profile()` retain their
+legacy behavior and are neither rewritten nor treated as verified facts.
+
+P2c1d1 projects those exact current facts into an immutable, Plan-scoped
+`VerifiedApplicationExecutionProfile`. The snapshot binds subject, Plan,
+Job, the closed field-registry version, and each field's exact fact
+ID/version/hash, verification status, source kind, value type, and
+normalization policy. Required identity fields (`first_name`, `last_name`,
+and `email`) must all have an eligible current fact; optional fields are
+included only when an eligible current fact exists. Missing required facts
+return `NOT_READY`, while conflict, hash drift, unsupported lineage, and
+cross-subject bindings fail closed without exposing a partial profile.
+
+Verified profile snapshots and invocation receipts live immutably in
+repository-external Private Home storage. Their logical identity excludes
+time and paths, so exact replay is `UNCHANGED`, while a changed current fact
+creates a new snapshot without modifying the old one. A pure projection
+produces the existing closed `{"personal": ...}` ApplicationBundle mapping;
+fact IDs and provenance remain in the snapshot and never become ATS values.
+The legacy `CandidateVault.application_profile()` mapping remains a
+separate compatibility surface and is not accepted as verified input.
+
+C1a adds the raw-information boundary before fact projection. The
+`CandidateInformationSource` registry accepts only explicit FILE, URL or
+USER_STATEMENT commands. FILE registration detects PDF, DOCX, PPTX, PNG,
+JPEG or strict UTF-8 text from bounded actual bytes; it validates basic PDF,
+OOXML and image structure and rejects generic archives, macro/embedded Office
+payloads, active text and unknown binary formats. URL registration performs
+versioned HTTPS-only canonicalization without DNS or network access. User
+statements receive only strict UTF-8, NFC and line-ending normalization and
+are not interpreted as structured facts.
+
+Registry metadata, invocation replay and subject-keyed content-addressed
+payload BLOBs share one Private Home SQLite transaction. A source becomes
+visible only after its payload hash/size and immutable record hash validate;
+failed registration rolls back both rows. Metadata/list reads never load
+payload content, while the explicit payload provider rechecks subject,
+record, size and actual-byte hash and returns bytes/text/URL rather than a
+filesystem path. Source identity binds subject, kind, canonical payload hash
+and contract version but excludes display name and registration time.
+Projection to `CandidateIdentityFactSourceRef` is lossless: FILE maps to
+`DOCUMENT_EXTRACTION`, URL to `URL_EXTRACTION`, and USER_STATEMENT to
+`USER_STATEMENT`. C1a itself creates no proposals, verified facts or current
+fact updates.
+
+C1b consumes only C1a's exact metadata and path-free payload provider. The
+versioned `CandidateSourceProjection` binds subject, source ID/version/hash,
+parser and limits policy, ordered block/asset identities, and an optional
+exact URL capture. Text remains behind an explicit block provider; images and
+captured response bytes remain behind hash-verifying payload providers.
+Metadata and list reads expose counts, locators, typed limitations and hashes
+without returning source text, images, URLs, or filesystem paths.
+
+FILE projection revalidates C1a bytes and deterministically extracts PDF
+page-local lines, DOCX paragraphs/lists/tables/link text, PPTX slide
+text/tables/notes, fixed text chunks, or validated source images. PDF page
+rendering uses the existing fixed-policy local renderer when supplied.
+Image-only pages, approximate slide reading order, unavailable rendering,
+skipped embedded images, and all truncation are explicit
+`COMPLETED_WITH_LIMITS` codes. There is no OCR, semantic field classification,
+Agent call, or fact write.
+
+URL projection is a separate explicit operation. The production HTTPS port
+resolves and rejects every non-public address, pins the validated address for
+the TLS connection, repeats validation for every redirect, sends no ambient
+credentials/cookies, disables response compression, and bounds time,
+redirects and response bytes. It executes no JavaScript or subresource
+request. Each response becomes an immutable capture before deterministic
+HTML/text/PDF/image projection; content changes therefore create new capture
+and projection lineage without changing the C1a URL source.
+
+Projection metadata, blocks, assets, captures and invocation replay share one
+subject-isolated Private Home SQLite transaction. Child IDs and payload hashes
+are verified on public reads, and partial rows cannot become visible.
+Projection blocks and assets carry stable C1a source locators and hashes so a
+future C1c adapter can consume only these public providers rather than user
+paths, arbitrary URLs, or the source registry's storage.
+
+C1c consumes exactly one C1b projection through those public block and asset
+providers. A versioned deterministic selector creates an immutable bounded
+input snapshot from stable structural order; it never scans the source
+registry, user paths, arbitrary URLs, CandidateVault, current facts or review
+decisions. The `CandidateFactProposalAgentPort` receives only selected text,
+managed image bytes, the existing closed identity-field definitions and a
+strict output schema. Its production adapter uses the Model Provider resolver
+with untrusted text/image, provider-native strict-schema, single-generation
+and zero tool/filesystem/shell/browser/external-function requirements. A
+selected subscription CLI therefore remains usable only through the M1b
+isolated runner, and incompatibility never triggers backend fallback.
+
+Ordinary code validates every Agent item against the existing P2c1d1a field
+registry and P2c1d1b normalization policies. Evidence must identify an exact
+selected block or asset with its original C1b hash and locator; text excerpts
+must be literal bounded substrings. Unknown fields, invalid values and
+unbound or rewritten evidence are rejected. Equal normalized field/value
+items are deterministically deduplicated with stable evidence union, while
+different values or different source/projection lineage remain separate
+immutable proposals.
+
+Proposal input snapshots, runs and proposals are stored atomically in a
+subject-isolated Private Home SQLite repository. Proposal identity binds the
+closed field, normalized-value hash, exact source/projection/evidence
+lineage, normalization and Agent policy/schema versions, but excludes time,
+provider request IDs and paths. Run-binding replay performs zero Agent calls;
+deterministic child identities make interrupted receipt persistence
+recoverable without a second semantic generation. Metadata lists expose only
+proposal IDs, field keys, confidence and lineage IDs; full proposed values
+remain behind an explicit subject-scoped get. C1c creates no
+`CandidateIdentityFact`, review decision or current-index update.
+
+C1d projects C1c proposals, exact P2c1d1b current heads and bounded C1b
+evidence into a subject-scoped review queue. Items distinguish new, changed,
+conflicting, duplicate and missing-required identity fields. Text evidence is
+bounded to an escaped excerpt; image evidence remains behind an authenticated
+opaque asset route that revalidates the exact projection asset hash. Queue
+identity binds proposal hashes and current fact IDs, so a changed proposal,
+projection or current head makes an open review stale.
+
+Every explicit user action first creates an immutable Private Home review
+claim. Accept, edited accept, replacement and missing-value actions then call
+only the P2c1d1b public writer with `USER_CONFIRMED`,
+`USER_CONFIRMATION`, a deterministic child invocation and the server-read
+expected current fact ID. Reject and keep-current create immutable decisions
+with zero fact-writer calls. Claim and final receipt are separate immutable
+records: if the fact write succeeds but receipt persistence fails, replay
+uses the same child invocation, receives the existing fact and completes the
+same decision without another fact. Stale CAS never overwrites a newer
+current head.
+
+Dashboard review routes take their subject only from the authenticated
+session. Clients may select a typed action and submit an edited/missing value,
+but cannot supply subject, proposal/source hashes, current fact identity,
+source kind or verification status. The UI exposes no bulk accept, never
+preselects acceptance and uses field-specific controls. C1d does not rerun
+C1b/C1c, call an Agent, parse a source, handle application answers or write
+the current index directly.
+
 The immutable `ApplicationBundleAssemblyRecord` binds Plan/job, Manifest,
 ordered Resume and Cover Letter entries, both prepared-material lineages,
 AnswerSet, taxonomy, ApplicationBundle contract and the canonical bundle
@@ -1169,21 +1345,34 @@ store, retry, checkpoint, queue refresh, Browser/Gate/permit access or second
 idempotency mechanism. Repeated-run safety remains owned by a new P2c8
 snapshot and P2c7's terminal replay contract.
 
-P2c10a is the business-level cycle boundary above the four selective batch
-services. One explicit invocation runs P1d3, P2a1b, P2b6 and P2c9 once each,
-in that order, with one shared subject/timestamp and independent non-negative
-budgets. A zero budget creates a typed skipped stage without calling its
-service. Stage-level and per-item failures never roll back prior immutable
-work and do not stop later stages.
+P2c10b adds the bounded Preparation-to-Execution handoff without giving the
+cycle repository access. `run_selective_bundle_assembly()` consumes one fixed
+public P2b6 result, retains its deterministic Plan order, de-duplicates by
+first occurrence and calls public P2c1 serially only for completed/unchanged
+items carrying valid exact `PreparationAssemblyLineage`. Missing bindings and
+non-prepared items do not consume the P2c1 call budget; one failure does not
+stop later candidates. P2c1 remains the sole owner of AssemblyRecord creation
+and immutable `UNCHANGED` replay.
+
+P2c10a is now the business-level cycle boundary above five selective batch
+services. One explicit invocation runs P1d3, P2a1b, P2b6, selective Bundle
+Assembly and P2c9 once each, in that order, with one shared
+subject/timestamp and independent non-negative budgets. Bundle Assembly
+finishes before P2c9 reads its own current P2c8 snapshot, so newly assembled
+and previously READY records can execute in the same cycle. A zero budget
+creates a typed skipped stage without calling its service; Bundle NOOP or
+failure never suppresses P2c9. Stage-level and per-item failures never roll
+back prior immutable work and do not stop later stages.
 
 Each invocation persists one subject-isolated immutable
-`AutomationCycleRun`. Its logical identity binds an explicit invocation ID,
-budgets, composition binding, all four public service contract versions and
-the cycle version; the audit timestamp is excluded. The same invocation
+`AutomationCycleRun`. Its v2 logical identity binds an explicit invocation ID,
+all five budgets, composition binding, all five public service contract
+versions and the cycle version; the audit timestamp is excluded. The same invocation
 replays before all stage calls, while a later scheduler tick must supply a new
 invocation ID. The cycle contains no discovery, scheduling, queue/repository
 inspection, single-job orchestration, retry, Browser, Gate, permit or submit
-capability.
+capability. Historical four-stage v1 Runs remain exact readable records and
+are never backfilled with a synthetic Bundle stage.
 
 P2b3a establishes the field-language boundary required before Application
 Answers can be prepared. `CanonicalApplicationAnswerKey` and its immutable V1
@@ -1233,6 +1422,15 @@ required-material policy. The input binding is explicit because completed
 zero-call replay and detection of changed upstream bindings cannot both be
 derived by reopening Slice repositories. V1 formally requires both Resume and
 Cover Letter; the orchestrator never guesses from priority or job text.
+
+P2b4f makes that public orchestration boundary asynchronous without changing
+its business identity or persisted Run schema. Each canonical stage callable
+is invoked exactly once in the existing order; a synchronous typed result is
+consumed directly and an awaitable result is awaited before the existing
+validator and lineage logic run. Stages and Plans remain strictly serial.
+Cancellation propagates, while ordinary stage exceptions retain the existing
+typed failure semantics. P2b6 directly awaits the single-Plan callable, so no
+thread, executor, nested-loop, or synchronous event-loop bridge exists.
 
 P2b4a adds a v2 stage-result schema that separates typed stage outcome from a
 versioned, stage-specific `PreparationStopReasonEnvelope`. A closed registry
@@ -1410,13 +1608,25 @@ ApplicationPlan repository supplies P0-to-P3 domain ordering. A positive
 remain typed results without consuming an execution slot.
 
 Calls use one ordinary serial loop and forward the identical subject and
-timezone-aware `now`. A deferred, failed or exception-producing Plan is
+timezone-aware `now`. P2b6 directly awaits each P2b4 call before selecting the
+next Plan. A deferred, failed or exception-producing Plan is
 recorded locally and the next Plan still runs; no retry, rollback, queue
 refresh, batch record or checkpoint is created. Batch replay safety comes only
 from the current-attention projection and P2b4's immutable idempotency. The
 summary distinguishes `NOOP`, fully successful completion, partial failure
 and fatal selection/read failure, and carries no Gate, ATS or submission
 claim.
+
+P2b6a makes the completed Preparation-to-Assembly boundary explicit without
+adding a repository read. P2b4 derives one immutable
+`PreparationAssemblyLineage` from the finalized current-schema Run, binding
+subject, Plan, Run ID/content hash, exact final Manifest ID and exact final
+AnswerSet ID. Both first completion and `UNCHANGED` replay return that same
+lineage. P2b6 copies and revalidates it against the public P2b4 Run; missing,
+partial or cross-boundary lineage turns only that item into a typed failure.
+Deferred, failed, missing and Human-Attention items never carry assembly
+lineage. Historical Runs remain readable but are not reconstructed into this
+new handoff.
 
 Material Generator 只能看到为本次任务选择且允许使用的 evidence。没有 evidence binding 的 claim 必须失败。Gate A binds the complete preflight bundle—job, plan, materials, answers, validation, and policy—not only document bytes. Preparation creates the request and records the decision; policy selects the Human/Codex actor. Any bound change invalidates approval.
 
@@ -1768,3 +1978,47 @@ same-family immutable version through the public provider, then delegates
 invocation. It writes neither the plan override nor P2b4 directly. Replay is
 zero-registration/zero-delegation; delegated failure retains the registered
 version and never starts an automatic registration or replacement loop.
+# Model provider capability boundary
+
+Model backends publish immutable `model-backend-capabilities-v1`
+declarations. Preparation model components publish
+`model-component-requirements-v1` requirements and resolve their explicitly
+configured backend (or the configured default) without fallback. The Codex CLI
+remains trusted-input-only because its host Agent retains read-only filesystem
+and shell/tool access. The OpenAI Responses transport is tool-free and enforces
+strict JSON Schema for text input; its current wrapper does not yet implement
+image input, so Resume Visual QA fails capability preflight closed.
+
+M1a2 extends this boundary without replacing it. Backends additionally expose
+provider-neutral transport and authentication (`DIRECT_API`/`API_KEY_ENV`,
+`SUBSCRIPTION_CLI`/`SUBSCRIPTION_SESSION`, and future local/custom modes).
+Native capabilities are combined with a versioned execution-isolation profile
+to derive effective capabilities.
+
+M1b implements `ISOLATED_SUBSCRIPTION_CLI_V1` on supported macOS hosts with
+Seatbelt. A provider-neutral runner creates a fresh workspace, projects only
+the subscription session, passes bounded text over stdin and validated
+PNG/JPEG files in stable order, enforces one process tree and strict schema
+output, and deletes the workspace. The Codex adapter disables its Agent tools,
+user configuration, MCP/browser/search integrations, and ambient environment;
+Seatbelt separately denies host filesystem reads and child process execution.
+Runtime availability becomes true only after a no-generation host, login,
+schema, image, and tool-contract probe. Raw Codex remains trusted-only, and
+unsupported hosts fail with `ISOLATION_UNAVAILABLE` without API fallback.
+
+P2a10 binds that provider boundary to the nine existing Preparation Agent
+ports. One production factory resolves every mandatory component through the
+M1a registry before returning an immutable adapter bundle. Each thin adapter
+serializes only its typed stage context, uses the stage's exact static policy
+as provider-level developer instructions, applies an independent prompt and
+strict output-schema version, and parses provider JSON directly into the
+existing domain output type. Resume Visual QA alone projects validated page
+bytes as ordered managed images; other components remain text-only.
+
+The adapters perform no repository, filesystem, Browser, persistence, evidence
+or business validation work. Timeout and bounded provider failures map to the
+existing stage Agent failure boundary, while each stage's deterministic
+validator continues to reject unsafe selections, claims, LaTeX, visual
+findings, or layout changes. Factory resolution has no fallback and returns no
+partial bundle when a backend, credential, modality, schema, or isolation
+requirement is unavailable.

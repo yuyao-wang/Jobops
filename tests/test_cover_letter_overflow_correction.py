@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 
 from core.application_preparation_orchestrator import (
@@ -68,10 +67,10 @@ def _completed():
     )
 
 
-def test_current_preview_records_directive_publication_reformats_once(
+async def test_current_preview_records_directive_publication_reformats_once(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, source, compiler = _overflow_target(
+    home, item, target, target_provider, source, compiler = await _overflow_target(
         tmp_path / "resolution"
     )
     preview_provider = _provider(
@@ -91,7 +90,7 @@ def test_current_preview_records_directive_publication_reformats_once(
         queue_calls += 1
         return queue
 
-    def prepare(command):
+    async def prepare(command):
         preparation_calls.append(command)
         return _completed()
 
@@ -131,22 +130,18 @@ def test_current_preview_records_directive_publication_reformats_once(
             "app": app,
         }
     )
-    payload = asyncio.run(
-        correct_cover_letter_overflow_ui(
-            item.item_id,
-            {"action": "REFORMAT_AND_RETRY"},
-            request,
-            context,
-        )
+    payload = await correct_cover_letter_overflow_ui(
+        item.item_id,
+        {"action": "REFORMAT_AND_RETRY"},
+        request,
+        context,
     )
-    replay = asyncio.run(
-        correction_callable(
-            CoverLetterOverflowCorrectionCommand(
-                item.subject_id,
-                item.item_id,
-                CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
-                NOW,
-            )
+    replay = await correction_callable(
+        CoverLetterOverflowCorrectionCommand(
+            item.subject_id,
+            item.item_id,
+            CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
+            NOW,
         )
     )
     assert payload["status"] == "CORRECTED_AND_PREPARATION_COMPLETED"
@@ -252,10 +247,10 @@ def test_current_preview_records_directive_publication_reformats_once(
     )
 
 
-def test_missing_stale_unsupported_and_invalid_actions_do_not_write(
+async def test_missing_stale_unsupported_and_invalid_actions_do_not_write(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, source, compiler = _overflow_target(
+    home, item, target, target_provider, source, compiler = await _overflow_target(
         tmp_path / "missing"
     )
     preview_provider = _provider(
@@ -282,21 +277,17 @@ def test_missing_stale_unsupported_and_invalid_actions_do_not_write(
             ),
         )
 
-    missing = asyncio.run(
-        invoke(
-            CoverLetterOverflowCorrectionCommand(
-                item.subject_id,
-                item.item_id,
-                CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
-                NOW,
-            )
+    missing = await invoke(
+        CoverLetterOverflowCorrectionCommand(
+            item.subject_id,
+            item.item_id,
+            CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
+            NOW,
         )
     )
-    invalid = asyncio.run(
-        invoke(
-            CoverLetterOverflowCorrectionCommand(
-                item.subject_id, item.item_id, "RAW_LATEX_PATCH", NOW
-            )
+    invalid = await invoke(
+        CoverLetterOverflowCorrectionCommand(
+            item.subject_id, item.item_id, "RAW_LATEX_PATCH", NOW
         )
     )
     assert missing.status is (
@@ -310,29 +301,27 @@ def test_missing_stale_unsupported_and_invalid_actions_do_not_write(
         _resume_target,
         resume_target_provider,
         _artifact,
-    ) = _visual_target(tmp_path / "unsupported")
+    ) = await _visual_target(tmp_path / "unsupported")
     resume_queue = _queue(
         resume_home, _MissingFindingProvider(), resume_target_provider
     )
-    unsupported = asyncio.run(
-        resolve_cover_letter_overflow_correction(
-            CoverLetterOverflowCorrectionCommand(
-                resume_item.subject_id,
-                resume_item.item_id,
-                CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
-                NOW,
-            ),
-            queue_reader=lambda **_kwargs: resume_queue,
-            target_provider=resume_target_provider,
-            preview_provider=preview_provider,
-            directive_repository=directives,
-            receipt_repository=(
-                CoverLetterOverflowCorrectionReceiptRepository(home)
-            ),
-            preparation_callable=lambda command: preparation_calls.append(
-                command
-            ),
-        )
+    unsupported = await resolve_cover_letter_overflow_correction(
+        CoverLetterOverflowCorrectionCommand(
+            resume_item.subject_id,
+            resume_item.item_id,
+            CoverLetterOverflowCorrectionAction.REFORMAT_AND_RETRY,
+            NOW,
+        ),
+        queue_reader=lambda **_kwargs: resume_queue,
+        target_provider=resume_target_provider,
+        preview_provider=preview_provider,
+        directive_repository=directives,
+        receipt_repository=(
+            CoverLetterOverflowCorrectionReceiptRepository(home)
+        ),
+        preparation_callable=lambda command: preparation_calls.append(
+            command
+        ),
     )
     assert unsupported.status is (
         CoverLetterOverflowCorrectionStatus.UNSUPPORTED_TARGET
@@ -344,7 +333,7 @@ def test_missing_stale_unsupported_and_invalid_actions_do_not_write(
     assert preparation_calls == []
 
 
-def test_defer_and_failure_keep_directive_without_automatic_loop(
+async def test_defer_and_failure_keep_directive_without_automatic_loop(
     tmp_path,
 ) -> None:
     statuses = (
@@ -361,7 +350,7 @@ def test_defer_and_failure_keep_directive_without_automatic_loop(
     )
     for index, (preparation_status, expected) in enumerate(statuses):
         home, item, target, target_provider, source, compiler = (
-            _overflow_target(tmp_path / f"case-{index}")
+            await _overflow_target(tmp_path / f"case-{index}")
         )
         preview_provider = _provider(
             home, item, target_provider, source, compiler, _Renderer()
@@ -376,7 +365,7 @@ def test_defer_and_failure_keep_directive_without_automatic_loop(
         )
         calls = []
 
-        def prepare(command):
+        async def prepare(command):
             calls.append(command)
             return RunApplicationPreparationResult(
                 preparation_status,
@@ -404,8 +393,8 @@ def test_defer_and_failure_keep_directive_without_automatic_loop(
                 preparation_callable=prepare,
             )
 
-        result = asyncio.run(invoke())
-        replay = asyncio.run(invoke())
+        result = await invoke()
+        replay = await invoke()
         assert result.status is expected
         assert replay.status is CoverLetterOverflowCorrectionStatus.UNCHANGED
         assert len(calls) == 1

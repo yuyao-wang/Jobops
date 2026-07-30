@@ -18,6 +18,7 @@ from .application_plan import (
 )
 from .application_preparation_orchestrator import (
     ApplicationPreparationStatus,
+    PreparationAssemblyLineage,
     RunApplicationPreparationCommand,
     RunApplicationPreparationResult,
 )
@@ -129,6 +130,7 @@ class SelectiveBatchPlanResult:
     attention_item_ids: tuple[str, ...]
     reason_code: BatchPlanReasonCode | None
     source_reason_code: str | None
+    assembly_lineage: PreparationAssemblyLineage | None = None
 
     def __post_init__(self) -> None:
         _clean_text(
@@ -171,6 +173,13 @@ class SelectiveBatchPlanResult:
                 or self.preparation_run_id is None
                 or reason is not None
                 or self.attention_item_ids
+                or not isinstance(
+                    self.assembly_lineage, PreparationAssemblyLineage
+                )
+                or self.assembly_lineage.application_plan_id
+                != self.application_plan_id
+                or self.assembly_lineage.preparation_run_id
+                != self.preparation_run_id
             ):
                 raise ValueError("successful per-plan result is invalid")
         elif execution is BatchPlanExecutionStatus.SKIPPED_HUMAN_ATTENTION:
@@ -180,6 +189,7 @@ class SelectiveBatchPlanResult:
                 or not self.attention_item_ids
                 or reason is not BatchPlanReasonCode.CURRENT_HUMAN_ATTENTION
                 or self.preparation_run_id is not None
+                or self.assembly_lineage is not None
             ):
                 raise ValueError("attention-skipped result is invalid")
         elif execution is BatchPlanExecutionStatus.NOT_FOUND:
@@ -190,12 +200,14 @@ class SelectiveBatchPlanResult:
                 or self.attention_item_ids
                 or reason
                 is not BatchPlanReasonCode.APPLICATION_PLAN_NOT_FOUND
+                or self.assembly_lineage is not None
             ):
                 raise ValueError("not-found per-plan result is invalid")
         elif (
             selection is not BatchPlanSelectionStatus.SELECTED
             or reason is None
             or self.attention_item_ids
+            or self.assembly_lineage is not None
         ):
             raise ValueError("stopped per-plan result is invalid")
 
@@ -258,6 +270,12 @@ class SelectiveBatchPreparationResult:
             {item.application_plan_id for item in self.items}
         ) != len(self.items):
             raise ValueError("batch items must contain unique plans")
+        if any(
+            item.assembly_lineage is not None
+            and item.assembly_lineage.subject_id != self.subject_id
+            for item in self.items
+        ):
+            raise ValueError("batch item assembly lineage is cross-subject")
         if not isinstance(self.summary, SelectiveBatchPreparationSummary):
             raise TypeError("batch summary must be typed")
         reason = (
@@ -286,12 +304,9 @@ class HumanAttentionQueueReader(Protocol):
 
 
 class SingleJobPreparationCallable(Protocol):
-    def __call__(
+    async def __call__(
         self, command: RunApplicationPreparationCommand
-    ) -> (
-        RunApplicationPreparationResult
-        | Awaitable[RunApplicationPreparationResult]
-    ):
+    ) -> RunApplicationPreparationResult:
         """Run P2b4 for one existing plan."""
 
 
@@ -372,6 +387,7 @@ def _from_preparation(
         return _invalid_preparation_result(plan)
     try:
         run_id = value.run.run_id if value.run is not None else None
+        lineage = value.assembly_lineage
         result_reason = (
             value.reason_code.value
             if value.reason_code is not None
@@ -383,7 +399,24 @@ def _from_preparation(
         ApplicationPreparationStatus.COMPLETED,
         ApplicationPreparationStatus.UNCHANGED,
     }:
-        if run_id is None:
+        if (
+            run_id is None
+            or not isinstance(lineage, PreparationAssemblyLineage)
+            or lineage.subject_id != plan.subject_id
+            or lineage.application_plan_id != plan.plan_id
+            or lineage.preparation_run_id != run_id
+            or value.run is None
+            or value.run.subject_id != lineage.subject_id
+            or value.run.application_plan_id != lineage.application_plan_id
+            or value.run.run_content_hash
+            != lineage.preparation_completion_hash
+            or value.run.contract_version
+            != lineage.preparation_run_contract_version
+            or value.run.final_plan_material_manifest_id
+            != lineage.plan_material_manifest_id
+            or value.run.final_prepared_application_answer_set_id
+            != lineage.prepared_application_answer_set_id
+        ):
             return _invalid_preparation_result(plan)
         return SelectiveBatchPlanResult(
             application_plan_id=plan.plan_id,
@@ -394,6 +427,7 @@ def _from_preparation(
             attention_item_ids=(),
             reason_code=None,
             source_reason_code=None,
+            assembly_lineage=lineage,
         )
     return SelectiveBatchPlanResult(
         application_plan_id=plan.plan_id,
@@ -632,8 +666,8 @@ async def run_selective_batch_preparation(
             now=command.now,
         )
         try:
-            public_result = await _resolve(
-                single_job_preparation(preparation_command)
+            public_result = await single_job_preparation(
+                preparation_command
             )
         except (OSError, RuntimeError, TypeError, ValueError):
             results.append(_preparation_exception(plan))

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -154,7 +153,7 @@ class _SourceProvider:
         return CoverLetterOverflowSourceResult(self.status, self.source)
 
 
-def _overflow_target(tmp_path):
+async def _overflow_target(tmp_path):
     home = PrivateHome(tmp_path / "private")
     plan, plans = _plan(home, job_id="job-cover-letter-overflow-preview")
     runs = PrivateHomeApplicationPreparationRunRepository(home)
@@ -198,7 +197,7 @@ def _overflow_target(tmp_path):
         source_artifact_version="1",
         source_artifact_content_hash=SOURCE_HASH,
     )
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -267,10 +266,10 @@ def _provider(
     )
 
 
-def test_exact_overflow_evaluation_creates_and_reuses_immutable_preview(
+async def test_exact_overflow_evaluation_creates_and_reuses_immutable_preview(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, source, compiler = _overflow_target(
+    home, item, target, target_provider, source, compiler = await _overflow_target(
         tmp_path
     )
     renderer = _Renderer()
@@ -314,10 +313,10 @@ def test_exact_overflow_evaluation_creates_and_reuses_immutable_preview(
     )
 
 
-def test_stale_cross_subject_source_renderer_and_unsafe_media_fail_closed(
+async def test_stale_cross_subject_source_renderer_and_unsafe_media_fail_closed(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, source, compiler = _overflow_target(
+    home, item, target, target_provider, source, compiler = await _overflow_target(
         tmp_path
     )
     assert (
@@ -409,10 +408,10 @@ def test_stale_cross_subject_source_renderer_and_unsafe_media_fail_closed(
     )
 
 
-def test_authenticated_route_returns_only_opaque_png_preview(
+async def test_authenticated_route_returns_only_opaque_png_preview(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, source, compiler = _overflow_target(
+    home, item, target, target_provider, source, compiler = await _overflow_target(
         tmp_path
     )
     provider = _provider(
@@ -439,10 +438,8 @@ def test_authenticated_route_returns_only_opaque_png_preview(
             "app": app,
         }
     )
-    payload = asyncio.run(
-        cover_letter_overflow_preview_ui(
-            target.target_id, request, context
-        )
+    payload = await cover_letter_overflow_preview_ui(
+        target.target_id, request, context
     )
     assert payload["status"] == "AVAILABLE"
     assert set(payload["preview"]) == {
@@ -452,10 +449,8 @@ def test_authenticated_route_returns_only_opaque_png_preview(
     }
     opaque = payload["preview"]["preview_reference"]
     assert "/" not in opaque
-    response = asyncio.run(
-        cover_letter_overflow_preview_page_ui(
-            opaque, 1, request, context
-        )
+    response = await cover_letter_overflow_preview_page_ui(
+        opaque, 1, request, context
     )
     assert response.body == PNG + b"\x01"
     assert response.media_type == "image/png"

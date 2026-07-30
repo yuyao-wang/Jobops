@@ -689,7 +689,9 @@ class CoverLetterOverflowCorrectionResult:
 
 
 QueueReader = Callable[..., Any | Awaitable[Any]]
-PreparationCallable = Callable[..., Any | Awaitable[Any]]
+PreparationCallable = Callable[
+    ..., Awaitable[RunApplicationPreparationResult]
+]
 
 
 async def resolve_cover_letter_overflow_correction(
@@ -854,13 +856,11 @@ async def resolve_cover_letter_overflow_correction(
                 "This Cover Letter correction is unchanged.",
             )
         try:
-            preparation = await _resolve(
-                preparation_callable(
-                    RunApplicationPreparationCommand(
-                        subject_id=subject,
-                        application_plan_id=item.application_plan_id,
-                        now=now,
-                    )
+            preparation = await preparation_callable(
+                RunApplicationPreparationCommand(
+                    subject_id=subject,
+                    application_plan_id=item.application_plan_id,
+                    now=now,
                 )
             )
             if not isinstance(preparation, RunApplicationPreparationResult):

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
+
+import pytest
 
 from core.input_replacement_resolution import (
     InputReplacementResolutionResult,
@@ -53,7 +54,7 @@ def _delegated(status):
     )
 
 
-def _run(
+async def _run(
     *,
     queue,
     item,
@@ -66,34 +67,33 @@ def _run(
     receipts,
     subject=SUBJECT,
 ):
-    return asyncio.run(
-        register_and_replace_base_latex_version(
-            NewBaseLatexVersionReplacementCommand(
-                subject_id=subject,
-                attention_item_id=item.item_id,
-                invocation_id=invocation,
-                uploaded_content=content,
-                display_label="Uploaded Base Template",
-                version_note="Synthetic strict single-file replacement.",
-                now=NOW,
-            ),
-            queue_reader=lambda **_kwargs: queue,
-            target_provider=provider,
-            registration_callable=registration,
-            latex_version_provider=versions,
-            replacement_callable=replacement,
-            receipt_repository=receipts,
-        )
+    return await register_and_replace_base_latex_version(
+        NewBaseLatexVersionReplacementCommand(
+            subject_id=subject,
+            attention_item_id=item.item_id,
+            invocation_id=invocation,
+            uploaded_content=content,
+            display_label="Uploaded Base Template",
+            version_note="Synthetic strict single-file replacement.",
+            now=NOW,
+        ),
+        queue_reader=lambda **_kwargs: queue,
+        target_provider=provider,
+        registration_callable=registration,
+        latex_version_provider=versions,
+        replacement_callable=replacement,
+        receipt_repository=receipts,
     )
 
 
-def test_valid_source_registers_same_family_then_delegates_once(
+@pytest.mark.asyncio
+async def test_valid_source_registers_same_family_then_delegates_once(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "success")
     home.ensure()
     _plan, queue, item, provider, _candidates, versions, old, _replacement = (
-        _latex_case(home)
+        await _latex_case(home)
     )
     registration_calls = []
     delegated_calls = []
@@ -104,7 +104,7 @@ def test_valid_source_registers_same_family_then_delegates_once(
             command, home=home, repository=versions
         )
 
-    result = _run(
+    result = await _run(
         queue=queue,
         item=item,
         provider=provider,
@@ -147,13 +147,14 @@ def test_valid_source_registers_same_family_then_delegates_once(
     )
 
 
-def test_unsafe_invalid_or_wrong_target_never_delegates(
+@pytest.mark.asyncio
+async def test_unsafe_invalid_or_wrong_target_never_delegates(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "rejected")
     home.ensure()
     _plan, queue, item, provider, _candidates, versions, *_ = (
-        _latex_case(home)
+        await _latex_case(home)
     )
     receipt_repository = NewBaseLatexVersionReplacementReceiptRepository(
         home
@@ -193,7 +194,7 @@ def test_unsafe_invalid_or_wrong_target_never_delegates(
         ),
     )
     for content, invocation, expected in cases:
-        result = _run(
+        result = await _run(
             queue=queue,
             item=item,
             provider=provider,
@@ -216,8 +217,8 @@ def test_unsafe_invalid_or_wrong_target_never_delegates(
         _resume_candidates,
         resume_versions,
         *_,
-    ) = _resume_case(other_home)
-    unsupported = _run(
+    ) = await _resume_case(other_home)
+    unsupported = await _run(
         queue=resume_queue,
         item=resume_item,
         provider=resume_provider,
@@ -228,7 +229,7 @@ def test_unsafe_invalid_or_wrong_target_never_delegates(
         replacement=lambda command: delegated_calls.append(command),
         receipts=NewBaseLatexVersionReplacementReceiptRepository(other_home),
     )
-    cross_subject = _run(
+    cross_subject = await _run(
         queue=queue,
         item=item,
         provider=provider,
@@ -267,13 +268,14 @@ def test_unsafe_invalid_or_wrong_target_never_delegates(
     ).read_text(encoding="utf-8")
 
 
-def test_replay_reuses_version_and_partial_failure_preserves_registration(
+@pytest.mark.asyncio
+async def test_replay_reuses_version_and_partial_failure_preserves_registration(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "replay")
     home.ensure()
     _plan, queue, item, provider, _candidates, versions, *_ = (
-        _latex_case(home)
+        await _latex_case(home)
     )
     receipts = NewBaseLatexVersionReplacementReceiptRepository(home)
     registration_calls = []
@@ -289,7 +291,7 @@ def test_replay_reuses_version_and_partial_failure_preserves_registration(
         delegated_calls.append(command)
         return _delegated(InputReplacementResolutionStatus.TARGET_STALE)
 
-    first = _run(
+    first = await _run(
         queue=queue,
         item=item,
         provider=provider,
@@ -300,7 +302,7 @@ def test_replay_reuses_version_and_partial_failure_preserves_registration(
         replacement=replacement,
         receipts=receipts,
     )
-    replay = _run(
+    replay = await _run(
         queue=queue,
         item=item,
         provider=provider,
@@ -311,7 +313,7 @@ def test_replay_reuses_version_and_partial_failure_preserves_registration(
         replacement=replacement,
         receipts=receipts,
     )
-    reused = _run(
+    reused = await _run(
         queue=queue,
         item=item,
         provider=provider,

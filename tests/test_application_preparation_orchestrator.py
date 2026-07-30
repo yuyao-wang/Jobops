@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import hashlib
 import json
 from dataclasses import FrozenInstanceError
@@ -234,7 +235,7 @@ def _recipe(
     )
 
 
-def _run(
+async def _run(
     home: PrivateHome,
     recorder: _Recorder,
     *,
@@ -243,7 +244,7 @@ def _run(
 ):
     plan, plan_repository = _plan(home)
     run_repository = PrivateHomeApplicationPreparationRunRepository(home)
-    result = run_application_preparation(
+    result = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,
@@ -256,9 +257,9 @@ def _run(
     return result, plan, plan_repository, run_repository
 
 
-def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
+async def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
     recorder = _Recorder()
-    result, plan, _plan_repository, _run_repository = _run(
+    result, plan, _plan_repository, _run_repository = await _run(
         PrivateHome(tmp_path / "private"), recorder
     )
 
@@ -292,6 +293,22 @@ def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
         "resume-cover-manifest-1"
     )
     assert result.run.final_prepared_application_answer_set_id == "answers-1"
+    assert result.assembly_lineage is not None
+    assert result.assembly_lineage.subject_id == SUBJECT
+    assert result.assembly_lineage.application_plan_id == plan.plan_id
+    assert result.assembly_lineage.preparation_run_id == result.run.run_id
+    assert (
+        result.assembly_lineage.plan_material_manifest_id
+        == "resume-cover-manifest-1"
+    )
+    assert (
+        result.assembly_lineage.prepared_application_answer_set_id
+        == "answers-1"
+    )
+    assert (
+        result.assembly_lineage.preparation_completion_hash
+        == result.run.run_content_hash
+    )
     assert result.run.started_at == result.run.completed_at == NOW
     assert result.run.stage_results[9].execution_status is (
         PreparationStageExecutionStatus.SKIPPED
@@ -303,7 +320,77 @@ def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
     )
 
 
-def test_full_pipeline_accepts_only_typed_new_stage_results(
+async def test_mixed_sync_and_async_stages_invoke_once_in_order(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder()
+    async_active = 0
+    max_async_active = 0
+
+    async def invoke_async(request):
+        nonlocal async_active, max_async_active
+        async_active += 1
+        max_async_active = max(max_async_active, async_active)
+        try:
+            await asyncio.sleep(0)
+            return recorder.invoke(request)
+        finally:
+            async_active -= 1
+
+    async_stages = {
+        stage
+        for index, stage in enumerate(APPLICATION_PREPARATION_STAGE_ORDER)
+        if index % 2
+    }
+    recipe = _recipe(
+        recorder,
+        overrides={stage: invoke_async for stage in async_stages},
+    )
+
+    result, *_ = await _run(
+        PrivateHome(tmp_path / "private"),
+        recorder,
+        recipe=recipe,
+    )
+
+    expected = [
+        stage
+        for stage in APPLICATION_PREPARATION_STAGE_ORDER
+        if stage is not ApplicationPreparationStage.RESUME_LAYOUT_REVISION
+    ]
+    assert result.status is ApplicationPreparationStatus.COMPLETED
+    assert [request.stage for request in recorder.requests] == expected
+    assert len(recorder.requests) == len(set(expected))
+    assert max_async_active == 1
+    assert recorder.max_active == 1
+
+
+async def test_async_stage_cancellation_propagates_without_later_calls(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder()
+    cancelled_stage = ApplicationPreparationStage.RESUME_TAILORING
+
+    async def cancel(_request):
+        raise asyncio.CancelledError
+
+    recipe = _recipe(recorder, overrides={cancelled_stage: cancel})
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run(
+            PrivateHome(tmp_path / "private"),
+            recorder,
+            recipe=recipe,
+        )
+
+    assert [request.stage for request in recorder.requests] == [
+        ApplicationPreparationStage.BASE_RESUME_SELECTION,
+        ApplicationPreparationStage.SOURCE_RESUME_PROJECTION,
+        ApplicationPreparationStage.RESUME_EVIDENCE,
+    ]
+
+
+async def test_full_pipeline_accepts_only_typed_new_stage_results(
     tmp_path: Path,
 ) -> None:
     class _TypedRecorder(_Recorder):
@@ -324,7 +411,7 @@ def test_full_pipeline_accepts_only_typed_new_stage_results(
             )
 
     recorder = _TypedRecorder()
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / "private"), recorder)
 
     assert result.status is ApplicationPreparationStatus.COMPLETED
     assert result.run is not None
@@ -340,7 +427,7 @@ def test_full_pipeline_accepts_only_typed_new_stage_results(
     }
 
 
-def test_created_and_unchanged_stage_results_both_continue(
+async def test_created_and_unchanged_stage_results_both_continue(
     tmp_path: Path,
 ) -> None:
     statuses = {
@@ -352,7 +439,7 @@ def test_created_and_unchanged_stage_results_both_continue(
         for index, stage in enumerate(APPLICATION_PREPARATION_STAGE_ORDER)
     }
     recorder = _Recorder(statuses=statuses)
-    result, _plan_value, _plans, _runs = _run(
+    result, _plan_value, _plans, _runs = await _run(
         PrivateHome(tmp_path / "private"), recorder
     )
 
@@ -369,11 +456,11 @@ def test_created_and_unchanged_stage_results_both_continue(
     }
 
 
-def test_visual_pass_skips_layout_revision(tmp_path: Path) -> None:
+async def test_visual_pass_skips_layout_revision(tmp_path: Path) -> None:
     recorder = _Recorder(
         visual_directive=PublicStageDirective.PASSED
     )
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / "private"), recorder)
 
     assert result.status is ApplicationPreparationStatus.COMPLETED
     assert not any(
@@ -383,13 +470,13 @@ def test_visual_pass_skips_layout_revision(tmp_path: Path) -> None:
     )
 
 
-def test_revision_required_uses_final_lineage_for_publication(
+async def test_revision_required_uses_final_lineage_for_publication(
     tmp_path: Path,
 ) -> None:
     recorder = _Recorder(
         visual_directive=PublicStageDirective.REVISION_REQUIRED
     )
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / "private"), recorder)
 
     assert result.status is ApplicationPreparationStatus.COMPLETED
     assert any(
@@ -423,13 +510,13 @@ def test_revision_required_uses_final_lineage_for_publication(
         ApplicationPreparationStage.RESUME_VISUAL_QA,
     ),
 )
-def test_resume_defer_stops_before_cover_and_answers(
+async def test_resume_defer_stops_before_cover_and_answers(
     tmp_path: Path, stage: ApplicationPreparationStage
 ) -> None:
     recorder = _Recorder(
         statuses={stage: PublicStageStatus.DEFERRED}
     )
-    result, *_ = _run(PrivateHome(tmp_path / stage.value), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / stage.value), recorder)
 
     assert result.status is ApplicationPreparationStatus.DEFERRED
     assert result.run is not None
@@ -445,14 +532,14 @@ def test_resume_defer_stops_before_cover_and_answers(
     )
 
 
-def test_cover_letter_defer_preserves_completed_resume_role(
+async def test_cover_letter_defer_preserves_completed_resume_role(
     tmp_path: Path,
 ) -> None:
     stage = ApplicationPreparationStage.COVER_LETTER_DRAFT
     recorder = _Recorder(
         statuses={stage: PublicStageStatus.DEFERRED}
     )
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / "private"), recorder)
 
     assert result.status is ApplicationPreparationStatus.DEFERRED
     assert result.run is not None
@@ -463,23 +550,32 @@ def test_cover_letter_defer_preserves_completed_resume_role(
     assert recorder.requests[-1].stage is stage
 
 
-def test_blocking_answers_mark_human_attention_but_complete(
+async def test_blocking_answers_mark_human_attention_but_complete(
     tmp_path: Path,
 ) -> None:
     recorder = _Recorder(human_attention=True)
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+    result, *_ = await _run(PrivateHome(tmp_path / "private"), recorder)
 
     assert result.status is ApplicationPreparationStatus.COMPLETED
     assert result.run is not None
     assert result.run.human_attention_required is True
 
 
-def test_public_failure_stops_without_rollback(tmp_path: Path) -> None:
+async def test_public_failure_stops_without_rollback(tmp_path: Path) -> None:
     stage = ApplicationPreparationStage.COVER_LETTER_FACT_QA
     recorder = _Recorder(
         statuses={stage: PublicStageStatus.FAILED}
     )
-    result, *_ = _run(PrivateHome(tmp_path / "private"), recorder)
+
+    async def fail(request):
+        await asyncio.sleep(0)
+        return recorder.invoke(request)
+
+    result, *_ = await _run(
+        PrivateHome(tmp_path / "private"),
+        recorder,
+        recipe=_recipe(recorder, overrides={stage: fail}),
+    )
 
     assert result.status is ApplicationPreparationStatus.FAILED
     assert result.run is not None
@@ -490,12 +586,13 @@ def test_public_failure_stops_without_rollback(tmp_path: Path) -> None:
     assert recorder.requests[-1].stage is stage
 
 
-def test_public_exception_becomes_persisted_failed_run(
+async def test_public_exception_becomes_persisted_failed_run(
     tmp_path: Path,
 ) -> None:
     recorder = _Recorder()
 
-    def explode(_request):
+    async def explode(_request):
+        await asyncio.sleep(0)
         raise RuntimeError("synthetic")
 
     recipe = _recipe(
@@ -504,7 +601,7 @@ def test_public_exception_becomes_persisted_failed_run(
             ApplicationPreparationStage.RESUME_TAILORING: explode
         },
     )
-    result, _plan_value, _plans, repository = _run(
+    result, _plan_value, _plans, repository = await _run(
         PrivateHome(tmp_path / "private"),
         recorder,
         recipe=recipe,
@@ -522,14 +619,14 @@ def test_public_exception_becomes_persisted_failed_run(
     ).status is ApplicationPreparationRunReadStatus.FOUND
 
 
-def test_completed_replay_is_unchanged_with_zero_slice_calls(
+async def test_completed_replay_is_unchanged_with_zero_slice_calls(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     first_recorder = _Recorder()
-    first, plan, plans, runs = _run(home, first_recorder)
+    first, plan, plans, runs = await _run(home, first_recorder)
     second_recorder = _Recorder()
-    second = run_application_preparation(
+    second = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,
@@ -545,17 +642,18 @@ def test_completed_replay_is_unchanged_with_zero_slice_calls(
     assert second.run is not None and first.run is not None
     assert second.run.run_id == first.run.run_id
     assert second.run.completed_at == first.run.completed_at
+    assert second.assembly_lineage == first.assembly_lineage
     assert second_recorder.requests == []
 
 
-def test_changed_input_binding_creates_new_run_and_reinvokes_slices(
+async def test_changed_input_binding_creates_new_run_and_reinvokes_slices(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
     first_recorder = _Recorder()
-    first, plan, plans, runs = _run(home, first_recorder)
+    first, plan, plans, runs = await _run(home, first_recorder)
     second_recorder = _Recorder()
-    second = run_application_preparation(
+    second = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,
@@ -577,11 +675,11 @@ def test_changed_input_binding_creates_new_run_and_reinvokes_slices(
     ) == 2
 
 
-def test_stage_lineage_and_run_are_immutable_and_restart_stable(
+async def test_stage_lineage_and_run_are_immutable_and_restart_stable(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
-    result, plan, _plans, _runs = _run(home, _Recorder())
+    result, plan, _plans, _runs = await _run(home, _Recorder())
     assert result.run is not None
     with pytest.raises(FrozenInstanceError):
         result.run.job_id = "changed"
@@ -595,14 +693,14 @@ def test_stage_lineage_and_run_are_immutable_and_restart_stable(
     assert current.run.run_content_hash == result.run.run_content_hash
 
 
-def test_corrupt_run_fails_closed_without_overwrite(tmp_path: Path) -> None:
+async def test_corrupt_run_fails_closed_without_overwrite(tmp_path: Path) -> None:
     home = PrivateHome(tmp_path / "private")
-    result, plan, plans, runs = _run(home, _Recorder())
+    result, plan, plans, runs = await _run(home, _Recorder())
     assert result.run is not None
     artifact = next(home.paths.application_preparation_runs.rglob("*.json"))
     artifact.write_text("{broken", encoding="utf-8")
     replay_recorder = _Recorder()
-    replay = run_application_preparation(
+    replay = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,
@@ -621,11 +719,11 @@ def test_corrupt_run_fails_closed_without_overwrite(tmp_path: Path) -> None:
     assert artifact.read_text(encoding="utf-8") == "{broken"
 
 
-def test_subject_ownership_and_repository_isolation(tmp_path: Path) -> None:
+async def test_subject_ownership_and_repository_isolation(tmp_path: Path) -> None:
     home = PrivateHome(tmp_path / "private")
-    result, plan, plans, runs = _run(home, _Recorder())
+    result, plan, plans, runs = await _run(home, _Recorder())
     assert result.run is not None
-    mismatch = run_application_preparation(
+    mismatch = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=OTHER_SUBJECT,
             application_plan_id=plan.plan_id,
@@ -646,7 +744,7 @@ def test_subject_ownership_and_repository_isolation(tmp_path: Path) -> None:
     ).status is ApplicationPreparationRunReadStatus.NOT_FOUND
 
 
-def test_missing_required_output_fails_contract_and_stops(
+async def test_missing_required_output_fails_contract_and_stops(
     tmp_path: Path,
 ) -> None:
     recorder = _Recorder()
@@ -669,7 +767,7 @@ def test_missing_required_output_fails_contract_and_stops(
             )
         },
     )
-    result, *_ = _run(
+    result, *_ = await _run(
         PrivateHome(tmp_path / "private"), recorder, recipe=recipe
     )
 
@@ -727,7 +825,7 @@ def _write_vault(home: PrivateHome) -> None:
     )
 
 
-def test_real_public_application_answers_slice_composes_at_final_stage(
+async def test_real_public_application_answers_slice_composes_at_final_stage(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -777,7 +875,7 @@ def test_real_public_application_answers_slice_composes_at_final_stage(
             ApplicationPreparationStage.APPLICATION_ANSWERS: real_answers
         },
     )
-    result = run_application_preparation(
+    result = await run_application_preparation(
         RunApplicationPreparationCommand(
             subject_id=SUBJECT,
             application_plan_id=plan.plan_id,
@@ -796,7 +894,7 @@ def test_real_public_application_answers_slice_composes_at_final_stage(
     assert result.run.human_attention_required is True
 
 
-def test_source_has_no_slice_private_repository_or_execution_imports() -> None:
+async def test_source_has_no_slice_private_repository_or_execution_imports() -> None:
     tree = ast.parse(
         Path(orchestrator_module.__file__).read_text(encoding="utf-8")
     )
@@ -812,10 +910,12 @@ def test_source_has_no_slice_private_repository_or_execution_imports() -> None:
     }
     assert imports == {
         "__future__",
+        "collections.abc",
         "dataclasses",
         "datetime",
         "enum",
         "hashlib",
+        "inspect",
         "json",
         "pathlib",
         "re",

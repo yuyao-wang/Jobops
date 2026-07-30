@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 from auth.credentials import CredentialStore
 from auth.mailbox import MailboxVerifier
 from auth.workday_hosts import is_trusted_workday_host
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.bundles import MaterialBundle
 from core.outcomes import ApplicationOutcome
 from core.private_home import PrivateHome
@@ -19,7 +22,11 @@ from .greenhouse import GreenhouseAdapter
 from .jobvite import JobviteAdapter
 from .lever import LeverAdapter
 from .protocol import ApplicationContext
-from .workday import WorkdayAdapter, WorkdayApplicationContext
+from .workday import (
+    WorkdayAdapter,
+    WorkdayApplicationContext,
+    WorkdayRuntimeConfig,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,8 +35,9 @@ class AdapterRunRequest:
     job_url: str
     job_id: str
     run_id: str
-    profile: Mapping[str, Any]
+    profile: ApplicationExecutionIdentityProfile | Mapping[str, Any]
     resume_path: str
+    company: str = ""
     cover_letter: str = ""
     answers: Mapping[str, Any] = field(default_factory=dict)
     request_submit: bool = False
@@ -45,11 +53,26 @@ class AdapterRunRequest:
     materials: MaterialBundle | None = None
     private_home: PrivateHome | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile, ApplicationExecutionIdentityProfile):
+            object.__setattr__(
+                self,
+                "profile",
+                ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                    self.profile
+                ),
+            )
+
 
 class AdapterRegistry:
     """Route known ATS hosts without a model call; generic is the fallback."""
 
-    def __init__(self, *, generic_adapter: GenericAIAdapter | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        generic_adapter: GenericAIAdapter | None = None,
+        workday_runtime_config: WorkdayRuntimeConfig | None = None,
+    ) -> None:
         self._specialized = {
             "greenhouse": GreenhouseAdapter(),
             "lever": LeverAdapter(),
@@ -60,6 +83,9 @@ class AdapterRegistry:
         # GenericAIAdapter owns a private recipe cache.  Construct it lazily so
         # probing/running a supported ATS never touches Private Home.
         self._generic = generic_adapter
+        self._workday_runtime_config = (
+            workday_runtime_config or WorkdayRuntimeConfig()
+        )
 
     def _generic_adapter(self) -> GenericAIAdapter:
         if self._generic is None:
@@ -109,10 +135,11 @@ class AdapterRegistry:
             return await self._generic_adapter().run(
                 page=request.page,
                 job_url=request.job_url,
-                profile=dict(request.profile),
+                profile=request.profile,
                 brain=request.brain,
                 cover_letter=cover_letter,
                 resume_path=resume_path,
+                answers=request.answers,
                 run_id=request.run_id,
                 job_id=request.job_id,
                 platform=request.platform_hint or "generic",
@@ -132,6 +159,7 @@ class AdapterRegistry:
                 profile=request.profile,
                 job_id=request.job_id,
                 run_id=request.run_id,
+                company=request.company,
                 resume_path=resume_path,
                 cover_letter=cover_letter,
                 answers=request.answers,
@@ -144,6 +172,7 @@ class AdapterRegistry:
                 navigate=request.navigate,
                 materials=request.materials,
                 private_home=request.private_home,
+                runtime_config=self._workday_runtime_config,
             )
             return await self._specialized[name].run(context)
 

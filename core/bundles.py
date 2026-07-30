@@ -10,6 +10,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from .application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from .event_ledger import hash_job_url
 from .application_answer_taxonomy import CanonicalApplicationAnswers
 from .permits import PermitBindings, hash_value
@@ -193,6 +196,19 @@ class ApplicationBundle:
     @property
     def answer_hash(self) -> str:
         return canonical_hash(self.answers.to_dict())
+
+    @property
+    def identity_profile(self) -> ApplicationExecutionIdentityProfile:
+        """Return the closed production identity/contact projection.
+
+        Historical mixed profiles remain serializable and readable through
+        ``profile`` itself, but must cross the explicit legacy compatibility
+        boundary before an old execution path can consume them.
+        """
+
+        return ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+            self.profile
+        )
 
     def permit_bindings(self, *, review_hash: str) -> PermitBindings:
         return PermitBindings(

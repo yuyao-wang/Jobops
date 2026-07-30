@@ -10,6 +10,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Mapping
 
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.outcomes import OutcomeStatus
 
 from .protocol import ApplicationContext, BaseATSAdapter
@@ -83,7 +86,9 @@ async def apply_greenhouse(
         job_url=job_url,
         job_id=str(profile.get("job_id") or f"greenhouse-{digest}"),
         run_id=str(profile.get("run_id") or f"legacy-{digest}"),
-        profile=profile,
+        profile=ApplicationExecutionIdentityProfile.from_legacy_profile(
+            profile
+        ),
         resume_path=profile.get("resume_path"),
         cover_letter=cover_letter,
         answers=profile.get("common_answers", {}),

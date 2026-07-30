@@ -71,6 +71,17 @@ function jobops() {
     layoutIssueSelections: {},
     resolvingAttentionItemId: null,
 
+    // ----- Authenticated Candidate Fact Review (C1d) -----
+    candidateFactReview: {
+      status: "LOADING",
+      items: [],
+      queueSnapshotHash: null,
+      counts: { pending: 0, conflicts: 0, missing_required: 0, resolved: 0 },
+      message: null,
+    },
+    candidateFactReviewValues: {},
+    resolvingCandidateFactReviewId: null,
+
     // ----- WebSocket -----
     ws: null,
     wsConnected: false,
@@ -262,6 +273,7 @@ function jobops() {
         this.fetchSchedulerStatus(),
         this.fetchFollowUps(),
         this.fetchHumanAttentionInbox(),
+        this.fetchCandidateFactReview(),
       ]);
       this.connectWebSocket();
       this.$nextTick(() => this.initCharts());
@@ -457,6 +469,99 @@ function jobops() {
         return await this._humanAttentionInboxRequest;
       } finally {
         this._humanAttentionInboxRequest = null;
+      }
+    },
+
+    async fetchCandidateFactReview() {
+      this.candidateFactReview.status = "LOADING";
+      try {
+        const response = await fetch("/api/candidate-facts/review");
+        if (!response.ok) {
+          this.candidateFactReview.status = "FAILED";
+          this.candidateFactReview.message =
+            response.status === 401
+              ? "Sign in to review candidate facts."
+              : "Candidate fact review is temporarily unavailable.";
+          return;
+        }
+        const data = await response.json();
+        this.candidateFactReview = {
+          status: data.status,
+          items: data.items || [],
+          queueSnapshotHash: data.queue_snapshot_hash,
+          counts: data.counts || {
+            pending: 0,
+            conflicts: 0,
+            missing_required: 0,
+            resolved: 0,
+          },
+          message: data.message,
+        };
+      } catch (_) {
+        this.candidateFactReview.status = "FAILED";
+        this.candidateFactReview.message =
+          "Candidate fact review is temporarily unavailable.";
+      }
+    },
+
+    async resolveCandidateFactReview(item, action) {
+      if (
+        this.resolvingCandidateFactReviewId ||
+        !item.available_actions.includes(action)
+      ) {
+        return;
+      }
+      const needsValue = [
+        "ACCEPT_WITH_EDIT",
+        "PROVIDE_MISSING_VALUE",
+      ].includes(action);
+      const value = needsValue
+        ? (this.candidateFactReviewValues[item.review_item_id] || "").trim()
+        : null;
+      if (needsValue && !value) {
+        this.notify("Enter an explicit value before confirming.", "warning");
+        return;
+      }
+      this.resolvingCandidateFactReviewId = item.review_item_id;
+      const invocationKey = `${item.review_item_id}:${action}:${value || ""}`;
+      if (!this.candidateFactReviewValues[`${invocationKey}:invocation`]) {
+        this.candidateFactReviewValues[`${invocationKey}:invocation`] =
+          `candidate-review-ui-${crypto.randomUUID()}`;
+      }
+      try {
+        const response = await fetch(
+          `/api/candidate-facts/review/${encodeURIComponent(item.review_item_id)}/resolve`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action,
+              invocation_id:
+                this.candidateFactReviewValues[`${invocationKey}:invocation`],
+              queue_snapshot_hash:
+                this.candidateFactReview.queueSnapshotHash,
+              value,
+            }),
+          },
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error("Candidate fact review failed.");
+        }
+        this.notify(
+          data.message || "Candidate fact review saved.",
+          ["COMPLETED", "UNCHANGED"].includes(data.status)
+            ? "success"
+            : "warning",
+        );
+        await this.fetchCandidateFactReview();
+      } catch (_) {
+        this.notify(
+          "Candidate fact review could not be saved safely.",
+          "error",
+        );
+      } finally {
+        this.resolvingCandidateFactReviewId = null;
       }
     },
 

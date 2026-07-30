@@ -1,6 +1,8 @@
 playwright>=1.40.0
 pyyaml>=6.0
 httpx>=0.25.0
+jsonschema>=4.21,<5
+pillow>=10,<13
 python-jobspy>=1.1.0
 feedparser>=6.0.0
 pdfplumber>=0.10.0

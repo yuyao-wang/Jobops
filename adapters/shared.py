@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityFieldKey,
+    ApplicationExecutionIdentityProfile,
+)
 from core.application_answer_taxonomy import (
     CanonicalApplicationAnswerKey,
     normalize_canonical_application_answer_key,
@@ -96,49 +100,11 @@ def nested_value(mapping: Mapping[str, Any], *paths: str) -> Any:
     return None
 
 
-_PROFILE_PATHS: dict[str, tuple[str, ...]] = {
-    "first_name": ("personal.first_name", "first_name", "identity.first_name"),
-    "last_name": ("personal.last_name", "last_name", "identity.last_name"),
-    "preferred_name": (
-        "personal.preferred_name",
-        "preferred_name",
-        "identity.preferred_name",
-    ),
-    "email": ("personal.email", "email", "contact.email"),
-    "phone": ("personal.phone", "phone", "contact.phone"),
-    "location": ("personal.location", "location", "contact.location"),
-    "address": ("personal.address", "address", "contact.address"),
-    "city": ("personal.city", "city", "contact.city"),
-    "state": ("personal.state", "state", "contact.state"),
-    "postal_code": (
-        "personal.postal_code",
-        "personal.zip",
-        "postal_code",
-        "contact.postal_code",
-    ),
-    "country": ("personal.country", "country", "contact.country"),
-    "linkedin": ("personal.linkedin", "linkedin", "links.linkedin"),
-    "github": ("personal.github", "github", "links.github"),
-    "portfolio": (
-        "personal.portfolio",
-        "personal.website",
-        "portfolio",
-        "website",
-        "links.portfolio",
-    ),
-    "current_company": (
-        "personal.current_company",
-        "current_company",
-        "employment.current_company",
-    ),
-}
-
-
 def resolve_confirmed_value(
     canonical_key: CanonicalApplicationAnswerKey | str,
     label: str,
     *,
-    profile: Mapping[str, Any],
+    profile: ApplicationExecutionIdentityProfile,
     answers: Mapping[str, Any],
     cover_letter: str = "",
 ) -> Any:
@@ -156,19 +122,15 @@ def resolve_confirmed_value(
         allow_custom_unknown=True,
     )
     if key is CanonicalApplicationAnswerKey.COVER_LETTER:
-        return cover_letter or nested_value(profile, "cover_letter")
+        return cover_letter or None
     if key is CanonicalApplicationAnswerKey.FULL_NAME:
-        explicit = nested_value(profile, "personal.full_name", "full_name")
-        if explicit:
-            return explicit
-        parts = [
-            nested_value(profile, *_PROFILE_PATHS["first_name"]),
-            nested_value(profile, *_PROFILE_PATHS["last_name"]),
-        ]
-        full_name = " ".join(str(part).strip() for part in parts if part)
-        return full_name or None
-    if key.value in _PROFILE_PATHS:
-        value = nested_value(profile, *_PROFILE_PATHS[key.value])
+        return profile.full_name
+    try:
+        identity_key = ApplicationExecutionIdentityFieldKey(key.value)
+    except ValueError:
+        identity_key = None
+    if identity_key is not None:
+        value = profile.value_for(identity_key)
         if value is not None:
             return value
 

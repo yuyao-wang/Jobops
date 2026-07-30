@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from core.application_preparation_orchestrator import (
@@ -53,7 +52,7 @@ from tests.test_resume_latex_versions import (
 )
 
 
-def _completed(_command):
+async def _completed(_command):
     return RunApplicationPreparationResult(
         ApplicationPreparationStatus.COMPLETED,
         None,
@@ -71,7 +70,7 @@ def _provider(home, candidates, versions):
     )
 
 
-def _resume_case(home: PrivateHome):
+async def _resume_case(home: PrivateHome):
     candidates, first_write = _register_resume(
         home, subject_id=SUBJECT
     )
@@ -114,7 +113,7 @@ def _resume_case(home: PrivateHome):
             ),
         )
 
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -138,7 +137,7 @@ def _resume_case(home: PrivateHome):
     return plan, queue, item, provider, candidates, versions, old, replacement
 
 
-def _latex_case(home: PrivateHome):
+async def _latex_case(home: PrivateHome):
     candidates = PrivateHomeResumeCandidateRepository(home)
     versions = PrivateHomeResumeLatexVersionRepository(home)
     old = _register_latex(
@@ -183,7 +182,7 @@ def _latex_case(home: PrivateHome):
             ),
         )
 
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plans,
         run_repository=runs,
@@ -207,7 +206,7 @@ def _latex_case(home: PrivateHome):
     return plan, queue, item, provider, candidates, versions, old, replacement
 
 
-def _resolve(
+async def _resolve(
     *,
     home,
     queue,
@@ -218,39 +217,53 @@ def _resolve(
     option_id,
     preparation=_completed,
 ):
-    return asyncio.run(
-        resolve_input_replacement(
-            InputReplacementResolutionCommand(
-                subject_id=SUBJECT,
-                attention_item_id=item.item_id,
-                action=InputReplacementAction.SELECT_EXISTING_REPLACEMENT,
-                replacement_option_id=option_id,
-                now=NOW,
-            ),
-            queue_reader=lambda **_kwargs: queue,
-            target_provider=provider,
-            resume_candidate_provider=candidates,
-            latex_version_provider=versions,
-            override_repository=PlanScopedVersionOverrideRepository(home),
-            preparation_callable=preparation,
-            receipt_repository=InputReplacementResolutionReceiptRepository(
-                home
-            ),
-        )
+    return await resolve_input_replacement(
+        InputReplacementResolutionCommand(
+            subject_id=SUBJECT,
+            attention_item_id=item.item_id,
+            action=InputReplacementAction.SELECT_EXISTING_REPLACEMENT,
+            replacement_option_id=option_id,
+            now=NOW,
+        ),
+        queue_reader=lambda **_kwargs: queue,
+        target_provider=provider,
+        resume_candidate_provider=candidates,
+        latex_version_provider=versions,
+        override_repository=PlanScopedVersionOverrideRepository(home),
+        preparation_callable=preparation,
+        receipt_repository=InputReplacementResolutionReceiptRepository(
+            home
+        ),
     )
 
 
-def test_resume_replacement_reuses_plan_override_and_reruns_once(
+def _recording_preparation(calls, status=ApplicationPreparationStatus.COMPLETED):
+    async def invoke(command):
+        calls.append(command)
+        if status is ApplicationPreparationStatus.COMPLETED:
+            return await _completed(command)
+        return RunApplicationPreparationResult(
+            status,
+            None,
+            None,
+            False,
+            f"synthetic {status.value.lower()}",
+        )
+
+    return invoke
+
+
+async def test_resume_replacement_reuses_plan_override_and_reruns_once(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "resume")
     home.ensure()
     plan, queue, item, provider, candidates, versions, old, replacement = (
-        _resume_case(home)
+        await _resume_case(home)
     )
     calls = []
 
-    result = _resolve(
+    result = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -258,7 +271,7 @@ def test_resume_replacement_reuses_plan_override_and_reruns_once(
         candidates=candidates,
         versions=versions,
         option_id=replacement.resume_id,
-        preparation=lambda command: (calls.append(command) or _completed(command)),
+        preparation=_recording_preparation(calls),
     )
     override = PlanScopedVersionOverrideRepository(home).get_current(
         subject_id=SUBJECT,
@@ -284,16 +297,16 @@ def test_resume_replacement_reuses_plan_override_and_reruns_once(
     )
 
 
-def test_latex_replacement_rejects_same_and_unselectable_options(
+async def test_latex_replacement_rejects_same_and_unselectable_options(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "latex")
     home.ensure()
     plan, queue, item, provider, candidates, versions, old, replacement = (
-        _latex_case(home)
+        await _latex_case(home)
     )
     calls = []
-    same = _resolve(
+    same = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -301,9 +314,9 @@ def test_latex_replacement_rejects_same_and_unselectable_options(
         candidates=candidates,
         versions=versions,
         option_id=old.latex_version_id,
-        preparation=lambda command: (calls.append(command) or _completed(command)),
+        preparation=_recording_preparation(calls),
     )
-    missing = _resolve(
+    missing = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -311,9 +324,9 @@ def test_latex_replacement_rejects_same_and_unselectable_options(
         candidates=candidates,
         versions=versions,
         option_id="resume-latex-version-" + "0" * 64,
-        preparation=lambda command: (calls.append(command) or _completed(command)),
+        preparation=_recording_preparation(calls),
     )
-    accepted = _resolve(
+    accepted = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -321,7 +334,7 @@ def test_latex_replacement_rejects_same_and_unselectable_options(
         candidates=candidates,
         versions=versions,
         option_id=replacement.latex_version_id,
-        preparation=lambda command: (calls.append(command) or _completed(command)),
+        preparation=_recording_preparation(calls),
     )
     override = PlanScopedVersionOverrideRepository(home).get_current(
         subject_id=SUBJECT,
@@ -342,17 +355,17 @@ def test_latex_replacement_rejects_same_and_unselectable_options(
     assert override.replaced_option_id == old.latex_version_id
 
 
-def test_replay_and_failed_rerun_keep_one_override_without_auto_loop(
+async def test_replay_and_failed_rerun_keep_one_override_without_auto_loop(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "replay")
     home.ensure()
     plan, queue, item, provider, candidates, versions, _old, replacement = (
-        _resume_case(home)
+        await _resume_case(home)
     )
     calls = []
 
-    first = _resolve(
+    first = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -360,18 +373,11 @@ def test_replay_and_failed_rerun_keep_one_override_without_auto_loop(
         candidates=candidates,
         versions=versions,
         option_id=replacement.resume_id,
-        preparation=lambda command: (
-            calls.append(command)
-            or RunApplicationPreparationResult(
-                ApplicationPreparationStatus.FAILED,
-                None,
-                None,
-                False,
-                "synthetic failure",
-            )
+        preparation=_recording_preparation(
+            calls, ApplicationPreparationStatus.FAILED
         ),
     )
-    replay = _resolve(
+    replay = await _resolve(
         home=home,
         queue=queue,
         item=item,
@@ -379,7 +385,7 @@ def test_replay_and_failed_rerun_keep_one_override_without_auto_loop(
         candidates=candidates,
         versions=versions,
         option_id=replacement.resume_id,
-        preparation=lambda command: (calls.append(command) or _completed(command)),
+        preparation=_recording_preparation(calls),
     )
     override = PlanScopedVersionOverrideRepository(home).get_current(
         subject_id=SUBJECT,

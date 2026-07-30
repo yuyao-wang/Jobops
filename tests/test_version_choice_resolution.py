@@ -112,6 +112,17 @@ def _preparation(status, run_id="preparation-rerun-1"):
     )
 
 
+def _preparation_callable(status, calls=None, raises=False):
+    async def invoke(command):
+        if calls is not None:
+            calls.append(command)
+        if raises:
+            raise RuntimeError("synthetic rerun failure")
+        return _preparation(status)
+
+    return invoke
+
+
 class _Parser:
     def __init__(self, option_id):
         self.option_id = option_id
@@ -153,9 +164,8 @@ async def test_resume_choice_writes_override_reruns_and_p2a3_consumes_it(
         latex_version_provider=object(),
         parser=None,
         override_repository=overrides,
-        preparation_callable=lambda command: (
-            preparation_calls.append(command)
-            or _preparation(ApplicationPreparationStatus.COMPLETED)
+        preparation_callable=_preparation_callable(
+            ApplicationPreparationStatus.COMPLETED, preparation_calls
         ),
         receipt_repository=VersionChoiceResolutionReceiptRepository(home),
     )
@@ -219,7 +229,7 @@ async def test_latex_parser_choice_is_validated_and_p2a6b_consumes_override(
         latex_version_provider=parts["latex_repository"],
         parser=parser,
         override_repository=overrides,
-        preparation_callable=lambda _: _preparation(
+        preparation_callable=_preparation_callable(
             ApplicationPreparationStatus.DEFERRED
         ),
         receipt_repository=VersionChoiceResolutionReceiptRepository(
@@ -415,7 +425,7 @@ async def test_ambiguous_unsupported_failure_and_replay_preserve_history(
         latex_version_provider=object(),
         parser=None,
         override_repository=overrides,
-        preparation_callable=lambda _: _preparation(
+        preparation_callable=_preparation_callable(
             ApplicationPreparationStatus.DEFERRED
         ),
         receipt_repository=receipts,
@@ -469,8 +479,8 @@ async def test_ambiguous_unsupported_failure_and_replay_preserve_history(
         latex_version_provider=object(),
         parser=None,
         override_repository=overrides,
-        preparation_callable=lambda _: (_ for _ in ()).throw(
-            RuntimeError("synthetic rerun failure")
+        preparation_callable=_preparation_callable(
+            ApplicationPreparationStatus.FAILED, raises=True
         ),
         receipt_repository=receipts,
     )

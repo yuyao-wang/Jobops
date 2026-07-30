@@ -83,7 +83,7 @@ def _preparation(status: ApplicationPreparationStatus):
 async def test_current_preview_records_directive_calls_p2b4_once_and_replays(
     tmp_path,
 ) -> None:
-    home, item, target, target_provider, artifact = _visual_target(tmp_path)
+    home, item, target, target_provider, artifact = await _visual_target(tmp_path)
     preview_provider = _preview_provider(
         home, item, target_provider, artifact, _Renderer()
     )
@@ -100,7 +100,7 @@ async def test_current_preview_records_directive_calls_p2b4_once_and_replays(
     receipts = ResumeLayoutCorrectionReceiptRepository(home)
     preparation_calls = []
 
-    def prepare(command):
+    async def prepare(command):
         preparation_calls.append(command)
         return _preparation(ApplicationPreparationStatus.DEFERRED)
 
@@ -197,7 +197,7 @@ async def test_current_preview_records_directive_calls_p2b4_once_and_replays(
 async def test_missing_preview_invalid_issue_and_unsupported_target_do_not_write(
     tmp_path,
 ) -> None:
-    home, item, _target, target_provider, artifact = _visual_target(
+    home, item, _target, target_provider, artifact = await _visual_target(
         tmp_path / "layout"
     )
     preview_provider = _preview_provider(
@@ -236,7 +236,7 @@ async def test_missing_preview_invalid_issue_and_unsupported_target_do_not_write
         receipt_repository=ResumeLayoutCorrectionReceiptRepository(home),
         preparation_callable=lambda command: calls.append(command),
     )
-    claim_home, _plan, claim_queue, claim_targets = _current_claim(
+    claim_home, _plan, claim_queue, claim_targets = await _current_claim(
         tmp_path / "claim", material=FactQAMaterialKind.RESUME
     )
     unsupported = await resolve_resume_layout_correction(

@@ -117,6 +117,17 @@ def _result(
             summary={"skipped_human_attention": 2 if partial else 0},
         ),
         _stage(
+            AutomationCycleStage.BUNDLE_ASSEMBLY,
+            command.max_bundle_assemblies,
+            status=normal,
+            completed=0 if noop else 1,
+            summary={
+                "assembled": 0 if noop else 1,
+                "unchanged": 0,
+                "skipped_missing_binding": 0,
+            },
+        ),
+        _stage(
             AutomationCycleStage.APPLICATION_EXECUTION,
             command.max_executions,
             status=(
@@ -199,7 +210,7 @@ async def test_click_calls_p2c10a_once_with_server_budgets_and_no_concurrency(
     assert len(calls) == 1
     assert calls[0].subject_id == SUBJECT
     assert calls[0].now == NOW
-    assert calls[0].budgets == (3, 4, 5, 6)
+    assert calls[0].budgets == (3, 4, 5, 5, 6)
 
 
 def test_completed_partial_noop_and_unchanged_map_to_safe_stage_summaries(
@@ -211,6 +222,7 @@ def test_completed_partial_noop_and_unchanged_map_to_safe_stage_summaries(
         max_reprioritizations=1,
         max_plan_creations=2,
         max_preparations=3,
+        max_bundle_assemblies=5,
         max_executions=4,
     )
     mapped = {
@@ -300,7 +312,7 @@ async def test_route_replay_uses_same_id_and_ui_is_p2c10a_only() -> None:
     assert replay["status"] == "UNCHANGED"
     assert len(calls) == 2
     assert all(call.subject_id == SUBJECT for call in calls)
-    assert all(call.budgets == (1, 2, 3, 4) for call in calls)
+    assert all(call.budgets == (1, 2, 3, 5, 4) for call in calls)
 
     root = Path(__file__).parents[1]
     source = (root / "dashboard/automation_cycle.py").read_text()

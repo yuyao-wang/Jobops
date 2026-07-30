@@ -33,6 +33,12 @@ from .selective_batch_preparation import (
     SelectiveBatchPreparationResult,
     SelectiveBatchPreparationStatus,
 )
+from .selective_bundle_assembly import (
+    SELECTIVE_BUNDLE_ASSEMBLY_CONTRACT_VERSION,
+    SelectiveBundleAssemblyCommand,
+    SelectiveBundleAssemblyResult,
+    SelectiveBundleAssemblyStatus,
+)
 from .selective_reprioritization import (
     SelectiveBatchOverallStatus,
     SelectiveBatchReprioritizationCommand,
@@ -40,7 +46,10 @@ from .selective_reprioritization import (
 )
 
 
-AUTOMATION_CYCLE_CONTRACT_VERSION = "end-to-end-automation-cycle-v1"
+LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION = (
+    "end-to-end-automation-cycle-v1"
+)
+AUTOMATION_CYCLE_CONTRACT_VERSION = "end-to-end-automation-cycle-v2"
 PRIORITY_REFRESH_PUBLIC_CONTRACT = "selective-batch-reprioritization-v1"
 _ID_RE = re.compile(r"automation-cycle-[0-9a-f]{64}")
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
@@ -93,6 +102,7 @@ class AutomationCycleStage(StrEnum):
     PRIORITY_REFRESH = "PRIORITY_REFRESH"
     APPLICATION_PLAN_CREATION = "APPLICATION_PLAN_CREATION"
     APPLICATION_PREPARATION = "APPLICATION_PREPARATION"
+    BUNDLE_ASSEMBLY = "BUNDLE_ASSEMBLY"
     APPLICATION_EXECUTION = "APPLICATION_EXECUTION"
 
 
@@ -146,6 +156,7 @@ class RunAutomationCycleCommand:
     max_plan_creations: int
     max_preparations: int
     max_executions: int
+    max_bundle_assemblies: int = 0
     composition_binding: str = "jobops-default-composition-v1"
 
     def __post_init__(self) -> None:
@@ -165,6 +176,7 @@ class RunAutomationCycleCommand:
             self.max_reprioritizations,
             self.max_plan_creations,
             self.max_preparations,
+            self.max_bundle_assemblies,
             self.max_executions,
         )
         if any(type(value) is not int or value < 0 for value in budgets):
@@ -173,11 +185,12 @@ class RunAutomationCycleCommand:
             raise ValueError("at least one cycle budget must be positive")
 
     @property
-    def budgets(self) -> tuple[int, int, int, int]:
+    def budgets(self) -> tuple[int, int, int, int, int]:
         return (
             self.max_reprioritizations,
             self.max_plan_creations,
             self.max_preparations,
+            self.max_bundle_assemblies,
             self.max_executions,
         )
 
@@ -314,22 +327,33 @@ class AutomationCycleSummary:
                 raise ValueError(f"{name} must be non-negative")
 
 
+def _service_contracts(contract_version: str) -> dict[str, str]:
+    contracts = {
+        "application_execution": SELECTIVE_BATCH_EXECUTION_CONTRACT_VERSION,
+        "application_plan_creation": (
+            SELECTIVE_BATCH_PLAN_CREATION_CONTRACT_VERSION
+        ),
+        "application_preparation": (
+            SELECTIVE_BATCH_PREPARATION_CONTRACT_VERSION
+        ),
+        "priority_refresh": PRIORITY_REFRESH_PUBLIC_CONTRACT,
+    }
+    if contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION:
+        contracts["bundle_assembly"] = (
+            SELECTIVE_BUNDLE_ASSEMBLY_CONTRACT_VERSION
+        )
+    return contracts
+
+
 def _cycle_binding(command: RunAutomationCycleCommand) -> dict[str, Any]:
     return {
         "budgets": list(command.budgets),
         "composition_binding": command.composition_binding,
         "contract_version": AUTOMATION_CYCLE_CONTRACT_VERSION,
         "invocation_id": command.invocation_id,
-        "service_contracts": {
-            "application_execution": SELECTIVE_BATCH_EXECUTION_CONTRACT_VERSION,
-            "application_plan_creation": (
-                SELECTIVE_BATCH_PLAN_CREATION_CONTRACT_VERSION
-            ),
-            "application_preparation": (
-                SELECTIVE_BATCH_PREPARATION_CONTRACT_VERSION
-            ),
-            "priority_refresh": PRIORITY_REFRESH_PUBLIC_CONTRACT,
-        },
+        "service_contracts": _service_contracts(
+            AUTOMATION_CYCLE_CONTRACT_VERSION
+        ),
         "subject_id": command.subject_id,
     }
 
@@ -342,7 +366,7 @@ class AutomationCycleRun:
     invocation_id: str
     composition_binding: str
     subject_id: str
-    budgets: tuple[int, int, int, int]
+    budgets: tuple[int, ...]
     stage_results: tuple[AutomationCycleStageResult, ...]
     summary: AutomationCycleSummary
     overall_status: AutomationCycleRunStatus
@@ -353,7 +377,10 @@ class AutomationCycleRun:
     def __post_init__(self) -> None:
         if _ID_RE.fullmatch(self.cycle_id) is None:
             raise ValueError("cycle_id is invalid")
-        if self.contract_version != AUTOMATION_CYCLE_CONTRACT_VERSION:
+        if self.contract_version not in {
+            LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            AUTOMATION_CYCLE_CONTRACT_VERSION,
+        }:
             raise ValueError("cycle contract version is unsupported")
         if _HASH_RE.fullmatch(self.cycle_binding_hash) is None:
             raise ValueError("cycle binding hash is invalid")
@@ -362,9 +389,15 @@ class AutomationCycleRun:
         _clean("invocation_id", self.invocation_id)
         _clean("composition_binding", self.composition_binding)
         _clean("subject_id", self.subject_id, 160)
+        expected_budget_count = (
+            4
+            if self.contract_version
+            == LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION
+            else 5
+        )
         if (
             not isinstance(self.budgets, tuple)
-            or len(self.budgets) != 4
+            or len(self.budgets) != expected_budget_count
             or any(type(value) is not int or value < 0 for value in self.budgets)
             or not any(self.budgets)
         ):
@@ -375,24 +408,25 @@ class AutomationCycleRun:
                 "composition_binding": self.composition_binding,
                 "contract_version": self.contract_version,
                 "invocation_id": self.invocation_id,
-                "service_contracts": {
-                    "application_execution": (
-                        SELECTIVE_BATCH_EXECUTION_CONTRACT_VERSION
-                    ),
-                    "application_plan_creation": (
-                        SELECTIVE_BATCH_PLAN_CREATION_CONTRACT_VERSION
-                    ),
-                    "application_preparation": (
-                        SELECTIVE_BATCH_PREPARATION_CONTRACT_VERSION
-                    ),
-                    "priority_refresh": PRIORITY_REFRESH_PUBLIC_CONTRACT,
-                },
+                "service_contracts": _service_contracts(
+                    self.contract_version
+                ),
                 "subject_id": self.subject_id,
             }
         )
         if self.cycle_binding_hash != expected_binding:
             raise ValueError("cycle binding hash is inconsistent")
-        expected_stages = tuple(AutomationCycleStage)
+        expected_stages = (
+            (
+                AutomationCycleStage.PRIORITY_REFRESH,
+                AutomationCycleStage.APPLICATION_PLAN_CREATION,
+                AutomationCycleStage.APPLICATION_PREPARATION,
+                AutomationCycleStage.APPLICATION_EXECUTION,
+            )
+            if self.contract_version
+            == LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION
+            else tuple(AutomationCycleStage)
+        )
         if (
             not isinstance(self.stage_results, tuple)
             or tuple(item.stage for item in self.stage_results)
@@ -761,6 +795,15 @@ class PreparationCallable(Protocol):
     ): ...
 
 
+class BundleAssemblyCallable(Protocol):
+    def __call__(
+        self, command: SelectiveBundleAssemblyCommand
+    ) -> (
+        SelectiveBundleAssemblyResult
+        | Awaitable[SelectiveBundleAssemblyResult]
+    ): ...
+
+
 class ExecutionCallable(Protocol):
     def __call__(
         self, command: SelectiveBatchExecutionCommand
@@ -903,6 +946,28 @@ def _preparation_stage(
     )
 
 
+def _bundle_stage(
+    budget: int, result: Any
+) -> AutomationCycleStageResult:
+    if not isinstance(result, SelectiveBundleAssemblyResult):
+        raise TypeError("selective P2c1 returned an invalid result")
+    summary = _counts(result.summary)
+    public = SelectiveBundleAssemblyStatus(result.status).value
+    return AutomationCycleStageResult.create(
+        stage=AutomationCycleStage.BUNDLE_ASSEMBLY,
+        budget=budget,
+        status=_stage_status(public),
+        public_status=public,
+        actual_processed=summary["selected"],
+        completed=summary["assembled"] + summary["unchanged"],
+        deferred=0,
+        failed=summary["failed"] + summary["skipped_missing_binding"],
+        uncertain=0,
+        safely_skipped=summary["skipped_not_prepared"],
+        summary=summary,
+    )
+
+
 def _execution_stage(
     budget: int, result: Any
 ) -> AutomationCycleStageResult:
@@ -976,6 +1041,7 @@ async def run_automation_cycle(
     priority_refresh: PriorityRefreshCallable,
     plan_creation: PlanCreationCallable,
     preparation: PreparationCallable,
+    bundle_assembly: BundleAssemblyCallable,
     execution: ExecutionCallable,
     repository: AutomationCycleRunRepository,
 ) -> RunAutomationCycleResult:
@@ -1023,7 +1089,8 @@ async def run_automation_cycle(
         )
 
     stages: list[AutomationCycleStageResult] = []
-    calls = (
+    preparation_result: SelectiveBatchPreparationResult | None = None
+    pre_bundle_calls = (
         (
             AutomationCycleStage.PRIORITY_REFRESH,
             command.max_reprioritizations,
@@ -1065,32 +1132,96 @@ async def run_automation_cycle(
             else None,
             _preparation_stage,
         ),
-        (
-            AutomationCycleStage.APPLICATION_EXECUTION,
-            command.max_executions,
-            execution,
-            SelectiveBatchExecutionCommand(
-                subject_id=command.subject_id,
-                now=command.now,
-                max_plans=command.max_executions or None,
-                application_plan_ids=()
-                if command.max_executions == 0
-                else None,
-            )
-            if command.max_executions
-            else None,
-            _execution_stage,
-        ),
     )
-    for stage, budget, callable_, stage_command, projector in calls:
+    for stage, budget, callable_, stage_command, projector in pre_bundle_calls:
         if budget == 0:
             stages.append(_skipped(stage, budget))
             continue
         try:
             public_result = await _resolve(callable_(stage_command))
             stages.append(projector(budget, public_result))
+            if stage is AutomationCycleStage.APPLICATION_PREPARATION:
+                preparation_result = public_result
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
             stages.append(_failed_stage(stage, budget, "PUBLIC_BATCH_FAILED"))
+
+    if command.max_bundle_assemblies == 0:
+        stages.append(
+            _skipped(
+                AutomationCycleStage.BUNDLE_ASSEMBLY,
+                command.max_bundle_assemblies,
+            )
+        )
+    elif not isinstance(
+        preparation_result, SelectiveBatchPreparationResult
+    ):
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.BUNDLE_ASSEMBLY,
+                command.max_bundle_assemblies,
+                "PREPARATION_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    else:
+        try:
+            bundle_result = await _resolve(
+                bundle_assembly(
+                    SelectiveBundleAssemblyCommand(
+                        subject_id=command.subject_id,
+                        now=command.now,
+                        invocation_id=(
+                            f"{command.invocation_id}:bundle-assembly"
+                        ),
+                        preparation_result=preparation_result,
+                        max_assemblies=command.max_bundle_assemblies,
+                    )
+                )
+            )
+            stages.append(
+                _bundle_stage(
+                    command.max_bundle_assemblies, bundle_result
+                )
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            stages.append(
+                _failed_stage(
+                    AutomationCycleStage.BUNDLE_ASSEMBLY,
+                    command.max_bundle_assemblies,
+                    "PUBLIC_BATCH_FAILED",
+                )
+            )
+
+    if command.max_executions == 0:
+        stages.append(
+            _skipped(
+                AutomationCycleStage.APPLICATION_EXECUTION,
+                command.max_executions,
+            )
+        )
+    else:
+        try:
+            execution_result = await _resolve(
+                execution(
+                    SelectiveBatchExecutionCommand(
+                        subject_id=command.subject_id,
+                        now=command.now,
+                        max_plans=command.max_executions,
+                    )
+                )
+            )
+            stages.append(
+                _execution_stage(
+                    command.max_executions, execution_result
+                )
+            )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            stages.append(
+                _failed_stage(
+                    AutomationCycleStage.APPLICATION_EXECUTION,
+                    command.max_executions,
+                    "PUBLIC_BATCH_FAILED",
+                )
+            )
 
     typed_stages = tuple(stages)
     summary = _summarize(typed_stages)
@@ -1129,6 +1260,7 @@ async def run_automation_cycle(
 
 __all__ = [
     "AUTOMATION_CYCLE_CONTRACT_VERSION",
+    "LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION",
     "AutomationCycleFailureReason",
     "AutomationCycleOperationStatus",
     "AutomationCycleReadResult",
@@ -1143,6 +1275,7 @@ __all__ = [
     "AutomationCycleWriteResult",
     "AutomationCycleWriteStatus",
     "ExecutionCallable",
+    "BundleAssemblyCallable",
     "PlanCreationCallable",
     "PreparationCallable",
     "PriorityRefreshCallable",

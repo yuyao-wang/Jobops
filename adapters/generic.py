@@ -1,8 +1,7 @@
-"""
-Generic Form Adapter — AI-driven form filling for any job application page.
+"""Legacy MR.Jobs generic form compatibility adapter.
 
-Uses Claude Code CLI to analyze arbitrary HTML forms and generate
-fill instructions. This is the fallback for sites without a dedicated adapter.
+Production routing uses :mod:`adapters.generic_ai`; this module retains the
+historical open-profile and boolean API only for explicit legacy callers.
 """
 
 import random

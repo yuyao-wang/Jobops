@@ -706,8 +706,7 @@ QueueReader = Callable[
 ]
 PreparationCallable = Callable[
     ...,
-    RunApplicationPreparationResult
-    | Awaitable[RunApplicationPreparationResult],
+    Awaitable[RunApplicationPreparationResult],
 ]
 
 
@@ -883,13 +882,11 @@ async def resolve_latex_compilation_correction(
                 "This Compilation correction is unchanged.",
             )
         try:
-            preparation = await _resolve(
-                preparation_callable(
-                    RunApplicationPreparationCommand(
-                        subject_id=subject,
-                        application_plan_id=item.application_plan_id,
-                        now=now,
-                    )
+            preparation = await preparation_callable(
+                RunApplicationPreparationCommand(
+                    subject_id=subject,
+                    application_plan_id=item.application_plan_id,
+                    now=now,
                 )
             )
             if not isinstance(preparation, RunApplicationPreparationResult):

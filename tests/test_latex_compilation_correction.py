@@ -90,6 +90,15 @@ def _preparation(status: ApplicationPreparationStatus):
     return result
 
 
+def _preparation_callable(status, calls=None):
+    async def invoke(command):
+        if calls is not None:
+            calls.append(command)
+        return _preparation(status)
+
+    return invoke
+
+
 async def _current_compilation_item(tmp_path, *, compilation_error=False):
     parts = await _construction_setup(tmp_path / "construction")
     source = _marked_base_source(parts)
@@ -142,7 +151,7 @@ async def _current_compilation_item(tmp_path, *, compilation_error=False):
         )
 
     runs = PrivateHomeApplicationPreparationRunRepository(parts["home"])
-    _invoke(
+    await _invoke(
         plan=parts["plan"],
         plan_repository=parts["plan_repository"],
         run_repository=runs,
@@ -206,9 +215,8 @@ async def test_unmanaged_dependency_regenerates_new_managed_construction_once(
         queue_reader=queue_reader,
         target_provider=targets,
         directive_repository=directives,
-        preparation_callable=lambda command: (
-            preparation_calls.append(command)
-            or _preparation(ApplicationPreparationStatus.COMPLETED)
+        preparation_callable=_preparation_callable(
+            ApplicationPreparationStatus.COMPLETED, preparation_calls
         ),
         receipt_repository=LatexCompilationCorrectionReceiptRepository(
             parts["home"]
@@ -292,9 +300,8 @@ async def test_compile_error_mode_and_drift_or_unsupported_target_fail_closed(
         queue_reader=_QueueReader(queue),
         target_provider=targets,
         directive_repository=directives,
-        preparation_callable=lambda value: (
-            calls.append(value)
-            or _preparation(ApplicationPreparationStatus.COMPLETED)
+        preparation_callable=_preparation_callable(
+            ApplicationPreparationStatus.COMPLETED, calls
         ),
         receipt_repository=LatexCompilationCorrectionReceiptRepository(
             parts["home"]
@@ -391,9 +398,9 @@ async def test_replay_defer_failure_and_disappeared_item_do_not_auto_loop(
         now=NOW,
     )
 
-    def prepare(value):
-        calls.append(value)
-        return _preparation(ApplicationPreparationStatus.DEFERRED)
+    prepare = _preparation_callable(
+        ApplicationPreparationStatus.DEFERRED, calls
+    )
 
     first = await resolve_latex_compilation_correction(
         command,
@@ -451,7 +458,7 @@ async def test_replay_defer_failure_and_disappeared_item_do_not_auto_loop(
         queue_reader=_QueueReader(failed_queue),
         target_provider=failed_targets,
         directive_repository=failed_directives,
-        preparation_callable=lambda _value: _preparation(
+        preparation_callable=_preparation_callable(
             ApplicationPreparationStatus.FAILED
         ),
         receipt_repository=LatexCompilationCorrectionReceiptRepository(

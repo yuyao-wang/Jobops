@@ -118,6 +118,15 @@ def _preparation(status):
     )
 
 
+def _preparation_callable(status, calls=None):
+    async def invoke(command):
+        if calls is not None:
+            calls.append(command)
+        return _preparation(status)
+
+    return invoke
+
+
 @pytest.mark.asyncio
 async def test_current_fact_is_user_confirmed_then_preparation_runs_once(
     tmp_path,
@@ -154,9 +163,9 @@ async def test_current_fact_is_user_confirmed_then_preparation_runs_once(
         queue_calls.append(kwargs)
         return _queue(_item())
 
-    def prepare(command):
-        preparation_calls.append(command)
-        return _preparation(ApplicationPreparationStatus.COMPLETED)
+    prepare = _preparation_callable(
+        ApplicationPreparationStatus.COMPLETED, preparation_calls
+    )
 
     result = await resolve_application_answer(
         ApplicationAnswerResolutionCommand(
@@ -220,9 +229,8 @@ async def test_attestation_is_plan_scoped_and_unsafe_items_do_not_write(
         ),
         fact_write_service=_Writer(),
         attestation_repository=repository,
-        preparation_callable=lambda command: (
-            preparation_calls.append(command)
-            or _preparation(ApplicationPreparationStatus.DEFERRED)
+        preparation_callable=_preparation_callable(
+            ApplicationPreparationStatus.DEFERRED, preparation_calls
         ),
         receipt_repository=receipt_repository,
     )
@@ -290,7 +298,7 @@ async def test_replay_is_unchanged_without_queue_parser_write_or_rerun(
         attestation_repository=PlanScopedApplicationAttestationRepository(
             home
         ),
-        preparation_callable=lambda _: _preparation(
+        preparation_callable=_preparation_callable(
             ApplicationPreparationStatus.DEFERRED
         ),
         receipt_repository=receipts,

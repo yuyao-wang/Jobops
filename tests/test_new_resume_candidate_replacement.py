@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
+
+import pytest
 
 from core.input_replacement_resolution import (
     InputReplacementResolutionResult,
@@ -37,7 +38,7 @@ def _delegated(status):
     )
 
 
-def _run(
+async def _run(
     *,
     home,
     queue,
@@ -49,36 +50,35 @@ def _run(
     registration,
     replacement,
 ):
-    return asyncio.run(
-        register_and_replace_resume_candidate(
-            NewResumeCandidateReplacementCommand(
-                subject_id=SUBJECT,
-                attention_item_id=item.item_id,
-                invocation_id=invocation,
-                uploaded_content=content,
-                display_name="Uploaded Replacement Resume",
-                now=NOW,
-            ),
-            queue_reader=lambda **_kwargs: queue,
-            target_provider=provider,
-            registration_callable=registration,
-            candidate_provider=candidates,
-            replacement_callable=replacement,
-            receipt_repository=(
-                NewResumeCandidateReplacementReceiptRepository(home)
-            ),
-            home=home,
-        )
+    return await register_and_replace_resume_candidate(
+        NewResumeCandidateReplacementCommand(
+            subject_id=SUBJECT,
+            attention_item_id=item.item_id,
+            invocation_id=invocation,
+            uploaded_content=content,
+            display_name="Uploaded Replacement Resume",
+            now=NOW,
+        ),
+        queue_reader=lambda **_kwargs: queue,
+        target_provider=provider,
+        registration_callable=registration,
+        candidate_provider=candidates,
+        replacement_callable=replacement,
+        receipt_repository=(
+            NewResumeCandidateReplacementReceiptRepository(home)
+        ),
+        home=home,
     )
 
 
-def test_valid_upload_registers_then_delegates_once_with_child_invocation(
+@pytest.mark.asyncio
+async def test_valid_upload_registers_then_delegates_once_with_child_invocation(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "success")
     home.ensure()
     _plan, queue, item, provider, candidates, _versions, _old, _existing = (
-        _resume_case(home)
+        await _resume_case(home)
     )
     registration_calls = []
     delegated_calls = []
@@ -90,7 +90,7 @@ def test_valid_upload_registers_then_delegates_once_with_child_invocation(
             command, home=home, repository=candidates
         )
 
-    result = _run(
+    result = await _run(
         home=home,
         queue=queue,
         item=item,
@@ -133,16 +133,17 @@ def test_valid_upload_registers_then_delegates_once_with_child_invocation(
     )
 
 
-def test_rejected_uploads_and_latex_target_never_register_or_delegate(
+@pytest.mark.asyncio
+async def test_rejected_uploads_and_latex_target_never_register_or_delegate(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "rejected")
     home.ensure()
     _plan, queue, item, provider, candidates, _versions, *_ = (
-        _resume_case(home)
+        await _resume_case(home)
     )
     calls = []
-    invalid = _run(
+    invalid = await _run(
         home=home,
         queue=queue,
         item=item,
@@ -153,7 +154,7 @@ def test_rejected_uploads_and_latex_target_never_register_or_delegate(
         registration=lambda command: calls.append(("register", command)),
         replacement=lambda command: calls.append(("replace", command)),
     )
-    oversized = _run(
+    oversized = await _run(
         home=home,
         queue=queue,
         item=item,
@@ -175,8 +176,8 @@ def test_rejected_uploads_and_latex_target_never_register_or_delegate(
         latex_candidates,
         _latex_versions,
         *_,
-    ) = _latex_case(latex_home)
-    latex = _run(
+    ) = await _latex_case(latex_home)
+    latex = await _run(
         home=latex_home,
         queue=latex_queue,
         item=latex_item,
@@ -200,13 +201,14 @@ def test_rejected_uploads_and_latex_target_never_register_or_delegate(
     assert calls == []
 
 
-def test_replay_reuses_content_and_partial_failure_keeps_candidate(
+@pytest.mark.asyncio
+async def test_replay_reuses_content_and_partial_failure_keeps_candidate(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "replay")
     home.ensure()
     _plan, queue, item, provider, candidates, _versions, _old, existing = (
-        _resume_case(home)
+        await _resume_case(home)
     )
     existing_content = home.contained_path(
         existing.artifact_reference
@@ -220,7 +222,7 @@ def test_replay_reuses_content_and_partial_failure_keeps_candidate(
             command, home=home, repository=candidates
         )
 
-    first = _run(
+    first = await _run(
         home=home,
         queue=queue,
         item=item,
@@ -237,7 +239,7 @@ def test_replay_reuses_content_and_partial_failure_keeps_candidate(
             )
         ),
     )
-    replay = _run(
+    replay = await _run(
         home=home,
         queue=queue,
         item=item,
@@ -251,7 +253,7 @@ def test_replay_reuses_content_and_partial_failure_keeps_candidate(
             or _delegated(InputReplacementResolutionStatus.FAILED)
         ),
     )
-    failed = _run(
+    failed = await _run(
         home=home,
         queue=queue,
         item=item,

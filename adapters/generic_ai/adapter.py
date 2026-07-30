@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from auth.credentials import CredentialStore
@@ -19,6 +19,9 @@ from core.outcomes import (
     OutcomePhase,
     OutcomeStatus,
     ReasonCode,
+)
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
 )
 from core.private_home import PrivateHome
 from core.bundles import MaterialBundle
@@ -167,7 +170,7 @@ class GenericAIAdapter:
         *,
         page,
         form: FormIR,
-        profile: dict[str, Any],
+        profile: ApplicationExecutionIdentityProfile | Mapping[str, Any],
         credential_store: CredentialStore | None,
         tenant: str,
         run_id: str,
@@ -194,7 +197,14 @@ class GenericAIAdapter:
                 or "email" in str(control.aria_label or "").casefold()
             )
         ]
-        email = str(profile.get("personal", {}).get("email") or "").strip()
+        identity_profile = (
+            profile
+            if isinstance(profile, ApplicationExecutionIdentityProfile)
+            else ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                profile
+            )
+        )
+        email = str(identity_profile.email or "").strip()
         host = (urlparse(str(getattr(page, "url", "") or "")).hostname or "").casefold()
         credential_tenant = str(tenant or host).strip()
         if not email or not host or credential_store is None:
@@ -350,10 +360,11 @@ class GenericAIAdapter:
         *,
         page,
         job_url: str,
-        profile: dict[str, Any],
+        profile: ApplicationExecutionIdentityProfile | Mapping[str, Any],
         brain=None,
         cover_letter: str = "",
         resume_path: str = "",
+        answers: Mapping[str, Any] | None = None,
         run_id: str,
         job_id: str,
         platform: str = "generic",
@@ -366,6 +377,13 @@ class GenericAIAdapter:
         materials: MaterialBundle | None = None,
         private_home: PrivateHome | None = None,
     ) -> ApplicationOutcome:
+        identity_profile = (
+            profile
+            if isinstance(profile, ApplicationExecutionIdentityProfile)
+            else ApplicationExecutionIdentityProfile.from_application_bundle_profile(
+                profile
+            )
+        )
         if materials is not None:
             resume_path = str(materials.resume_path)
             cover_letter = materials.cover_letter
@@ -387,7 +405,10 @@ class GenericAIAdapter:
                 )
 
         resolver = AnswerResolver(
-            profile, cover_letter=cover_letter, resume_path=resume_path
+            identity_profile,
+            answers=answers,
+            cover_letter=cover_letter,
+            resume_path=resume_path,
         )
         model_calls = 0
         classification_failed = False
@@ -437,7 +458,7 @@ class GenericAIAdapter:
             auth_result = await self._handle_authentication(
                 page=page,
                 form=form,
-                profile=profile,
+                profile=identity_profile,
                 credential_store=credential_store,
                 tenant=tenant,
                 run_id=run_id,

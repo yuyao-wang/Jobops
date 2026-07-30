@@ -124,6 +124,10 @@ ai:
     codex_cli:
       # Uses the locally authenticated Codex CLI. Omit model to use Codex config.
       timeout: 180
+      # M1b activates this profile only after its no-generation host, login,
+      # strict-schema, image, and tool-isolation probe succeeds. Unsupported
+      # hosts fail closed; raw Codex remains available for trusted work.
+      isolation_profile: isolated_subscription_cli_v1
     openai_api:
       # Export OPENAI_API_KEY instead of storing the secret in this file.
       # Literal API keys are rejected; ${OPENAI_API_KEY} is also accepted.
@@ -143,11 +147,21 @@ ai:
     #   timeout: 120
   components:
     scoring: codex_cli
-    # Trusted components may use codex_cli or openai_api.
-    cover_letter: codex_cli
+    # Subscription-first Preparation path. Each component is resolved against
+    # the effective M1b capabilities; there is no fallback to an API backend.
+    resume_selection: codex_cli
     resume_tailoring: codex_cli
+    resume_fact_qa: codex_cli
+    base_latex_selection: codex_cli
+    resume_latex_construction: codex_cli
+    resume_visual_qa: codex_cli
+    resume_layout_revision: codex_cli
+    cover_letter: codex_cli
+    cover_letter_fact_qa: codex_cli
     # Required only when --semantic-mapper handles untrusted browser labels.
     # In a local-Codex-only setup, omit --semantic-mapper and hand off unknowns.
     form_analysis: openai_api
     email_classification: openai_api
     profile_analysis: codex_cli
+    # Direct API mappings remain optional. The current OpenAI wrapper is
+    # text-only, so it cannot serve resume_visual_qa.

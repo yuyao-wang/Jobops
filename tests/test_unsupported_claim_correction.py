@@ -58,7 +58,7 @@ from tests.test_resume_tailoring import (
 )
 
 
-def _current_claim(tmp_path, *, material: FactQAMaterialKind):
+async def _current_claim(tmp_path, *, material: FactQAMaterialKind):
     home = PrivateHome(tmp_path / material.value.lower())
     plan, plans = _plan(
         home, job_id=f"job-{material.value.lower()}-correction"
@@ -74,7 +74,7 @@ def _current_claim(tmp_path, *, material: FactQAMaterialKind):
         stage = ApplicationPreparationStage.COVER_LETTER_FACT_QA
         reason = CoverLetterFactQAStopReason.UNSUPPORTED_CLAIM
         version = COVER_LETTER_FACT_QA_STOP_REASON_CONTRACT_VERSION
-    _deferred_run(
+    await _deferred_run(
         plan=plan,
         plans=plans,
         runs=runs,
@@ -138,13 +138,13 @@ async def test_resume_and_cover_claims_save_exact_directives_and_rerun_once(
             .REWRITE_USING_EXISTING_EVIDENCE,
         ),
     ):
-        home, plan, queue, targets = _current_claim(
+        home, plan, queue, targets = await _current_claim(
             tmp_path, material=material
         )
         queue_reader = _Queue(queue)
         preparation_calls = []
 
-        def prepare(command):
+        async def prepare(command):
             preparation_calls.append(command)
             return _preparation(ApplicationPreparationStatus.COMPLETED)
 
@@ -285,7 +285,7 @@ async def test_both_draft_stages_consume_only_bound_non_evidence_constraints(
 async def test_replay_stale_unsupported_defer_and_failure_fail_closed(
     tmp_path,
 ) -> None:
-    home, plan, queue, targets = _current_claim(
+    home, plan, queue, targets = await _current_claim(
         tmp_path, material=FactQAMaterialKind.RESUME
     )
     directives = PrivateHomeUnsupportedClaimCorrectionDirectiveRepository(
@@ -300,7 +300,7 @@ async def test_replay_stale_unsupported_defer_and_failure_fail_closed(
         )
     )
 
-    def prepare(command):
+    async def prepare(command):
         calls.append(command)
         return _preparation(next(statuses))
 

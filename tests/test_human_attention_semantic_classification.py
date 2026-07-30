@@ -64,7 +64,7 @@ from core.application_preparation_orchestrator import (
 )
 
 
-def test_all_technical_deferred_reasons_have_explicit_classification() -> None:
+async def test_all_technical_deferred_reasons_have_explicit_classification() -> None:
     registered = {
         (stage, reason)
         for stage, (_version, _reason_type, outcomes) in (
@@ -128,7 +128,7 @@ def test_all_technical_deferred_reasons_have_explicit_classification() -> None:
     )
 
 
-def test_technical_safety_and_legacy_reasons_are_not_reviews(
+async def test_technical_safety_and_legacy_reasons_are_not_reviews(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -204,7 +204,7 @@ def test_technical_safety_and_legacy_reasons_are_not_reviews(
                 reason_code=status,
                 input_binding=f"legacy-{index}",
             )
-        _invoke(
+        await _invoke(
             plan=plan,
             plan_repository=plan_repository,
             run_repository=run_repository,
@@ -218,7 +218,7 @@ def test_technical_safety_and_legacy_reasons_are_not_reviews(
         contract_version=RESUME_VISUAL_QA_STOP_REASON_CONTRACT_VERSION,
         input_binding="typed-visual",
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plan_repository,
         run_repository=run_repository,
@@ -265,7 +265,7 @@ def test_technical_safety_and_legacy_reasons_are_not_reviews(
             ResumeFactQAStopReason.UNSUPPORTED_CLAIM,
         ),
     )
-    _invoke(
+    await _invoke(
         plan=plan,
         plan_repository=plan_repository,
         run_repository=run_repository,
@@ -284,7 +284,7 @@ def test_technical_safety_and_legacy_reasons_are_not_reviews(
     )
 
 
-def test_layout_compilation_lineage_selects_content_or_operator_action() -> None:
+async def test_layout_compilation_lineage_selects_content_or_operator_action() -> None:
     def stage_result(
         *,
         status: ResumeCompilationStatus,
@@ -383,7 +383,7 @@ def test_layout_compilation_lineage_selects_content_or_operator_action() -> None
     )
 
 
-def test_answer_resolution_capabilities_remain_distinct() -> None:
+async def test_answer_resolution_capabilities_remain_distinct() -> None:
     expected = {
         UnresolvedAnswerReason.MISSING_FACT: (
             HumanAttentionKind.USER_FACT_REQUIRED,
