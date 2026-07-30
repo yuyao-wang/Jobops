@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 from uuid import uuid4
 
 from .bundles import normalized_job_url, stable_job_id
@@ -545,18 +545,24 @@ def _formal_response(
     )
 
 
-def run_discovery(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
+def _run_discovery(
+    request: JobDiscoveryRequest,
+    *,
+    private_home: PrivateHome,
+) -> JobDiscoveryResponse:
     """Validate one typed proposal and perform the only V1 Discovery write path."""
 
     if not isinstance(request, JobDiscoveryRequest):
         raise TypeError("request must be a JobDiscoveryRequest")
+    if not isinstance(private_home, PrivateHome):
+        raise TypeError("private_home must be typed")
+    home = private_home
     proposal = request.proposal
 
     if (
         proposal.resolution is not ProposalResolution.RESOLVED
         and proposal.resolved_candidate is not None
     ):
-        home = PrivateHome.discover()
         home.ensure()
         return _formal_response(
             home=home,
@@ -583,7 +589,6 @@ def run_discovery(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
         )
 
     if proposal.resolution is ProposalResolution.UNSUPPORTED:
-        home = PrivateHome.discover()
         home.ensure()
         return _formal_response(
             home=home,
@@ -601,7 +606,6 @@ def run_discovery(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
             alternatives=proposal.alternatives,
         )
 
-    home = PrivateHome.discover()
     home.ensure()
 
     if proposal.resolved_candidate is None:
@@ -674,6 +678,27 @@ def run_discovery(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
     )
 
 
+def run_discovery(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
+    """Compatibility entry using the configured repository-external home."""
+
+    return _run_discovery(request, private_home=PrivateHome.discover())
+
+
+def build_production_job_discovery(
+    *,
+    private_home: PrivateHome,
+) -> Callable[[JobDiscoveryRequest], JobDiscoveryResponse]:
+    """Bind Discovery to the exact bootstrap-owned Private Home."""
+
+    if not isinstance(private_home, PrivateHome):
+        raise TypeError("private_home must be typed")
+
+    def discover(request: JobDiscoveryRequest) -> JobDiscoveryResponse:
+        return _run_discovery(request, private_home=private_home)
+
+    return discover
+
+
 __all__ = [
     "DiscoveryChange",
     "DiscoveryDisposition",
@@ -692,5 +717,6 @@ __all__ = [
     "PrivateHomeJobPostingRepository",
     "ProposalResolution",
     "ResolvedJobCandidate",
+    "build_production_job_discovery",
     "run_discovery",
 ]

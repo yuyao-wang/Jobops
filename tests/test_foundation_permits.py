@@ -93,8 +93,17 @@ def test_permit_rejects_tampering_binding_changes_and_expiration(
 
     with pytest.raises(PermitBindingError):
         permits.verify(token, expected_bindings=bindings(material="changed"))
+    alphabet = (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    )
+    signature = token.rsplit(".", 1)[1]
+    final_index = alphabet.index(signature[-1])
+    assert final_index % 4 == 0
+    noncanonical_signature = (
+        signature[:-1] + alphabet[final_index + 1]
+    )
     with pytest.raises(PermitSignatureError):
-        permits.verify(token[:-1] + ("A" if token[-1] != "A" else "B"))
+        permits.verify(token.rsplit(".", 1)[0] + "." + noncanonical_signature)
 
     now[0] = 1_005.0
     with pytest.raises(PermitExpiredError):

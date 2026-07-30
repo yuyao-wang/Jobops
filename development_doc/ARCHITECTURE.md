@@ -1369,6 +1369,26 @@ with eligible evidence; every consumed-but-unverified result is persisted as
 typed consumption reference, intent ID and hashed/bounded evidence summary,
 never bearer bytes or browser content.
 
+P2c7a supplies the production Browser resource boundary used by both P2c3 and
+P2c6 without changing their `BrowserLeaseProvider.lease(owner=...)` contract.
+One explicitly constructed, server-owned `ProductionBrowserRuntime` owns the
+Playwright driver, one persistent Chromium context and the existing SQLite
+`LeaseManager`. Its closed `BrowserRuntimeConfig` is projected only from
+application infrastructure configuration into a controlled directory below
+Private Home's browser root; Candidate facts, answers and the legacy mixed
+profile are not runtime inputs.
+
+Startup validates the configured profile directory, rejects symlinks and
+Chromium profile locks, and launches only the persistent context. It performs
+no navigation, login, Agent call or ATS action. Each exclusive
+`browser:chromium` lease creates a fresh page, applies bounded page and
+navigation timeouts, and closes every page created during that lease on
+normal exit, exception or cancellation. The persistent context survives
+individual leases, while shutdown first blocks new acquisitions, waits for
+active leases, closes the context and then stops Playwright. V1 is explicitly
+single-subject and `max_active_leases=1`; it does not claim safe browser-state
+sharing across subjects.
+
 P2c7 adds the single-Plan public orchestration boundary above P2c3–P2c6.
 Given one existing `ApplicationBundleAssemblyRecord`, it invokes only the four
 public stage callables in the fixed order non-submit execution, Gate B
@@ -2112,3 +2132,57 @@ validator continues to reject unsafe selections, claims, LaTeX, visual
 findings, or layout changes. Factory resolution has no fallback and returns no
 partial bundle when a backend, credential, modality, schema, or isolation
 requirement is unavailable.
+
+## P2c10c0 Production application bootstrap
+
+Production startup now begins with one repository-external,
+`production-application-config-v1` document. Its closed typed sections cover
+Private Home, authenticated sessions, Search allowlists, the existing M1 AI
+mapping, Preparation infrastructure, Plan Execution Policy rules, the P2c7a
+Browser runtime, Automation budgets, infrastructure, and safe diagnostics.
+Candidate facts, answers, materials, resume paths, job targets, and plaintext
+secrets are outside this contract.
+
+The loader resolves `--config`, then `JOBOPS_CONFIG_FILE`, then the
+platform-specific application config location. It accepts one bounded,
+owner-only, non-symlinked YAML document outside every Git worktree and rejects
+unknown keys, tags, aliases, unsupported versions, and unsafe path overlap.
+Secret references are resolved through environment or the existing credential
+store for availability and are immediately discarded.
+
+`ProductionApplicationBootstrap` constructs Private Home infrastructure, the
+production repository bundle, Keychain session provider, S3b1 and P1b3 factory
+inputs, the existing P2b4g dependency bundle, P2c1d2 rules, an unstarted P2c7a
+runtime, and bounded Automation policy. It performs no search, generation,
+Preparation, navigation, ATS operation, or business-record creation. Owned
+resources close in reverse order after partial failure.
+
+`python main.py server` no longer calls the legacy `load_profile()` or starts
+the legacy Scheduler. It builds the complete P2c10c composition after a
+successful bootstrap, atomically installs both authenticated controllers, and
+only then starts FastAPI. A missing mandatory dependency stops startup before
+the server can expose half-configured permanent-503 routes.
+
+## P2c10c Production automation composition
+
+`production-automation-composition-v1` is the single authoritative production
+root for both Job Library Refresh and the five-stage Automation Cycle. It
+constructs S3b1 typed Job Search, the P1b3 provider-neutral Priority Agent,
+P1d1/P1d3 priority services, the complete P2b4g 18-stage async Preparation
+recipe, P2b6, P2c10b1 exact context binding, P2c1-v2 with the P2c1c production
+factory, and the P2c8/P2c9/P2c10a execution handoff.
+
+Profile and execution-policy records are obtained only through the P2c1d1 and
+P2c1d2 public contracts. P2c10b1 orders profile projection, policy decision,
+P2c1d3 validation, immutable binding persistence, and P2c1-v2 assembly. The
+root never selects a latest record, reconstructs either value, or gives the
+factory repository access.
+
+Construction performs static capability and dependency validation only. It
+does not search, generate model output, run Preparation, navigate a browser,
+execute ATS logic, or write business records. The FastAPI lifespan owns the
+bootstrap resources, starts them once, and closes them in reverse order.
+Dashboard installation is atomic: Refresh, Automation, authenticated subject
+resolution, lifecycle resources, and redacted diagnostics are installed
+together. Server budgets remain authoritative and request values cannot
+expand them.

@@ -30,6 +30,7 @@ import sys
 import yaml
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from playwright.async_api import async_playwright
 
@@ -71,6 +72,32 @@ def load_profile(path: str = "profile.yaml") -> dict:
         print(f"  Applications requiring resume upload will fail.")
 
     return profile
+
+
+async def prepare_production_server_bootstrap(
+    *,
+    config_path: str | Path | None,
+    environ: dict[str, str] | None = None,
+    **bootstrap_dependencies: Any,
+):
+    """Load the P2c10c0 contract without touching the legacy profile."""
+
+    from core.production_application_bootstrap import (
+        build_production_application_bootstrap,
+        load_production_application_config,
+        resolve_production_config_path,
+    )
+
+    resolved = resolve_production_config_path(
+        cli_path=config_path,
+        environ=environ,
+    )
+    config = load_production_application_config(resolved)
+    return await build_production_application_bootstrap(
+        config,
+        environ=environ,
+        **bootstrap_dependencies,
+    )
 
 
 async def cmd_discover(profile: dict):
@@ -681,6 +708,13 @@ Examples:
     server_parser = subparsers.add_parser("server", help="Launch web dashboard")
     server_parser.add_argument("--port", type=int, default=8080, help="Port (default: 8080)")
     server_parser.add_argument("--host", default="127.0.0.1", help="Host (default: 127.0.0.1)")
+    server_parser.add_argument(
+        "--config",
+        help=(
+            "Absolute path to the repository-external production "
+            "application config"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -697,6 +731,44 @@ Examples:
 
     if args.command == "reset":
         cmd_reset()
+        return
+
+    if args.command == "server":
+        from core.production_application_bootstrap import (
+            ProductionApplicationBootstrapError,
+        )
+        from core.production_automation_composition import (
+            ProductionAutomationCompositionError,
+            build_production_automation_composition,
+        )
+
+        try:
+            bootstrap = asyncio.run(
+                prepare_production_server_bootstrap(
+                    config_path=args.config,
+                )
+            )
+        except ProductionApplicationBootstrapError as exc:
+            parser.error(
+                "production bootstrap failed "
+                f"({exc.failure.value}); provide --config or "
+                "JOBOPS_CONFIG_FILE using the production application template"
+            )
+        try:
+            composition = build_production_automation_composition(
+                bootstrap=bootstrap
+            )
+            from dashboard.server import app, run_server
+
+            composition.install_dashboard(app)
+            run_server(host=args.host, port=args.port)
+        except ProductionAutomationCompositionError as exc:
+            parser.error(
+                "production composition failed "
+                f"({exc.failure.value}); the server was not started"
+            )
+        finally:
+            asyncio.run(bootstrap.close())
         return
 
     profile = load_profile()
@@ -743,14 +815,6 @@ Examples:
         cmd_workday_keychain(profile, args.url, args.action)
     elif args.command == "rescore":
         asyncio.run(cmd_rescore(profile))
-    elif args.command == "server":
-        from dashboard.server import run_server
-        try:
-            from scheduler import setup_scheduler
-            setup_scheduler()  # Configures jobs; actual start happens in FastAPI lifespan
-        except Exception as e:
-            print(f"  Scheduler setup warning: {e}")
-        run_server(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

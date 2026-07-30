@@ -21,6 +21,7 @@ resumes/
 /resume.pdf
 *.pdf
 *.docx
+*.pptx
 *.pages
 *.rtf
 

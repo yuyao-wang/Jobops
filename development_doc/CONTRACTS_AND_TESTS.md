@@ -35,6 +35,7 @@ This document is the authority for component contracts and implementation eviden
 | `RecoverableApplicationBundleEnvelopeRepository.get_for_assembly()` | Implemented P2c1b as the immutable, subject-isolated and hash-verified recovery contract for the exact P2c1 ApplicationBundle |
 | `plan_application_document_uploads()` / `ApplicationDocumentUploadPlan` | Implemented P2c2 as deterministic at-most-once Resume/Cover Letter PDF selection for typed FormIR file controls and shared BaseATSAdapter fill |
 | `execute_non_submit_application()` / `NonSubmitApplicationExecutionRecord` | Implemented P2c3 as the Gate-A-aware, one-shot Browser/Engine handoff for one recovered P2c1 bundle with a hard non-submit boundary |
+| `BrowserRuntimeConfig` / `ProductionBrowserRuntime` / `ProductionBrowserLeaseProvider` | Implemented P2c7a as the closed application-level Chromium configuration, server-owned Playwright and persistent-context lifecycle, exact shared P2c3/P2c6 `lease(owner=...)` port, existing LeaseManager-backed exclusive TTL lease and fresh-page-per-lease policy |
 | `decide_submission_authorization()` / `SubmissionAuthorizationDecision` | Implemented P2c4 as the offline Gate B policy decision for one exact P2c3 Review, with automatic or review-scoped explicit-user authorization and zero submission side effects |
 | `PlanScopedSubmissionPermitBindings` / `GateAConsumptionReference` / `OpaquePermitTokenReference` | Implemented P2c5a as an explicit versioned extension of the existing Foundation Permit contract; legacy permit bytes and semantics remain unchanged, P2c3 v2 records persist verifiable Gate A consumption provenance, signer metadata is read-only, and bearer tokens remain behind subject-isolated opaque credential references |
 | `issue_submission_permit()` / `SubmissionPermitRecord` | Implemented P2c5b as the offline issuance boundary that converts one exact `AUTHORIZED` Decision into a 300-second, plan/review/adapter/action-scoped Foundation Gate B permit while persisting only an opaque token reference |
@@ -1764,6 +1765,7 @@ These are sanitized fixture results, not live-site reliability claims.
 | Plan-scoped Submission Permit Contract Migration | Implemented P2c5a | 4 focused cases plus Foundation Permit and P2c3 regressions cover byte-compatible legacy bindings, exact plan/subject/authorization/execution/adapter/action scope validation, ledger-verifiable Gate A consumption references, non-secret signer metadata, subject-isolated opaque token recovery, token drift fail-closure, and zero submission-permit issuance or Browser/Engine/ATS/submit capability |
 | Plan-scoped Submission Permit Issuance | Implemented P2c5b | 4 focused cases cover exact AUTHORIZED issuance with token-only opaque storage, unauthorized/binding/Gate-A/submission-state fail-closure, validator rejection after every plan-scoped binding mutation, zero-issue unexpired replay, v1 expiry requiring reauthorization, issuer/store/record failure isolation, and zero Browser/Engine/ATS/submission-intent/submit capability; 26 focused P2c3–P2c5b and Foundation Permit regressions pass |
 | Authorized Submission Execution and Evidence | Implemented P2c6 | 5 focused cases cover one verified submit with intent and bounded evidence, expired/consumed/binding/token rejection before Browser, changed-Review and runtime-input defer before consumption, adapter-callback point-of-no-return consumption, successful zero-call replay, consumed-but-unverified uncertainty with no retry, and bearer-token exclusion; 100 focused and affected P2c3–P2c6, Foundation Permit, Engine, shared-adapter and Workday regressions pass with 47 environment skips |
+| Production Browser Runtime and Execution Ports | Implemented P2c7a | 4 focused fake-Playwright cases cover closed application-config projection, controlled profile path/symlink/lock rejection, one persistent-context startup, P2c3/P2c6 Protocol compatibility, LeaseManager exclusivity and TTL, fresh page lifecycle under exception and cancellation, idempotent shutdown and path/credential-safe diagnostics; 40 focused Browser, P2c3, P2c6 and Foundation Lease regressions pass without starting Chromium or accessing ATS |
 | Single-job Automated Application Execution | Implemented P2c7 | 5 focused cases cover exact P2c3→P2c4→P2c5b→P2c6 order with one shared explicit timestamp and maximum concurrency one, Gate A and explicit-user authorization deferrals with zero later calls, failure prefix preservation, immutable restart recovery, terminal uncertainty with no retry, and completed/uncertain zero-call replay |
 | Current Application Execution Queue | Implemented P2c8 | 5 focused cases cover READY without a Run, permanent SUBMITTED across a newer Assembly, terminal uncertainty ahead of later nonterminal history, old deferred isolation from a new current Assembly, deterministic status/priority ordering, stable item/snapshot hashes across changed evaluation time, mtime and reversed repository reads, plus byte/mtime-proven zero writes; 25 Assembly-current and ExecutionRun repository regressions pass |
 | Selective Batch Application Execution | Implemented P2c9 | 4 focused cases cover READY-only snapshot-order execution with maximum concurrency one, deferred/failed/submitted/uncertain typed skips, per-Plan defer/failure/uncertainty isolation with later execution continuation, caller-order allowlist de-duplication, execution-count bounds that exclude skips/not-found, per-Plan Gate A inputs, one queue read per batch and P2c7 `UNCHANGED` replay; 3 focused P2c7/P2c8 terminal regressions pass |
@@ -1797,6 +1799,28 @@ Current release fixture baseline:
 - supported ATS Review arrival: `5/5`;
 - model calls on those five paths: `[0, 0, 0, 0, 0]` (median `0`);
 - live Review-arrival and submit-success metrics: not yet measured.
+
+### V1a End-to-End Automated Application Acceptance
+
+V1a re-executes the repository's production-boundary and sanitized execution
+evidence as one release gate. The gate covers repository-external bootstrap,
+the authoritative P2c10c composition, authenticated Refresh and Automation
+controllers, the fixed five-stage P2c10a ordering, exact Profile/Policy context
+handoff, assembly-v2, the execution safety chain, and the five deterministic
+ATS fixture paths.
+
+The accepted fixture result is `5/5` Review arrival with per-path model calls
+`[0, 0, 0, 0, 0]`, plus `1,826` passing non-live tests under
+`tests/` with `tests/test_real_forms.py` excluded. The release gate also
+verifies closed execution-profile inputs, controller readiness instead of
+legacy `profile.yaml` health, loopback-only serving, canonical HMAC permit
+encoding, duplicate-submit prevention, `SUBMIT_UNKNOWN` no-retry behavior, and
+eligible evidence requirements.
+
+This result proves sanitized contract compatibility, not live-site success.
+No V1a test performs network discovery, uses real candidate data, calls a real
+model, logs into an ATS, or submits an application. Live Review-arrival and
+submission metrics remain separate.
 
 ### Test policy
 
@@ -1990,3 +2014,55 @@ unavailable single-call failures, complete-bundle fail-fast behavior for
 missing backend, credential, and image modality, secret-safe bounded
 diagnostics and stable resolution metadata, and deterministic rejection of an
 unsafe typed LaTeX result by the existing construction validator.
+
+# P2c10c0 Production Application Configuration and Bootstrap
+
+`production-application-config-v1` is a closed, single-document YAML contract
+loaded only from an explicit repository-external location. Config selection is
+CLI, environment, then platform default; it never scans the working directory
+or falls back to `profile.yaml`. Owner/permission, symlink, Git-worktree,
+document-count, size, YAML tag/alias, section-key, version, path, provider,
+authority, and budget checks all fail before server startup.
+
+Secret references support ENV and the existing Keychain/CredentialStore
+boundary. Resolved values are transient and absent from config serialization,
+bootstrap results, errors, and diagnostics. Selected AI backends retain the
+M1a/M1b credential and isolation checks; missing credentials for an unselected
+backend are irrelevant.
+
+`production-application-bootstrap-v1` returns the typed dependencies needed by
+the later P2c10c root: repositories, authenticated session provider, job
+search and Priority factory inputs, the P2b4g dependency bundle, P2c1d2
+execution rules, the unstarted P2c7a runtime, Automation budgets, owned
+resources, and safe diagnostics. It never builds a Preparation recipe or
+controller composition and never runs network, models, compilation, browser
+navigation, ATS logic, or business stages.
+
+Four focused tests cover closed external config and legacy isolation; complete
+construction with production Codex adapter types but zero semantic/Browser
+calls; missing-secret and partial-bootstrap cleanup behavior; and the
+`main.py server` ordering that bootstraps before any legacy profile access and
+hands the typed bootstrap directly to the P2c10c composition root.
+
+# P2c10c Production Automation Composition and Dashboard Wiring
+
+`build_production_automation_composition(...)` consumes exactly one validated
+`ProductionApplicationBootstrap`. It returns
+`production-automation-composition-v1`, containing the S3b refresh controller,
+the P2c10a Automation controller, all intervening production ports and public
+callables, owned resources, and bounded diagnostics. Construction is
+side-effect free with respect to network, model generation, browser
+navigation, ATS execution, and business records.
+
+The production graph uses the S3b1 and P1b3 factories, the authoritative
+P2b4g recipe, the P2c1d1/P2c1d2/P2c1d3 public context boundary, the P2c10b1
+binder, the P2c1c factory, P2c1-v2, and the existing P2c8/P2c9/P2c10a
+callables. Missing repositories, providers, adapters, factory components,
+authentication, or execution infrastructure produce a typed construction
+failure; no partial composition is returned.
+
+Four focused cases prove complete static construction with all 18 canonical
+Preparation stages; atomic controller installation and resource lifecycle;
+authenticated Refresh and Automation routing without missing-controller 503s;
+and mandatory-dependency fail-fast plus redacted diagnostics and static
+legacy/fake/event-loop-bridge exclusions.

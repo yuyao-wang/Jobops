@@ -844,6 +844,34 @@ version without rewriting its content or historical decisions.
   non-submit policy. Matching persisted execution returns `UNCHANGED` before
   Browser. No result grants Gate B or submit authority.
 
+### Production Browser runtime and execution lease
+
+- Browser automation configuration is application infrastructure. The closed
+  `BrowserRuntimeConfig` may be projected from the dedicated
+  `browser_runtime` application section only; identity facts, application
+  answers, Resume paths and the legacy mixed profile are not Browser inputs.
+- The server owns one explicitly injected Playwright runtime and persistent
+  Chromium context. Construction performs no network action; startup creates
+  only the context and does not navigate, log in, call an Agent or access ATS.
+- The configured user-data directory must resolve below Private Home's
+  controlled browser root. Symlinks and active Chromium profile lock files
+  fail closed; the runtime never deletes locks or switches to a temporary or
+  everyday Chrome profile.
+- P2c3 and P2c6 share the same production `BrowserLeaseProvider`. Each
+  bounded non-empty owner acquires the existing `browser:chromium`
+  `LeaseManager` resource with its configured TTL, and V1 permits exactly one
+  active lease.
+- Each lease receives a new page and never reuses prior form DOM. The page is
+  closed and the underlying lease released on success, failure, exception or
+  cancellation; the persistent context remains alive for later execution.
+- V1 is single-subject by explicit policy. Cross-subject persistent-session
+  isolation, Browser pooling, automatic restart and watchdog behavior are not
+  claimed.
+- Shutdown rejects new leases, waits boundedly for active leases, closes
+  lease pages and the persistent context, and stops Playwright in deterministic
+  order. Runtime diagnostics expose capability and lifecycle metadata only,
+  never profile paths, cookies, credentials, page URLs or form content.
+
 ### Plan-scoped Gate B submission authorization
 
 - P2c4 is a read-only evaluation of one persisted P2c3 result. It does not

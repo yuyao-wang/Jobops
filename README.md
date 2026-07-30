@@ -365,6 +365,11 @@ The V1 acceptance targets are:
 
 Contract fixtures test these invariants locally. Real-site metrics must be reported separately and must never be inferred from fixtures.
 
+Current sanitized V1a evidence: the production bootstrap/composition and
+authenticated controller handoff pass, all five supported ATS fixtures reach
+Review with zero model calls, and the routine non-live suite passes 1,826
+tests. This is fixture evidence only; it is not a live-site submission metric.
+
 ## Repository layout
 
 ```text

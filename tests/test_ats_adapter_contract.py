@@ -78,7 +78,6 @@ def profile() -> dict:
             "linkedin": "https://linkedin.example/ada",
             "github": "https://github.example/ada",
             "portfolio": "https://portfolio.example/ada",
-            "current_company": "Example Labs",
         }
     }
 

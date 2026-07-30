@@ -90,8 +90,17 @@ def _b64url_encode(value: bytes) -> str:
 
 def _b64url_decode(value: str) -> bytes:
     try:
+        if not isinstance(value, str) or not value or "=" in value:
+            raise ValueError("non-canonical base64url")
         padding = "=" * (-len(value) % 4)
-        return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        decoded = base64.b64decode(
+            value + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+        if _b64url_encode(decoded) != value:
+            raise ValueError("non-canonical base64url")
+        return decoded
     except (ValueError, binascii.Error) as exc:
         raise PermitSignatureError("invalid permit encoding") from exc
 

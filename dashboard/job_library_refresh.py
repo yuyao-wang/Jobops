@@ -227,9 +227,16 @@ class RefreshJobLibraryUIController:
         *,
         manual_refresh: ManualRefreshCallable,
         clock: Callable[[], datetime],
+        max_reprioritizations: int | None = None,
     ) -> None:
+        if max_reprioritizations is not None and (
+            type(max_reprioritizations) is not int
+            or max_reprioritizations < 0
+        ):
+            raise ValueError("max_reprioritizations must be non-negative")
         self._manual_refresh = manual_refresh
         self._clock = clock
+        self._max_reprioritizations = max_reprioritizations
         self._active: dict[
             str, tuple[str, asyncio.Task[RefreshJobLibraryUIResult]]
         ] = {}
@@ -286,7 +293,17 @@ class RefreshJobLibraryUIController:
             subject_id=subject_id,
             invocation_id=command.invocation_id,
             now=now,
-            max_reprioritizations=command.max_reprioritizations,
+            max_reprioritizations=(
+                min(
+                    command.max_reprioritizations,
+                    self._max_reprioritizations,
+                )
+                if command.max_reprioritizations is not None
+                and self._max_reprioritizations is not None
+                else self._max_reprioritizations
+                if self._max_reprioritizations is not None
+                else command.max_reprioritizations
+            ),
         )
         try:
             result = await self._manual_refresh(s3b_command)

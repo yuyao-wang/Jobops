@@ -1,0 +1,111 @@
+# Copy this file to a repository-external owner-only location (chmod 600).
+config_contract_version: production-application-config-v1
+
+private_home:
+  root: /absolute/path/outside/the/repository/jobops-private
+  schema_version: private-home-v1
+  create_if_missing: true
+  permissions_policy: OWNER_ONLY
+
+authentication:
+  provider_id: KEYCHAIN_AUTHENTICATED_SESSION
+  session_contract_version: authenticated-subject-session-v1
+  session_secret_ref:
+    source: KEYCHAIN
+    service: jobops.dashboard.session
+    account: local
+  cookie_policy: HTTP_ONLY_SAME_SITE_STRICT
+  local_subject_binding_policy: SESSION_RECORD
+  trusted_proxy_policy: LOOPBACK_ONLY
+  contract_version: production-authentication-runtime-v1
+
+search:
+  enabled_providers: [GREENHOUSE]
+  boards:
+    - canonical_company: Example Company
+      board_token: example
+      aliases: []
+  request_limits:
+    max_queries_per_refresh: 20
+    max_results_per_query: 10
+    max_response_bytes: 5000000
+    max_redirects: 2
+    max_concurrent_requests: 1
+  timeout_policy:
+    connect_timeout_seconds: 5
+    read_timeout_seconds: 10
+  search_contract_version: job-search-execution-policy-v1
+
+ai:
+  default_backend: codex_cli
+  backends:
+    codex_cli:
+      isolation_profile: ISOLATED_SUBSCRIPTION_CLI_V1
+  components:
+    priority_evaluation: codex_cli
+    resume_selection: codex_cli
+    resume_tailoring: codex_cli
+    resume_fact_qa: codex_cli
+    base_latex_selection: codex_cli
+    resume_latex_construction: codex_cli
+    resume_layout_revision: codex_cli
+    cover_letter: codex_cli
+    cover_letter_fact_qa: codex_cli
+    resume_visual_qa: codex_cli
+
+preparation:
+  recipe_contract_version: production-application-preparation-recipe-v1
+  latex_engine: pdflatex
+  compile_timeout_seconds: 60
+  renderer_dpi: 144
+  max_source_bytes: 5000000
+  max_material_bytes: 10000000
+  max_revisions: 2
+  contract_version: production-preparation-runtime-v1
+
+execution_policy:
+  configuration_id: production-policy
+  configuration_version: 1
+  mode: SUPERVISED
+  authority_configured: true
+  email_verification_agent_enabled: false
+  allow_keychain_login: true
+  allow_account_registration: false
+  rules_contract_version: plan-execution-policy-configuration-v1
+  contract_version: production-execution-policy-runtime-v1
+
+browser:
+  browser_engine: CHROMIUM
+  headless: true
+  profile_name: production
+  slow_mo_ms: 0
+  launch_timeout_seconds: 30
+  navigation_timeout_seconds: 30
+  lease_ttl_seconds: 1800
+  max_active_leases: 1
+  locale: en-CA
+  timezone_id: America/Edmonton
+  download_policy: DENY
+  tracing_policy: DISABLED
+  browser_args_policy_version: chromium-browser-args-v1
+  page_policy_version: new-page-per-lease-v1
+  single_subject_mode: true
+  config_contract_version: browser-runtime-config-v1
+
+automation:
+  max_priority_refreshes: 10
+  max_plan_creations: 10
+  max_preparations: 5
+  max_bundle_assemblies: 5
+  max_executions: 2
+  rate_limit_policy: SERIAL_BOUNDED_V1
+  cycle_contract_version: automation-cycle-ui-budgets-v2
+  composition_binding: jobops-production-automation-v1
+
+infrastructure:
+  http_client_id: HTTPX_BOUNDED_V1
+  repository_contract_version: production-repository-bundle-v1
+  contract_version: production-infrastructure-v1
+
+diagnostics:
+  level: SAFE

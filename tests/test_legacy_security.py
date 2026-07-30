@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.10", "dashboard.test"])
-def test_legacy_dashboard_refuses_non_loopback_bind(host: str) -> None:
-    with pytest.raises(RuntimeError, match="no authentication"):
+def test_production_dashboard_refuses_non_loopback_bind(host: str) -> None:
+    with pytest.raises(RuntimeError, match="permits only.*loopback"):
         run_server(host=host, port=8080)
 
 

@@ -168,7 +168,7 @@ async def test_credentials_stay_secret_and_boundary_has_no_business_calls(
     assert stored is not None
     assert credential.secret not in stored
     assert credential.secret not in repr(credential)
-    assert await health() == {"status": "ok", "profile": Path("profile.yaml").exists()}
+    assert await health() == {"status": "not_ready"}
 
     forbidden = {
         "job_library_refresh",

@@ -13,13 +13,15 @@ Architecture notes:
 import asyncio
 import base64
 import copy
+import inspect
 import json
 import ipaddress
 import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from collections.abc import Mapping
+from typing import Any, Optional
 
 logger = logging.getLogger("dashboard.server")
 
@@ -143,19 +145,31 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app):
-    """Start scheduler when server starts, stop when it shuts down."""
+    """Own explicitly injected production resources; never start a Scheduler."""
+
+    resources = tuple(
+        getattr(app.state, "production_owned_resources", ())
+    )
     try:
-        from scheduler import setup_scheduler, start_scheduler
-        setup_scheduler()
-        start_scheduler()
-    except Exception as e:
-        print(f"  Scheduler start skipped: {e}")
-    yield
-    try:
-        from scheduler import stop_scheduler
-        stop_scheduler()
-    except Exception:
-        pass
+        for resource in resources:
+            start = getattr(resource, "start", None)
+            if start is None:
+                continue
+            result = start()
+            if inspect.isawaitable(result):
+                await result
+        yield
+    finally:
+        for resource in reversed(resources):
+            close = getattr(resource, "close", None)
+            if close is None:
+                continue
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("production resource cleanup failed")
 
 app = FastAPI(title="JobOps", version="1.0.0", lifespan=lifespan)
 
@@ -188,6 +202,40 @@ def configure_automation_cycle_ui(
         raise TypeError("authenticated_subject must be callable")
     app.state.automation_cycle_controller = controller
     app.state.authenticated_subject_dependency = authenticated_subject
+
+
+def configure_production_automation_ui(
+    *,
+    application: FastAPI,
+    refresh_controller: RefreshJobLibraryUIController,
+    automation_controller: ContinueAutomationUIController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+    owned_resources: tuple[object, ...],
+    composition_diagnostics: Mapping[str, Any],
+) -> None:
+    """Atomically install the complete P2c10c production UI boundary."""
+
+    if not isinstance(application, FastAPI):
+        raise TypeError("application must be FastAPI")
+    if not isinstance(refresh_controller, RefreshJobLibraryUIController):
+        raise TypeError("refresh controller is invalid")
+    if not isinstance(automation_controller, ContinueAutomationUIController):
+        raise TypeError("automation controller is invalid")
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated subject dependency is invalid")
+    if not isinstance(owned_resources, tuple) or any(
+        resource is None for resource in owned_resources
+    ):
+        raise TypeError("owned resources are invalid")
+    if not isinstance(composition_diagnostics, Mapping):
+        raise TypeError("composition diagnostics are invalid")
+    application.state.job_library_refresh_controller = refresh_controller
+    application.state.automation_cycle_controller = automation_controller
+    application.state.authenticated_subject_dependency = authenticated_subject
+    application.state.production_owned_resources = owned_resources
+    application.state.production_composition_diagnostics = dict(
+        composition_diagnostics
+    )
 
 
 def configure_human_attention_inbox_ui(
@@ -468,7 +516,15 @@ async def _authenticated_dashboard_subject(
 @app.get("/api/health")
 async def health() -> dict:
     """Health check for Docker and monitoring."""
-    return {"status": "ok", "profile": Path("profile.yaml").exists()}
+    configured = all(
+        getattr(app.state, name, None) is not None
+        for name in (
+            "job_library_refresh_controller",
+            "automation_cycle_controller",
+            "authenticated_subject_dependency",
+        )
+    )
+    return {"status": "ok" if configured else "not_ready"}
 
 
 # ---------------------------------------------------------------------------
@@ -2855,8 +2911,19 @@ def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             loopback = False
     if not loopback:
         raise RuntimeError(
-            "The legacy dashboard has no authentication and may bind only to a "
-            "literal loopback address"
+            "The production dashboard currently permits only a literal "
+            "loopback bind address"
+        )
+    if not all(
+        getattr(app.state, name, None) is not None
+        for name in (
+            "job_library_refresh_controller",
+            "automation_cycle_controller",
+            "authenticated_subject_dependency",
+        )
+    ):
+        raise RuntimeError(
+            "production automation composition is not installed"
         )
     import uvicorn
 
