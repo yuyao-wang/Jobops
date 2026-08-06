@@ -32,8 +32,10 @@ from .application_preparation_orchestrator import (
     ResumeManifestEntryStopReason,
 )
 from .prepared_resume_material import (
+    ApprovedResumeReuseMaterial,
     PreparedMaterialRole,
     PreparedResumeMaterial,
+    PreparedResumeMaterialRecord,
     PreparedResumeMaterialReadStatus,
     PreparedResumeMaterialRepository,
 )
@@ -193,12 +195,14 @@ def _subject_storage_key(subject_id: str) -> str:
 
 
 def prepared_material_content_hash(
-    material: PreparedResumeMaterial,
+    material: PreparedResumeMaterialRecord,
 ) -> str:
     """Hash the published material's own content, without altering P2a9."""
 
-    if not isinstance(material, PreparedResumeMaterial):
-        raise TypeError("material must be a PreparedResumeMaterial")
+    if not isinstance(
+        material, (PreparedResumeMaterial, ApprovedResumeReuseMaterial)
+    ):
+        raise TypeError("material must be a prepared-resume record")
     return _canonical_hash(material.content_dict())
 
 
@@ -1353,7 +1357,10 @@ def assemble_plan_material_manifest(
         )
     if (
         material_read.status is not PreparedResumeMaterialReadStatus.FOUND
-        or not isinstance(material_read.material, PreparedResumeMaterial)
+        or not isinstance(
+            material_read.material,
+            (PreparedResumeMaterial, ApprovedResumeReuseMaterial),
+        )
     ):
         return _failure(
             command,
@@ -1379,7 +1386,7 @@ def assemble_plan_material_manifest(
             PlanMaterialManifestNotReadyReason.PREPARED_RESUME_PLAN_MISMATCH,
             detail="the published resume belongs to a different plan chain.",
         )
-    if not all(
+    if isinstance(material, PreparedResumeMaterial) and not all(
         (
             material.tailored_resume_draft_id,
             material.tailored_resume_draft_hash,
@@ -1397,6 +1404,15 @@ def assemble_plan_material_manifest(
             command,
             PlanMaterialManifestNotReadyReason.PREPARED_RESUME_PLAN_MISMATCH,
             detail="the published resume is missing preparation provenance.",
+        )
+    if isinstance(material, ApprovedResumeReuseMaterial) and (
+        material.pdf_sha256 != material.source_artifact_sha256
+        or plan.priority_level.value != "P2"
+    ):
+        return _not_ready(
+            command,
+            PlanMaterialManifestNotReadyReason.PREPARED_RESUME_PLAN_MISMATCH,
+            detail="the approved-resume reuse record is not valid for P2.",
         )
 
     try:
@@ -1422,6 +1438,9 @@ def assemble_plan_material_manifest(
         )
 
     material_hash = prepared_material_content_hash(material)
+    provenance_type = PlanMaterialProvenanceType.PREPARED_RESUME_MATERIAL
+    source_record_id = material.material_id
+    source_record_hash = material_hash
     entry_content = {
         "artifact_byte_size": len(content),
         "artifact_reference": material.pdf_reference,
@@ -1431,11 +1450,9 @@ def assemble_plan_material_manifest(
         "order": 0,
         "page_count": material.page_count,
         "prepared_material_id": material.material_id,
-        "provenance_type": (
-            PlanMaterialProvenanceType.PREPARED_RESUME_MATERIAL.value
-        ),
-        "source_record_hash": material_hash,
-        "source_record_id": material.material_id,
+        "provenance_type": provenance_type.value,
+        "source_record_hash": source_record_hash,
+        "source_record_id": source_record_id,
     }
     try:
         entry = PlanMaterialEntry(
@@ -1447,11 +1464,9 @@ def assemble_plan_material_manifest(
             artifact_sha256=material.pdf_sha256,
             media_type=RESUME_MEDIA_TYPE,
             page_count=material.page_count,
-            provenance_type=(
-                PlanMaterialProvenanceType.PREPARED_RESUME_MATERIAL
-            ),
-            source_record_id=material.material_id,
-            source_record_hash=material_hash,
+            provenance_type=provenance_type,
+            source_record_id=source_record_id,
+            source_record_hash=source_record_hash,
             artifact_byte_size=len(content),
             contract_version=PLAN_MATERIAL_MANIFEST_CONTRACT_VERSION,
         )

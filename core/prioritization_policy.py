@@ -517,6 +517,24 @@ class PrioritizationPolicyDraft:
         } and self.status is not expected:
             raise ValueError("draft ambiguity and status conflict")
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "draft_id": self.draft_id,
+            "raw_preference_text": self.raw_preference_text,
+            "hard_constraints": [
+                item.to_dict() for item in self.hard_constraints
+            ],
+            "soft_preferences": [
+                item.to_dict() for item in self.soft_preferences
+            ],
+            "preparation_admission": self.preparation_admission.to_dict(),
+            "ambiguities": list(self.ambiguities),
+            "status": self.status.value,
+            "created_at": _rfc3339(self.created_at),
+            "expires_at": _rfc3339(self.expires_at),
+            "interpreter_version": self.interpreter_version,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ApprovePolicyRequest:
@@ -546,6 +564,22 @@ class ApprovePolicyRequest:
                 "reviewed_preparation_admission must be a "
                 "PreparationAdmissionPolicy"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviseSoftPreferencesRequest:
+    subject_id: str
+    expected_policy_version: int
+    soft_preferences: tuple[SoftPreference, ...]
+
+    def __post_init__(self) -> None:
+        _validate_subject_id(self.subject_id)
+        if (
+            type(self.expected_policy_version) is not int
+            or self.expected_policy_version < 1
+        ):
+            raise ValueError("expected_policy_version must be positive")
+        _validated_soft_preferences(self.soft_preferences)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1344,12 +1378,117 @@ class PrioritizationPolicyService:
                 ),
             )
 
+    def revise_soft_preferences(
+        self,
+        request: ReviseSoftPreferencesRequest,
+    ) -> PrioritizationPolicyResult:
+        """Approve exact user-edited soft preferences without a model call."""
+
+        if not isinstance(request, ReviseSoftPreferencesRequest):
+            raise TypeError("request must be a ReviseSoftPreferencesRequest")
+        with self._approval_lock:
+            active = self._repository.get_active_policy(request.subject_id)
+            if active is None:
+                return self._policy_failure(
+                    PolicyReason.INVALID_REQUEST,
+                    "No active preference policy is available to edit.",
+                )
+            if active.policy_version != request.expected_policy_version:
+                return self._policy_failure(
+                    PolicyReason.INVALID_REQUEST,
+                    "The preference policy changed. Reload before saving.",
+                )
+            revised = _validated_soft_preferences(request.soft_preferences)
+            if not revised:
+                return self._policy_failure(
+                    PolicyReason.INVALID_REQUEST,
+                    "At least one preference is required.",
+                )
+            if {item.preference_id for item in revised} != {
+                item.preference_id for item in active.soft_preferences
+            }:
+                return self._policy_failure(
+                    PolicyReason.INVALID_REQUEST,
+                    "The submitted preference set does not match the active policy.",
+                )
+            now = self._clock()
+            _require_aware("clock result", now)
+            raw_text = "\n".join(
+                [
+                    *(
+                        f"Hard constraint [{item.constraint_type.value}]: "
+                        f"{item.normalized_value}"
+                        for item in active.hard_constraints
+                    ),
+                    *(
+                        f"Preference [{item.category.value}, "
+                        f"{item.importance.value if item.importance else 'UNSPECIFIED'}]: "
+                        f"{item.statement}"
+                        for item in revised
+                    ),
+                ]
+            )
+            draft = PrioritizationPolicyDraft(
+                draft_id=_clean_text(
+                    "draft_id",
+                    self._draft_id_factory(),
+                    maximum=160,
+                ),
+                subject_id=active.subject_id,
+                raw_preference_text=raw_text,
+                hard_constraints=active.hard_constraints,
+                soft_preferences=revised,
+                preparation_admission=active.preparation_admission,
+                ambiguities=(),
+                status=PolicyDraftStatus.READY_FOR_APPROVAL,
+                created_at=now,
+                expires_at=now + self._draft_ttl,
+                interpreter_version="manual-preference-editor-v1",
+            )
+            self._draft_store.put(draft)
+            policy = self._repository.approve(
+                draft=draft,
+                raw_preference_text=raw_text,
+                hard_constraints=active.hard_constraints,
+                soft_preferences=revised,
+                preparation_admission=active.preparation_admission,
+                approved_at=now,
+            )
+            self._draft_store.mark_approved(draft.draft_id)
+            return PrioritizationPolicyResult(
+                status=PolicyOperationStatus.SUCCEEDED,
+                reason_code=None,
+                retryable=False,
+                policy=policy,
+                message=(
+                    f"Prioritization policy version "
+                    f"{policy.policy_version} is active."
+                ),
+            )
+
     def get_active_policy(
         self,
         subject_id: str,
     ) -> PrioritizationPolicy | None:
         return self._repository.get_active_policy(
             _validate_subject_id(subject_id)
+        )
+
+    def get_draft_for_review(
+        self,
+        *,
+        subject_id: str,
+        draft_id: str,
+    ) -> PrioritizationPolicyDraft | None:
+        """Read one process-local draft without crossing subject scope."""
+
+        clean_subject = _validate_subject_id(subject_id)
+        clean_draft = _clean_text("draft_id", draft_id, maximum=160)
+        draft = self._draft_store.get(clean_draft)
+        return (
+            draft
+            if draft is not None and draft.subject_id == clean_subject
+            else None
         )
 
     @staticmethod
@@ -1392,6 +1531,7 @@ __all__ = [
     "PrioritizationPolicyStatus",
     "PrioritizationPolicyCompatibilityError",
     "PrivateHomePrioritizationPolicyRepository",
+    "ReviseSoftPreferencesRequest",
     "SoftPreference",
     "SoftPreferenceCategory",
     "default_preparation_admission_policy",

@@ -92,8 +92,10 @@ from .prepared_cover_letter_material import (
 )
 from .prepared_resume_material import (
     PREPARED_RESUME_MATERIAL_CONTRACT_VERSION,
+    PublishApprovedResumeReuseCommand,
     PublishPreparedResumeCommand,
     prepared_resume_publication_public_result,
+    publish_approved_resume_reuse,
     publish_prepared_resume,
 )
 from .resume_compilation import (
@@ -803,6 +805,28 @@ def _build_invokers(
         )
 
     def resume_publication(r):
+        if _optional_output(r, "visual_qa_result_id") is None:
+            return prepared_resume_publication_public_result(
+                publish_approved_resume_reuse(
+                    PublishApprovedResumeReuseCommand(
+                        r.subject_id,
+                        r.application_plan_id,
+                        r.output("resume_selection_decision_id"),
+                        r.now,
+                    ),
+                    application_plan_repository=(
+                        d.application_plan_repository
+                    ),
+                    selection_repository=(
+                        d.resume_selection_decision_repository
+                    ),
+                    candidate_repository=d.resume_candidate_repository,
+                    material_repository=(
+                        d.prepared_resume_material_repository
+                    ),
+                    home=d.private_home,
+                )
+            )
         layout_id = _optional_output(r, "layout_revision_run_id")
         return prepared_resume_publication_public_result(
             publish_prepared_resume(

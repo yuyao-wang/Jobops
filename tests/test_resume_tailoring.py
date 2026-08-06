@@ -56,6 +56,7 @@ from core.resume_tailoring import (
     TailoredResumeDraftWriteStatus,
     TailoredSectionProposal,
     tailor_resume,
+    tailored_resume_draft_public_result,
 )
 from core.source_resume_projection import (
     CreateSourceResumeProjectionCommand,
@@ -927,6 +928,14 @@ async def test_illegal_agent_output_defers_needs_human(
         result.reason_code
         is ResumeTailoringFailureReason.AGENT_OUTPUT_UNSAFE
     )
+    assert result.diagnostic_code == {
+        "untyped": "UNTYPED_STRUCTURED_RESULT",
+        "unknown_evidence": "UNKNOWN_EVIDENCE_REFERENCE",
+        "unknown_block": "UNKNOWN_SOURCE_BLOCK_IN_AGENT_OUTPUT",
+        "missing_block": (
+            "AGENT_OUTPUT_DOES_NOT_ACCOUNT_FOR_EVERY_SOURCE_BLOCK"
+        ),
+    }[corruption]
     assert not result.retryable
     assert not _draft_files(parts)
 
@@ -948,6 +957,11 @@ async def test_agent_unavailable_fails_without_auto_retry(
         is ResumeTailoringFailureReason.AGENT_UNAVAILABLE
     )
     assert result.retryable
+    assert result.diagnostic_code == "provider offline"
+    assert (
+        tailored_resume_draft_public_result(result).stop_reason.diagnostic_code
+        == "provider offline"
+    )
     assert len(agent.contexts) == 1
     assert not _draft_files(parts)
 

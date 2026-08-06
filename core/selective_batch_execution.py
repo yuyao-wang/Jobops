@@ -10,6 +10,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from .application_execution_orchestrator import (
+    ApplicationExecutionStage,
     ApplicationExecutionStatus,
     RunApplicationExecutionCommand,
     RunApplicationExecutionResult,
@@ -426,11 +427,13 @@ def _skipped(
 
 def _invalid(
     item: CurrentApplicationExecutionQueueItem,
+    *,
+    queue_status: CurrentApplicationExecutionStatus | None = None,
 ) -> SelectiveBatchExecutionPlanResult:
     return SelectiveBatchExecutionPlanResult(
         application_plan_id=item.application_plan_id,
         job_id=item.job_id,
-        queue_status=item.execution_status,
+        queue_status=queue_status or item.execution_status,
         execution_status=BatchApplicationExecutionStatus.FAILED,
         execution_run_id=None,
         reason=BatchApplicationExecutionReason.SINGLE_JOB_RESULT_INVALID,
@@ -440,11 +443,13 @@ def _invalid(
 
 def _exception(
     item: CurrentApplicationExecutionQueueItem,
+    *,
+    queue_status: CurrentApplicationExecutionStatus | None = None,
 ) -> SelectiveBatchExecutionPlanResult:
     return SelectiveBatchExecutionPlanResult(
         application_plan_id=item.application_plan_id,
         job_id=item.job_id,
-        queue_status=item.execution_status,
+        queue_status=queue_status or item.execution_status,
         execution_status=BatchApplicationExecutionStatus.FAILED,
         execution_run_id=None,
         reason=BatchApplicationExecutionReason.SINGLE_JOB_EXCEPTION,
@@ -455,9 +460,12 @@ def _exception(
 def _from_execution(
     item: CurrentApplicationExecutionQueueItem,
     result: Any,
+    *,
+    queue_status: CurrentApplicationExecutionStatus | None = None,
 ) -> SelectiveBatchExecutionPlanResult:
+    effective_queue_status = queue_status or item.execution_status
     if not isinstance(result, RunApplicationExecutionResult):
-        return _invalid(item)
+        return _invalid(item, queue_status=effective_queue_status)
     try:
         status = ApplicationExecutionStatus(result.status)
         run_id = result.run.run_id if result.run is not None else None
@@ -473,17 +481,17 @@ def _from_execution(
             else status.value
         )
     except (AttributeError, TypeError, ValueError):
-        return _invalid(item)
+        return _invalid(item, queue_status=effective_queue_status)
     if status in {
         ApplicationExecutionStatus.COMPLETED,
         ApplicationExecutionStatus.UNCHANGED,
     }:
         if run_id is None:
-            return _invalid(item)
+            return _invalid(item, queue_status=effective_queue_status)
         return SelectiveBatchExecutionPlanResult(
             application_plan_id=item.application_plan_id,
             job_id=item.job_id,
-            queue_status=item.execution_status,
+            queue_status=effective_queue_status,
             execution_status=BatchApplicationExecutionStatus(status.value),
             execution_run_id=run_id,
             reason=None,
@@ -503,7 +511,7 @@ def _from_execution(
     return SelectiveBatchExecutionPlanResult(
         application_plan_id=item.application_plan_id,
         job_id=item.job_id,
-        queue_status=item.execution_status,
+        queue_status=effective_queue_status,
         execution_status=BatchApplicationExecutionStatus(status.value),
         execution_run_id=run_id,
         reason=reason,
@@ -652,13 +660,32 @@ async def run_selective_batch_execution(
         if item is None:
             results.append(_not_found(plan_id))
             continue
-        if item.execution_status is not CurrentApplicationExecutionStatus.READY:
-            results.append(_skipped(item))
-            continue
-        selected += 1
         plan_input = inputs.get(
             plan_id, BatchExecutionPlanInput(application_plan_id=plan_id)
         )
+        resumes_gate_a = bool(
+            explicit
+            and plan_input.approve_gate_a
+            and item.execution_status
+            is CurrentApplicationExecutionStatus.DEFERRED
+            and item.deferred_stage
+            is ApplicationExecutionStage.NON_SUBMIT_EXECUTION
+            and item.deferred_reason
+            in {
+                "DEFERRED_GATE_A_REQUIRED",
+                "DEFERRED_RUNTIME_INPUT_REQUIRED",
+                "RUNTIME_INPUT_REQUIRED",
+            }
+        )
+        if (
+            item.execution_status
+            is not CurrentApplicationExecutionStatus.READY
+            and not resumes_gate_a
+        ):
+            results.append(_skipped(item))
+            continue
+        selected += 1
+        effective_queue_status = CurrentApplicationExecutionStatus.READY
         execution_command = RunApplicationExecutionCommand(
             subject_id=command.subject_id,
             application_bundle_assembly_record_id=item.assembly_record_id,
@@ -673,9 +700,17 @@ async def run_selective_batch_execution(
                 single_job_execution(execution_command)
             )
         except (OSError, RuntimeError, TypeError, ValueError):
-            results.append(_exception(item))
+            results.append(
+                _exception(item, queue_status=effective_queue_status)
+            )
             continue
-        results.append(_from_execution(item, public_result))
+        results.append(
+            _from_execution(
+                item,
+                public_result,
+                queue_status=effective_queue_status,
+            )
+        )
     typed_items = tuple(results)
     summary = _summarize(requested_count, typed_items)
     return SelectiveBatchExecutionResult(

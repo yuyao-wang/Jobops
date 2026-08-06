@@ -413,6 +413,12 @@ class JobApplicationEngine:
         persisted_review_attestation = self._review_attestation(
             previously_reviewed_outcome
         )
+        resume_approved_review = bool(
+            request_submit
+            and approved_review_hash
+            and previously_reviewed_outcome is not None
+            and approved_review_hash == previously_reviewed_hash
+        )
         if bundle.policy.blockers:
             outcome = ApplicationOutcome(
                 run_id=bundle.run_id,
@@ -499,41 +505,51 @@ class JobApplicationEngine:
                             current_browser_lease.owner,
                             current_browser_lease.expires_at,
                         )
-                review_outcome = await self.registry.run(
-                    AdapterRunRequest(
-                        page=page,
-                        job_url=bundle.job.url,
-                        job_id=bundle.job.job_id,
-                        run_id=bundle.run_id,
-                        profile=bundle.identity_profile,
-                        resume_path=str(bundle.materials.resume_path),
-                        company=bundle.job.company,
-                        cover_letter=bundle.materials.cover_letter,
-                        answers=bundle.answers,
-                        request_submit=False,
-                        persisted_review_attestation=persisted_review_attestation,
-                        credential_store=credential_store,
-                        mailbox_verifier=mailbox_verifier,
-                        brain=brain,
-                        platform_hint=platform_hint,
-                        tenant=tenant,
-                        materials=bundle.materials,
-                        private_home=private_home,
+                if resume_approved_review:
+                    # A later human-approved invocation must perform one fresh
+                    # fill/read-back/submit episode.  The adapter validates its
+                    # new Review fingerprint through the Gate B callback before
+                    # the click.  Running a separate non-submit episode first
+                    # can cause React ATS controls and file inputs to be
+                    # destructively filled twice on the same page.
+                    assert previously_reviewed_outcome is not None
+                    review_outcome = previously_reviewed_outcome
+                else:
+                    review_outcome = await self.registry.run(
+                        AdapterRunRequest(
+                            page=page,
+                            job_url=bundle.job.url,
+                            job_id=bundle.job.job_id,
+                            run_id=bundle.run_id,
+                            profile=bundle.identity_profile,
+                            resume_path=str(bundle.materials.resume_path),
+                            company=bundle.job.company,
+                            cover_letter=bundle.materials.cover_letter,
+                            answers=bundle.answers,
+                            request_submit=False,
+                            persisted_review_attestation=persisted_review_attestation,
+                            credential_store=credential_store,
+                            mailbox_verifier=mailbox_verifier,
+                            brain=brain,
+                            platform_hint=platform_hint,
+                            tenant=tenant,
+                            materials=bundle.materials,
+                            private_home=private_home,
+                        )
                     )
-                )
-                if review_outcome.status is OutcomeStatus.SUBMITTED_VERIFIED:
-                    review_outcome = self._reject_untrusted_verified(
-                        review_outcome,
-                        reason=(
-                            "The adapter reported a submission before Gate B was "
-                            "validated; success was not recorded"
-                        ),
-                    )
-                self._record_outcome(review_outcome)
-                if review_outcome.status is not OutcomeStatus.REVIEW_READY:
-                    return review_outcome
-                if not request_submit:
-                    return review_outcome
+                    if review_outcome.status is OutcomeStatus.SUBMITTED_VERIFIED:
+                        review_outcome = self._reject_untrusted_verified(
+                            review_outcome,
+                            reason=(
+                                "The adapter reported a submission before Gate B was "
+                                "validated; success was not recorded"
+                            ),
+                        )
+                    self._record_outcome(review_outcome)
+                    if review_outcome.status is not OutcomeStatus.REVIEW_READY:
+                        return review_outcome
+                    if not request_submit:
+                        return review_outcome
 
                 review_hash = self._review_hash(review_outcome)
                 if not review_hash:
@@ -697,7 +713,7 @@ class JobApplicationEngine:
                             brain=brain,
                             platform_hint=platform_hint,
                             tenant=tenant,
-                            navigate=False,
+                            navigate=resume_approved_review,
                             materials=bundle.materials,
                             private_home=private_home,
                         )

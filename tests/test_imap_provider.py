@@ -13,6 +13,7 @@ from auth import (
     IMAPProviderDisabled,
     IMAPProviderError,
     InMemoryCredentialStore,
+    MailAuthenticationResult,
 )
 
 
@@ -27,6 +28,7 @@ def _message(
     subject: str = "Verify your ExampleCo account",
     text: str = "ExampleCo verification code: 123456",
     recipient: str = ACCOUNT,
+    authentication_results: str | None = None,
 ) -> bytes:
     message = EmailMessage()
     message["From"] = "Workday <noreply@myworkday.com>"
@@ -34,6 +36,8 @@ def _message(
     message["Date"] = "Tue, 14 Jul 2026 17:58:00 +0000"
     message["Subject"] = subject
     message["Message-ID"] = "<raw-id-must-not-be-exposed@example.test>"
+    if authentication_results is not None:
+        message["Authentication-Results"] = authentication_results
     message.set_content(text)
     message.add_alternative(
         "<p>ExampleCo verification code: <strong>123456</strong></p>",
@@ -112,6 +116,7 @@ def _provider(
         host="imap.example.test",
         account=ACCOUNT,
         keychain_service=SERVICE,
+        trusted_authserv_ids=("mx.example.test",),
         **config_overrides,
     )
     provider = IMAPMailboxProvider(
@@ -165,6 +170,9 @@ async def test_imap_provider_uses_tls_keychain_secret_and_read_only_search():
     assert "raw-id-must-not-be-exposed" not in projected.message_id
     assert "123456" in projected.text
     assert "123456" in projected.html
+    assert projected.authentication.spf is MailAuthenticationResult.UNKNOWN
+    assert projected.authentication.dkim is MailAuthenticationResult.UNKNOWN
+    assert projected.authentication.dmarc is MailAuthenticationResult.UNKNOWN
 
     assert client.calls[0] == ("login", ACCOUNT, SECRET)
     assert ("select", "INBOX", True) in client.calls
@@ -183,6 +191,74 @@ async def test_imap_provider_uses_tls_keychain_secret_and_read_only_search():
     assert context.check_hostname is True
     assert context.verify_mode is ssl.CERT_REQUIRED
     assert context.minimum_version >= ssl.TLSVersion.TLSv1_2
+
+
+@pytest.mark.asyncio
+async def test_imap_provider_projects_sanitized_sender_authentication_evidence():
+    raw_marker = "raw-authserv-marker.example.test"
+    authenticated = _message(
+        authentication_results=(
+            "mx.example.test; spf=pass smtp.mailfrom=linkedin.com; "
+            "dkim=pass header.d=linkedin.com; "
+            f"dmarc=pass header.from=linkedin.com ({raw_marker})"
+        )
+    )
+    provider, _, _ = _provider(FakeIMAPClient({"41": authenticated}))
+
+    messages = await provider.search_recent(
+        recipient=ACCOUNT,
+        since=NOW - timedelta(minutes=5),
+        limit=1,
+    )
+
+    evidence = messages[0].authentication
+    assert evidence.spf is MailAuthenticationResult.PASS
+    assert evidence.dkim is MailAuthenticationResult.PASS
+    assert evidence.dmarc is MailAuthenticationResult.PASS
+    assert evidence.sender_is_authenticated is True
+    assert raw_marker not in repr(messages[0])
+
+
+@pytest.mark.asyncio
+async def test_imap_provider_ignores_forged_untrusted_authentication_results():
+    forged = _message(
+        authentication_results=(
+            "attacker.example.test; spf=pass smtp.mailfrom=linkedin.com; "
+            "dkim=pass header.d=linkedin.com; "
+            "dmarc=pass header.from=linkedin.com"
+        )
+    )
+    provider, _, _ = _provider(FakeIMAPClient({"41": forged}))
+
+    messages = await provider.search_recent(
+        recipient=ACCOUNT,
+        since=NOW - timedelta(minutes=5),
+        limit=1,
+    )
+
+    evidence = messages[0].authentication
+    assert evidence.spf is MailAuthenticationResult.UNKNOWN
+    assert evidence.dkim is MailAuthenticationResult.UNKNOWN
+    assert evidence.dmarc is MailAuthenticationResult.UNKNOWN
+    assert evidence.sender_is_authenticated is False
+
+
+@pytest.mark.asyncio
+async def test_imap_provider_treats_malformed_authserv_id_as_unknown():
+    malformed = _message(
+        authentication_results=(
+            "; spf=pass; dkim=pass; dmarc=pass"
+        )
+    )
+    provider, _, _ = _provider(FakeIMAPClient({"41": malformed}))
+
+    messages = await provider.search_recent(
+        recipient=ACCOUNT,
+        since=NOW - timedelta(minutes=5),
+        limit=1,
+    )
+
+    assert messages[0].authentication.sender_is_authenticated is False
 
 
 @pytest.mark.asyncio

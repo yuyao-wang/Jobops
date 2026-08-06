@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jobops-real-application
+data:
+  JOBOPS_CONTROL_HOME: /var/lib/jobops/control
+  JOBOPS_SUBJECT_ID: subject-local-primary
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"

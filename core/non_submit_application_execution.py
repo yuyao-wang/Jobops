@@ -39,7 +39,7 @@ from .outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
-from .policy import ApprovalActor
+from .policy import ApprovalActor, JobTier
 from .permits import GateAConsumptionReference
 from .private_home import PrivateHome, PrivateHomeError
 from .recoverable_application_bundle import (
@@ -54,7 +54,7 @@ NON_SUBMIT_APPLICATION_EXECUTION_CONTRACT_VERSION_V1 = (
 NON_SUBMIT_APPLICATION_EXECUTION_CONTRACT_VERSION = (
     "plan-scoped-non-submit-application-execution-v2"
 )
-NON_SUBMIT_EXECUTION_POLICY_VERSION = "non-submit-only-v1"
+NON_SUBMIT_EXECUTION_POLICY_VERSION = "non-submit-only-v5"
 _HASH_RE = re.compile(r"^[a-f0-9]{64}$")
 _ASSEMBLY_ID_RE = re.compile(
     r"^application-bundle-assembly-[a-f0-9]{64}$"
@@ -204,7 +204,7 @@ class NonSubmitExecutionMetadata:
             gate_a_contract_version="permit-gate-a-v1",
             browser_broker_contract_version="leased-browser-v1",
             engine_contract_version="job-application-engine-v1",
-            adapter_contract_version="jobops.adapter/v1",
+            adapter_contract_version="jobops.adapter/v2",
         )
 
     def to_dict(self) -> dict[str, str]:
@@ -746,9 +746,11 @@ def _runtime_unresolved(outcome: ApplicationOutcome) -> tuple[str, ...]:
     review = outcome.details.get("review")
     if not isinstance(review, Mapping):
         return ()
-    values = review.get("unresolved_required")
-    if not isinstance(values, (list, tuple)):
-        return ()
+    values: list[Any] = []
+    for key in ("unresolved_required", "validation_errors"):
+        raw = review.get(key)
+        if isinstance(raw, (list, tuple)):
+            values.extend(raw)
     return tuple(
         sorted(
             {
@@ -1049,7 +1051,10 @@ async def execute_non_submit_application(
         )
 
     if bundle.policy.gate_a_actor is ApprovalActor.HUMAN:
-        if not command.approve_gate_a:
+        if (
+            not command.approve_gate_a
+            or bundle.policy.tier is not JobTier.LOW
+        ):
             return _deferred(
                 NonSubmitApplicationExecutionStatus
                 .DEFERRED_GATE_A_REQUIRED,

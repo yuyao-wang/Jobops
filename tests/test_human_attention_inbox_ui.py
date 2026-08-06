@@ -165,9 +165,9 @@ async def test_authenticated_load_calls_p2b5_once_and_preserves_group_order(
     ]
     assert [item.job_id for item in first_result.operator_items] == ["job-3"]
     assert first_result.affected_plan_count == 2
-    assert first_result.user_items[0].attention_label == "需要本人确认"
+    assert first_result.user_items[0].attention_label == "Attestation required"
     assert first_result.user_items[0].resolution_capability == "ATTEST"
-    assert first_result.operator_items[0].attention_label == "系统需要处理"
+    assert first_result.operator_items[0].attention_label == "Operator action required"
 
 
 def test_empty_failure_and_unsafe_action_are_displayed_safely() -> None:
@@ -213,7 +213,7 @@ def test_empty_failure_and_unsafe_action_are_displayed_safely() -> None:
     )
 
     assert empty.status is HumanAttentionInboxUIStatus.EMPTY
-    assert empty.message == "目前没有需要你处理的事项。"
+    assert empty.message == "There are no items that need your attention."
     assert unsafe.status is HumanAttentionInboxUIStatus.READY
     assert "/Users/" not in repr(unsafe.to_dict())
     assert "credential" not in repr(unsafe.to_dict()).casefold()

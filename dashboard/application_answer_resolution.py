@@ -41,14 +41,14 @@ class ApplicationAnswerResolutionUIResult:
 
 
 _SAFE_MESSAGES = {
-    "RESOLVED": "回答已安全保存。",
-    "RESOLVED_AND_PREPARATION_COMPLETED": "回答已保存，申请准备已继续完成。",
-    "RESOLVED_AND_PREPARATION_DEFERRED": "回答已保存；申请仍有其他待处理事项。",
-    "UNCHANGED": "该回答已处理，无需重复保存。",
-    "ITEM_NOT_CURRENT": "该待处理事项已不是当前状态。",
-    "DEFERRED_AMBIGUOUS_INPUT": "回复不够明确，请直接给出事实、选择或本人决定。",
-    "UNSUPPORTED_ITEM": "该事项需要其他处理方式。",
-    "FAILED": "回答暂时无法安全保存。",
+    "RESOLVED": "The answer was saved safely.",
+    "RESOLVED_AND_PREPARATION_COMPLETED": "The answer was saved and application preparation completed.",
+    "RESOLVED_AND_PREPARATION_DEFERRED": "The answer was saved; other application items still need attention.",
+    "UNCHANGED": "This answer was already resolved.",
+    "ITEM_NOT_CURRENT": "This attention item is no longer current.",
+    "DEFERRED_AMBIGUOUS_INPUT": "The response is ambiguous. Provide the fact, choice, or your decision directly.",
+    "UNSUPPORTED_ITEM": "This item requires a different resolution path.",
+    "FAILED": "The answer could not be saved safely.",
 }
 
 

@@ -21,6 +21,8 @@ from .job_discovery import (
 from .private_home import PrivateHome, PrivateHomeError
 from .search_profile import (
     SearchProfile,
+    SearchProfileListResult,
+    SearchProfileListStatus,
     SearchProfileReadResult,
     SearchProfileReadStatus,
     SearchProfileRepository,
@@ -30,6 +32,9 @@ from .search_profile import (
 
 SEARCH_PROFILE_INTENT_POLICY_CONTRACT_VERSION = (
     "search-profile-intent-policy-v1"
+)
+ENABLE_AUTO_REQUEST_APPLICATION_BATCH_CONTRACT_VERSION = (
+    "enable-auto-request-application-batch-v1"
 )
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -88,6 +93,23 @@ class SaveSearchProfileIntentPolicyStatus(StrEnum):
     CREATED = "CREATED"
     UNCHANGED = "UNCHANGED"
     FAILED = "FAILED"
+
+
+class EnableAutoRequestApplicationBatchStatus(StrEnum):
+    NOOP = "NOOP"
+    COMPLETED = "COMPLETED"
+    PARTIAL_FAILURE = "PARTIAL_FAILURE"
+    FAILED = "FAILED"
+
+
+class EnableAutoRequestApplicationBatchFailureReason(StrEnum):
+    INVALID_REQUEST = "INVALID_REQUEST"
+    PROFILE_SNAPSHOT_FAILED = "PROFILE_SNAPSHOT_FAILED"
+    PROFILE_SNAPSHOT_INTEGRITY_FAILURE = (
+        "PROFILE_SNAPSHOT_INTEGRITY_FAILURE"
+    )
+    POLICY_UPDATE_FAILED = "POLICY_UPDATE_FAILED"
+    POLICY_INTEGRITY_FAILURE = "POLICY_INTEGRITY_FAILURE"
 
 
 class SaveSearchProfileIntentPolicyReason(StrEnum):
@@ -277,6 +299,81 @@ class SaveSearchProfileIntentPolicyCommand:
     enabled: bool
     now: datetime
     policy_note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EnableAutoRequestApplicationBatchCommand:
+    subject_id: str
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EnableAutoRequestApplicationBatchSummary:
+    selected: int
+    created: int
+    unchanged: int
+    failed: int
+
+    def __post_init__(self) -> None:
+        for name in ("selected", "created", "unchanged", "failed"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError("batch counts must be non-negative integers")
+        if self.selected != self.created + self.unchanged + self.failed:
+            raise ValueError("batch counts are inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class EnableAutoRequestApplicationBatchResult:
+    status: EnableAutoRequestApplicationBatchStatus
+    summary: EnableAutoRequestApplicationBatchSummary
+    failure_reason: EnableAutoRequestApplicationBatchFailureReason | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "status",
+            EnableAutoRequestApplicationBatchStatus(self.status),
+        )
+        if not isinstance(
+            self.summary, EnableAutoRequestApplicationBatchSummary
+        ):
+            raise TypeError("batch summary must be typed")
+        if self.failure_reason is not None:
+            object.__setattr__(
+                self,
+                "failure_reason",
+                EnableAutoRequestApplicationBatchFailureReason(
+                    self.failure_reason
+                ),
+            )
+        succeeded = self.summary.created + self.summary.unchanged
+        if self.status is EnableAutoRequestApplicationBatchStatus.NOOP:
+            if self.summary.selected != 0 or self.failure_reason is not None:
+                raise ValueError("NOOP batch result is malformed")
+        elif self.status is EnableAutoRequestApplicationBatchStatus.COMPLETED:
+            if (
+                self.summary.selected == 0
+                or self.summary.failed != 0
+                or self.failure_reason is not None
+            ):
+                raise ValueError("completed batch result is malformed")
+        elif (
+            self.status
+            is EnableAutoRequestApplicationBatchStatus.PARTIAL_FAILURE
+        ):
+            if (
+                succeeded == 0
+                or self.summary.failed == 0
+                or self.failure_reason
+                is not (
+                    EnableAutoRequestApplicationBatchFailureReason
+                    .POLICY_UPDATE_FAILED
+                )
+            ):
+                raise ValueError("partial batch result is malformed")
+        elif self.failure_reason is None:
+            raise ValueError("failed batch result requires a failure reason")
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +772,207 @@ def save_search_profile_intent_policy(
     )
 
 
+def _auto_request_batch_result(
+    status: EnableAutoRequestApplicationBatchStatus,
+    *,
+    selected: int,
+    created: int = 0,
+    unchanged: int = 0,
+    failed: int = 0,
+    failure_reason: EnableAutoRequestApplicationBatchFailureReason
+    | None = None,
+) -> EnableAutoRequestApplicationBatchResult:
+    return EnableAutoRequestApplicationBatchResult(
+        status=status,
+        summary=EnableAutoRequestApplicationBatchSummary(
+            selected=selected,
+            created=created,
+            unchanged=unchanged,
+            failed=failed,
+        ),
+        failure_reason=failure_reason,
+    )
+
+
+def _is_enabled_auto_policy_for_profile(
+    policy: SearchProfileIntentPolicy | None,
+    *,
+    profile: SearchProfile,
+    subject_id: str,
+) -> bool:
+    return (
+        isinstance(policy, SearchProfileIntentPolicy)
+        and policy.subject_id == subject_id
+        and policy.profile_id == profile.profile_id
+        and policy.source == profile.source
+        and policy.intent_mode
+        is SearchProfileIntentMode.AUTO_REQUEST_APPLICATION
+        and policy.enabled
+    )
+
+
+def enable_auto_request_application_for_enabled_search_profiles(
+    command: EnableAutoRequestApplicationBatchCommand,
+    *,
+    search_profile_repository: SearchProfileRepository,
+    policy_repository: SearchProfileIntentPolicyRepository,
+) -> EnableAutoRequestApplicationBatchResult:
+    """Enable future application intent for one trusted enabled-profile snapshot."""
+
+    if not isinstance(command, EnableAutoRequestApplicationBatchCommand):
+        raise TypeError("command must be typed")
+    try:
+        subject_id = _clean("subject_id", command.subject_id, 160)
+        now = _aware("now", command.now)
+    except (TypeError, ValueError):
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.FAILED,
+            selected=0,
+            failure_reason=(
+                EnableAutoRequestApplicationBatchFailureReason.INVALID_REQUEST
+            ),
+        )
+
+    try:
+        listed = search_profile_repository.list_enabled(subject_id)
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        listed = None
+    if not isinstance(listed, SearchProfileListResult):
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.FAILED,
+            selected=0,
+            failure_reason=(
+                EnableAutoRequestApplicationBatchFailureReason
+                .PROFILE_SNAPSHOT_FAILED
+            ),
+        )
+    if listed.status is not SearchProfileListStatus.SUCCEEDED:
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.FAILED,
+            selected=0,
+            failure_reason=(
+                EnableAutoRequestApplicationBatchFailureReason
+                .PROFILE_SNAPSHOT_INTEGRITY_FAILURE
+            ),
+        )
+
+    profiles = listed.profiles
+    if (
+        any(
+            profile.subject_id != subject_id or not profile.enabled
+            for profile in profiles
+        )
+        or len({profile.profile_id for profile in profiles}) != len(profiles)
+    ):
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.FAILED,
+            selected=0,
+            failure_reason=(
+                EnableAutoRequestApplicationBatchFailureReason
+                .PROFILE_SNAPSHOT_INTEGRITY_FAILURE
+            ),
+        )
+    selected = len(profiles)
+    if selected == 0:
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.NOOP,
+            selected=0,
+        )
+
+    created = 0
+    unchanged = 0
+    failed = 0
+    integrity_reasons = {
+        SaveSearchProfileIntentPolicyReason.INVALID_REQUEST,
+        SaveSearchProfileIntentPolicyReason.PROFILE_NOT_FOUND,
+        SaveSearchProfileIntentPolicyReason.SUBJECT_MISMATCH,
+        SaveSearchProfileIntentPolicyReason.PROFILE_SOURCE_CHANGED,
+        SaveSearchProfileIntentPolicyReason.INTEGRITY_FAILURE,
+    }
+    for profile in profiles:
+        try:
+            result = save_search_profile_intent_policy(
+                SaveSearchProfileIntentPolicyCommand(
+                    subject_id=subject_id,
+                    search_profile_id=profile.profile_id,
+                    intent_mode=(
+                        SearchProfileIntentMode.AUTO_REQUEST_APPLICATION
+                    ),
+                    enabled=True,
+                    now=now,
+                ),
+                search_profile_repository=search_profile_repository,
+                policy_repository=policy_repository,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            result = None
+        if not isinstance(result, SaveSearchProfileIntentPolicyResult):
+            failed += 1
+            continue
+        if result.status in {
+            SaveSearchProfileIntentPolicyStatus.CREATED,
+            SaveSearchProfileIntentPolicyStatus.UNCHANGED,
+        }:
+            if not _is_enabled_auto_policy_for_profile(
+                result.policy,
+                profile=profile,
+                subject_id=subject_id,
+            ):
+                failed = selected - created - unchanged
+                return _auto_request_batch_result(
+                    EnableAutoRequestApplicationBatchStatus.FAILED,
+                    selected=selected,
+                    created=created,
+                    unchanged=unchanged,
+                    failed=failed,
+                    failure_reason=(
+                        EnableAutoRequestApplicationBatchFailureReason
+                        .POLICY_INTEGRITY_FAILURE
+                    ),
+                )
+            if result.status is SaveSearchProfileIntentPolicyStatus.CREATED:
+                created += 1
+            else:
+                unchanged += 1
+            continue
+        failed += 1
+        if result.reason in integrity_reasons:
+            failed = selected - created - unchanged
+            return _auto_request_batch_result(
+                EnableAutoRequestApplicationBatchStatus.FAILED,
+                selected=selected,
+                created=created,
+                unchanged=unchanged,
+                failed=failed,
+                failure_reason=(
+                    EnableAutoRequestApplicationBatchFailureReason
+                    .POLICY_INTEGRITY_FAILURE
+                ),
+            )
+
+    if failed == 0:
+        return _auto_request_batch_result(
+            EnableAutoRequestApplicationBatchStatus.COMPLETED,
+            selected=selected,
+            created=created,
+            unchanged=unchanged,
+        )
+    if created + unchanged == 0:
+        status = EnableAutoRequestApplicationBatchStatus.FAILED
+    else:
+        status = EnableAutoRequestApplicationBatchStatus.PARTIAL_FAILURE
+    return _auto_request_batch_result(
+        status,
+        selected=selected,
+        created=created,
+        unchanged=unchanged,
+        failed=failed,
+        failure_reason=(
+            EnableAutoRequestApplicationBatchFailureReason.POLICY_UPDATE_FAILED
+        ),
+    )
+
+
 def decide_search_profile_intent(
     profile: SearchProfile,
     discovery_result: JobDiscoveryResponse,
@@ -761,7 +1059,13 @@ def decide_search_profile_intent(
 
 
 __all__ = [
+    "ENABLE_AUTO_REQUEST_APPLICATION_BATCH_CONTRACT_VERSION",
     "SEARCH_PROFILE_INTENT_POLICY_CONTRACT_VERSION",
+    "EnableAutoRequestApplicationBatchCommand",
+    "EnableAutoRequestApplicationBatchFailureReason",
+    "EnableAutoRequestApplicationBatchResult",
+    "EnableAutoRequestApplicationBatchStatus",
+    "EnableAutoRequestApplicationBatchSummary",
     "PrivateHomeSearchProfileIntentPolicyRepository",
     "SaveSearchProfileIntentPolicyCommand",
     "SaveSearchProfileIntentPolicyReason",
@@ -779,5 +1083,6 @@ __all__ = [
     "SearchProfileIntentPolicyWriteResult",
     "SearchProfileIntentPolicyWriteStatus",
     "decide_search_profile_intent",
+    "enable_auto_request_application_for_enabled_search_profiles",
     "save_search_profile_intent_policy",
 ]

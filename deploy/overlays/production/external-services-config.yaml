@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jobops-runtime
+data:
+  JOBOPS_ENV: production
+  JOBOPS_API_BASE_URL: http://jobops-api:8080
+  S3_ENDPOINT: https://object-storage.example.invalid
+  S3_BUCKET: jobops-artifacts

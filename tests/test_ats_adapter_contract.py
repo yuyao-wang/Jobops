@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -34,6 +35,13 @@ ADAPTERS = (
     ("ashby", AshbyAdapter, {"full_name", "email", "resume"}),
     ("jobvite", JobviteAdapter, {"first_name", "last_name", "email", "resume"}),
 )
+
+
+def test_ashby_contract_includes_the_public_success_container() -> None:
+    assert (
+        ".ashby-application-form-success-container"
+        in AshbyAdapter.confirmation_selectors
+    )
 
 
 @pytest.fixture
@@ -106,6 +114,7 @@ def context_for(
         gate_b_validator=validator,
         navigate=False,
         settle_timeout_ms=0,
+        submission_evidence_timeout_ms=100,
     )
 
 
@@ -173,6 +182,17 @@ async def test_review_fingerprint_binds_browser_values_and_uploaded_bytes(
     fill = await adapter.fill(page, context, form)
     validation = await adapter.validate(page, form, fill)
     original = await adapter.prepare_review(page, context, form, fill, validation)
+    reordered = await adapter.prepare_review(
+        page,
+        context,
+        replace(form, fields=tuple(reversed(form.fields))),
+        fill,
+        validation,
+    )
+
+    assert reordered.fingerprint == original.fingerprint
+    assert reordered.readback_digest == original.readback_digest
+    assert reordered.material_content_digest == original.material_content_digest
 
     email = next(field for field in form.fields if field.canonical_key == "email")
     await page.locator(email.selectors[0]).fill("changed@example.invalid")
@@ -211,6 +231,362 @@ def test_identity_classifier_rejects_third_party_contacts_and_prefers_preferred_
     assert canonical_key_for("Supervisor first name") == "unknown"
     assert canonical_key_for("Current salary") == "unknown"
     assert canonical_key_for("Desired salary") == "salary"
+    assert canonical_key_for("Current employment status") == "employment_status"
+    assert canonical_key_for("Expected graduation date") == "graduation_date"
+    assert (
+        canonical_key_for("Expected graduation date (MM/YYYY)")
+        == "graduation_date"
+    )
+    assert (
+        canonical_key_for(
+            "Do you require a reasonable accommodation during the interview process?"
+        )
+        == "accommodation"
+    )
+    assert canonical_key_for("Employment status of spouse") == "unknown"
+    assert canonical_key_for("Graduation") == "unknown"
+    assert canonical_key_for("Accommodation") == "unknown"
+
+
+def test_greenhouse_custom_question_classifier_maps_only_exact_known_semantics():
+    assert canonical_key_for(
+        "Please select your current province of residence."
+    ) == "state"
+    assert canonical_key_for(
+        "This role will be in-office on a hybrid schedule, can you commit "
+        "to being in-office three days per week?"
+    ) == "office_attendance"
+    assert canonical_key_for(
+        "How many years of full-time experience do you have, excluding "
+        "internships/co-ops?"
+    ) == "full_time_experience"
+    assert canonical_key_for(
+        "Before seeing this job posting, how familiar were you with Faire "
+        "as a company?"
+    ) == "company_familiarity"
+    assert canonical_key_for("How did you hear about Faire?") == (
+        "job_discovery_source"
+    )
+    assert canonical_key_for(
+        "Which of the following best describes your work authorization?"
+    ) == "work_authorization_detail"
+    assert canonical_key_for("How familiar are you with this technology?") == (
+        "unknown"
+    )
+    assert canonical_key_for("How did you hear the alarm?") == "unknown"
+
+
+async def test_greenhouse_boolean_answers_match_yes_no_select_and_radio(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <label for="authorized">Are you legally authorized to work in Canada?</label>
+          <select id="authorized" name="authorized" required>
+            <option value="">Select</option>
+            <option value="yes-value">Yes</option>
+            <option value="no-value">No</option>
+          </select>
+          <fieldset>
+            <legend>Will you now or in the future require sponsorship?</legend>
+            <input id="sponsor-yes" name="sponsorship" type="radio"
+                   value="yes-value" required>
+            <label for="sponsor-yes">Yes</label>
+            <input id="sponsor-no" name="sponsorship" type="radio"
+                   value="no-value">
+            <label for="sponsor-no">No</label>
+          </fieldset>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>window.fixtureSubmitCount = 0;</script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+        answers={
+            "work_authorization": True,
+            "sponsorship": False,
+        },
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert fill.unresolved_required == ()
+    assert validation.valid
+    assert await page.locator("#authorized").input_value() == "yes-value"
+    assert await page.locator("#sponsor-no").is_checked()
+    assert review.ready
+
+
+async def test_greenhouse_exact_multi_select_reaches_review(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <select id="source" name="source" required multiple
+                  aria-label="How did you hear about Faire?">
+            <option value="referral">Employee referral</option>
+            <option value="job-board">Job posting on LinkedIn, Indeed, or other job board</option>
+          </select>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>window.fixtureSubmitCount = 0;</script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+        answers={
+            "job_discovery_source": [
+                "Job posting on LinkedIn, Indeed, or other job board"
+            ]
+        },
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert fill.unresolved_required == ()
+    assert validation.valid
+    assert await page.locator("#source").input_value() == "job-board"
+    assert review.ready
+
+
+async def test_greenhouse_exact_checkbox_group_reaches_review(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <fieldset>
+            <legend>How did you hear about Faire?</legend>
+            <input id="source-referral" name="source[]" type="checkbox"
+                   value="referral" required>
+            <label for="source-referral">Employee referral</label>
+            <input id="source-board" name="source[]" type="checkbox"
+                   value="job-board">
+            <label for="source-board">Job posting on LinkedIn, Indeed, or other job board</label>
+          </fieldset>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>window.fixtureSubmitCount = 0;</script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+        answers={
+            "job_discovery_source": [
+                "Job posting on LinkedIn, Indeed, or other job board"
+            ]
+        },
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert fill.unresolved_required == ()
+    assert validation.valid
+    assert not await page.locator("#source-referral").is_checked()
+    assert await page.locator("#source-board").is_checked()
+    assert review.ready
+
+
+async def test_greenhouse_modern_combobox_selects_exact_option_and_skips_validator_input(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <div class="field-wrapper">
+            <label for="question-province">Please select your current province of residence.*</label>
+            <div class="select-shell">
+              <input id="question-province" type="text" role="combobox"
+                     aria-required="true" aria-autocomplete="list">
+              <div class="select__single-value"></div>
+              <input type="text" required tabindex="-1"
+                     class="requiredInput">
+              <div role="option" id="option-alberta">Alberta</div>
+            </div>
+          </div>
+          <div class="file-upload" role="group" aria-required="true"></div>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>
+          document.querySelector('#option-alberta').addEventListener('click', () => {
+            document.querySelector('.select__single-value').textContent = 'Alberta';
+            document.querySelector('#option-alberta').style.display = 'none';
+          });
+          window.fixtureSubmitCount = 0;
+        </script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+        answers={"state": "Alberta"},
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert len(form.fields) == 1
+    assert form.fields[0].canonical_key == "state"
+    assert form.fields[0].kind is FieldKind.COMBOBOX
+    assert fill.unresolved_required == ()
+    assert validation.valid
+    assert await page.locator(".select__single-value").inner_text() == "Alberta"
+    assert review.ready
+
+
+async def test_greenhouse_replaced_file_input_keeps_hash_bound_review(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <div id="resume-wrapper">
+            <label for="resume">Resume*</label>
+            <input id="resume" type="file" required>
+          </div>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>
+          document.querySelector('#resume').addEventListener('change', event => {
+            const receipt = document.createElement('span');
+            receipt.textContent = event.target.files[0].name;
+            document.querySelector('#resume-wrapper').replaceChildren(receipt);
+          });
+          window.fixtureSubmitCount = 0;
+        </script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert await page.locator("#resume").count() == 0
+    assert fill.uploaded_files == ("resume",)
+    assert validation.valid
+    assert review.ready
+    assert len(review.material_content_digest) == 64
+
+
+async def test_greenhouse_country_announcement_and_canadian_city_alias_read_back(
+    page, resume_file, profile
+):
+    await page.set_content(
+        """
+        <form action="https://boards.greenhouse.io/example/jobs/1">
+          <div class="field-wrapper">
+            <label for="country">Country*</label>
+            <div class="select-shell" id="country-shell">
+              <input id="country" role="combobox" aria-required="true">
+              <div class="select__single-value"></div>
+              <span role="status" aria-live="polite"></span>
+              <div role="option" id="country-option">Canada+1</div>
+            </div>
+          </div>
+          <div class="field-wrapper">
+            <label for="candidate-location">Location (City)*</label>
+            <div class="select-shell" id="city-shell">
+              <input id="candidate-location" role="combobox" aria-required="true">
+              <div class="select__single-value"></div>
+              <div role="option" id="city-option">Calgary, Alberta, Canada</div>
+              <div role="option" id="other-city-option">Calgary, Texas, United States</div>
+            </div>
+          </div>
+          <button type="submit">Submit application</button>
+        </form>
+        <script>
+          document.querySelector('#country-option').addEventListener('click', () => {
+            document.querySelector('#country-shell .select__single-value').textContent = '+1';
+            document.querySelector('#country-shell [role=status]').textContent = 'Canada +1, 1 of 1.';
+            document.querySelector('#country-option').style.display = 'none';
+          });
+          document.querySelector('#city-option').addEventListener('click', () => {
+            document.querySelector('#city-shell .select__single-value').textContent = 'Calgary, Alberta, Canada';
+            document.querySelector('#city-option').style.display = 'none';
+          });
+          window.fixtureSubmitCount = 0;
+        </script>
+        """
+    )
+    adapter = GreenhouseAdapter()
+    context = context_for(
+        page,
+        "greenhouse",
+        profile,
+        resume_file,
+        answers={
+            "country": "Canada",
+            "state": "Alberta",
+            "city": "Calgary",
+        },
+    )
+
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+    await page.locator("#country-shell [role=status]").evaluate(
+        "element => { element.textContent = 'Selection available.'; }"
+    )
+    repeated_review = await adapter.prepare_review(
+        page, context, form, fill, validation
+    )
+
+    assert fill.unresolved_required == ()
+    assert validation.valid
+    assert review.ready
+    assert repeated_review.ready
+    assert repeated_review.readback_digest == review.readback_digest
+    assert repeated_review.fingerprint == review.fingerprint
 
 
 def test_submission_url_and_application_id_evidence_are_digest_only():
@@ -306,6 +682,43 @@ async def test_review_requires_a_final_submit_control(
     assert outcome.details["review"]["ready"] is False
 
 
+async def test_review_waits_for_a_transiently_unmounted_submit_control(
+    page, resume_file, profile
+):
+    await load_fixture(page, "ashby")
+    context = context_for(
+        page,
+        "ashby",
+        profile,
+        resume_file,
+        answers={"Are you legally authorized to work in this location?": "Yes"},
+    )
+    adapter = AshbyAdapter()
+    form = await adapter.inspect(page)
+    fill = await adapter.fill(page, context, form)
+    validation = await adapter.validate(page, form, fill)
+    await page.evaluate(
+        """() => {
+            const original = document.querySelector(
+                '.ashby-application-form-submit-button'
+            );
+            original.remove();
+            setTimeout(() => document.body.appendChild(original), 300);
+        }"""
+    )
+
+    review = await adapter.prepare_review(
+        page,
+        replace(context, navigate=True),
+        form,
+        fill,
+        validation,
+    )
+
+    assert review.submit_control_present is True
+    assert review.ready is True
+
+
 async def test_review_outcome_does_not_expose_profile_values_or_private_paths(
     page, resume_file, profile
 ):
@@ -350,6 +763,73 @@ async def test_explicit_confirmation_produces_verified_evidence(
     assert outcome.evidence_refs
     assert EvidenceKind.CONFIRMATION_TEXT in {item.kind for item in outcome.evidence_refs}
     assert EvidenceKind.ATS_APPLICATION_ID in {item.kind for item in outcome.evidence_refs}
+    assert await page.evaluate("window.fixtureSubmitCount") == 1
+
+
+async def test_lever_thanks_for_applying_is_verified_evidence(
+    page, resume_file, profile
+):
+    await load_fixture(page, "lever")
+    await page.locator('[data-jobops-confirmation="lever"]').evaluate(
+        "element => { element.textContent = 'Thanks for applying!'; }"
+    )
+    outcome = await LeverAdapter().run(
+        context_for(
+            page,
+            "lever",
+            profile,
+            resume_file,
+            answers={"Are you legally authorized to work in this location?": "Yes"},
+            request_submit=True,
+            permit="gate-b:test-only",
+            validator=accept_test_permit,
+        )
+    )
+
+    assert outcome.status is OutcomeStatus.SUBMITTED_VERIFIED
+    assert await page.evaluate("window.fixtureSubmitCount") == 1
+
+
+async def test_delayed_greenhouse_confirmation_is_polled_after_single_click(
+    page, resume_file, profile
+):
+    await load_fixture(page, "greenhouse")
+    await page.evaluate(
+        """() => {
+            const confirmation = document.querySelector(
+                '[data-jobops-confirmation="greenhouse"]'
+            );
+            let delayed = false;
+            const observer = new MutationObserver(() => {
+                if (!confirmation.hidden && !delayed) {
+                    delayed = true;
+                    confirmation.hidden = true;
+                    setTimeout(() => {
+                        observer.disconnect();
+                        confirmation.hidden = false;
+                    }, 300);
+                }
+            });
+            observer.observe(confirmation, {attributes: true});
+        }"""
+    )
+    context = replace(
+        context_for(
+            page,
+            "greenhouse",
+            profile,
+            resume_file,
+            answers={"Are you legally authorized to work in this location?": "Yes"},
+            request_submit=True,
+            permit="gate-b:test-only",
+            validator=accept_test_permit,
+        ),
+        submission_evidence_timeout_ms=1_000,
+    )
+
+    outcome = await GreenhouseAdapter().run(context)
+
+    assert outcome.status is OutcomeStatus.SUBMITTED_VERIFIED
     assert await page.evaluate("window.fixtureSubmitCount") == 1
 
 

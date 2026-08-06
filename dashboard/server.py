@@ -35,7 +35,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
@@ -60,16 +60,55 @@ from utils.tracker import (
     get_ignored_count,
 )
 from utils.events import EventBus
-from core.authenticated_subject import AuthenticatedSubjectContext
-from dashboard.authentication import AuthenticatedSubjectDependency
+from core.authenticated_subject import (
+    AUTHENTICATED_SUBJECT_COOKIE_NAME,
+    AuthenticatedSubjectContext,
+)
+from core.search_profile import (
+    SearchProfileSourceKind,
+    SearchProfileSourceReference,
+)
+from core.outcomes import ApplicationOutcome
+from core.real_application_control_plane import (
+    RealApplicationConflictError,
+    RealApplicationControlError,
+    RealApplicationControlPlane,
+    RealApplicationNotAuthorizedError,
+    RealApplicationPreparation,
+)
+from dashboard.authentication import (
+    AuthenticatedSubjectDependency,
+    LocalDashboardSessionController,
+)
+from dashboard.application_review_submission import (
+    ApplicationReviewSubmissionUIController,
+    ApplicationReviewUIStatus,
+)
+from dashboard.reviewed_application_compatibility import (
+    ReviewedApplicationCompatibilityUIController,
+)
+from dashboard.conversational_job_finder import (
+    ConversationalJobFinderUIController,
+)
 from dashboard.automation_cycle import (
     ContinueAutomationUICommand,
     ContinueAutomationUIController,
+    StopAutomationUICommand,
 )
 from dashboard.job_library_refresh import (
     RefreshJobLibraryUICommand,
     RefreshJobLibraryUIController,
 )
+from dashboard.job_source_intake import (
+    AssistedDiscoveryPlatform,
+    AssistedJobImportCommand,
+    AssistedJobImportController,
+    CurrentPageJobCaptureCommand,
+    ResolveJobLeadCommand,
+    SaveSearchProfileUICommand,
+    SearchProfileUIController,
+)
+from dashboard.prioritization_policy import PrioritizationPolicyUIController
 from dashboard.human_attention_inbox import (
     HumanAttentionInboxUIController,
 )
@@ -180,6 +219,45 @@ async def lifespan(app):
 app = FastAPI(title="JobOps", version="1.0.0", lifespan=lifespan)
 
 
+_PRODUCTION_DASHBOARD_REQUIRED_STATE = (
+    "job_library_refresh_controller",
+    "search_profile_controller",
+    "assisted_job_import_controller",
+    "conversational_job_finder_controller",
+    "prioritization_policy_controller",
+    "automation_cycle_controller",
+    "local_session_controller",
+    "authenticated_subject_dependency",
+    "human_attention_inbox_controller",
+    "dashboard_profile_controller",
+    "dashboard_jobs_controller",
+    "dashboard_applications_controller",
+    "application_review_submission_controller",
+    "reviewed_application_compatibility_controller",
+    "dashboard_overview_controller",
+)
+_REAL_APPLICATION_CONTROL_REQUIRED_STATE = (
+    "local_session_controller",
+    "authenticated_subject_dependency",
+    "real_application_control_plane",
+)
+
+
+def dashboard_readiness(application: FastAPI = app) -> bool:
+    """Return the exact predicate shared by health and server startup."""
+
+    required = (
+        _REAL_APPLICATION_CONTROL_REQUIRED_STATE
+        if getattr(application.state, "real_application_control_plane", None)
+        is not None
+        else _PRODUCTION_DASHBOARD_REQUIRED_STATE
+    )
+    if not all(getattr(application.state, name, None) is not None for name in required):
+        return False
+    control = getattr(application.state, "real_application_control_plane", None)
+    return control.ready() if isinstance(control, RealApplicationControlPlane) else True
+
+
 def configure_job_library_refresh_ui(
     *,
     controller: RefreshJobLibraryUIController,
@@ -214,15 +292,29 @@ def configure_production_automation_ui(
     *,
     application: FastAPI,
     refresh_controller: RefreshJobLibraryUIController,
+    search_profile_controller: SearchProfileUIController,
+    assisted_job_import_controller: AssistedJobImportController,
+    conversational_job_finder_controller: ConversationalJobFinderUIController,
+    prioritization_policy_controller: PrioritizationPolicyUIController,
     automation_controller: ContinueAutomationUIController,
+    local_session_controller: LocalDashboardSessionController,
     authenticated_subject: AuthenticatedSubjectDependency,
     owned_resources: tuple[object, ...],
     composition_diagnostics: Mapping[str, Any],
     human_attention_controller: HumanAttentionInboxUIController | None = None,
+    unsupported_claim_correction_controller: (
+        UnsupportedClaimCorrectionUIController | None
+    ) = None,
     dashboard_profile_controller: DashboardProfileController | None = None,
     dashboard_jobs_controller: DashboardJobsController | None = None,
     dashboard_applications_controller: (
         DashboardApplicationsController | None
+    ) = None,
+    application_review_submission_controller: (
+        ApplicationReviewSubmissionUIController | None
+    ) = None,
+    reviewed_application_compatibility_controller: (
+        ReviewedApplicationCompatibilityUIController | None
     ) = None,
     dashboard_overview_controller: DashboardOverviewController | None = None,
 ) -> None:
@@ -232,8 +324,28 @@ def configure_production_automation_ui(
         raise TypeError("application must be FastAPI")
     if not isinstance(refresh_controller, RefreshJobLibraryUIController):
         raise TypeError("refresh controller is invalid")
+    if not isinstance(search_profile_controller, SearchProfileUIController):
+        raise TypeError("search profile controller is invalid")
+    if not isinstance(
+        assisted_job_import_controller, AssistedJobImportController
+    ):
+        raise TypeError("assisted job import controller is invalid")
+    if not isinstance(
+        conversational_job_finder_controller,
+        ConversationalJobFinderUIController,
+    ):
+        raise TypeError("conversational job finder controller is invalid")
+    if not isinstance(
+        prioritization_policy_controller,
+        PrioritizationPolicyUIController,
+    ):
+        raise TypeError("prioritization policy controller is invalid")
     if not isinstance(automation_controller, ContinueAutomationUIController):
         raise TypeError("automation controller is invalid")
+    if not isinstance(
+        local_session_controller, LocalDashboardSessionController
+    ):
+        raise TypeError("local session controller is invalid")
     if not callable(authenticated_subject):
         raise TypeError("authenticated subject dependency is invalid")
     if not isinstance(owned_resources, tuple) or any(
@@ -244,9 +356,21 @@ def configure_production_automation_ui(
         raise TypeError("composition diagnostics are invalid")
     optional_controllers = (
         (human_attention_controller, HumanAttentionInboxUIController),
+        (
+            unsupported_claim_correction_controller,
+            UnsupportedClaimCorrectionUIController,
+        ),
         (dashboard_profile_controller, DashboardProfileController),
         (dashboard_jobs_controller, DashboardJobsController),
         (dashboard_applications_controller, DashboardApplicationsController),
+        (
+            application_review_submission_controller,
+            ApplicationReviewSubmissionUIController,
+        ),
+        (
+            reviewed_application_compatibility_controller,
+            ReviewedApplicationCompatibilityUIController,
+        ),
         (dashboard_overview_controller, DashboardOverviewController),
     )
     if any(
@@ -255,10 +379,24 @@ def configure_production_automation_ui(
     ):
         raise TypeError("dashboard read controller is invalid")
     application.state.job_library_refresh_controller = refresh_controller
+    application.state.search_profile_controller = search_profile_controller
+    application.state.assisted_job_import_controller = (
+        assisted_job_import_controller
+    )
+    application.state.conversational_job_finder_controller = (
+        conversational_job_finder_controller
+    )
+    application.state.prioritization_policy_controller = (
+        prioritization_policy_controller
+    )
     application.state.automation_cycle_controller = automation_controller
+    application.state.local_session_controller = local_session_controller
     application.state.authenticated_subject_dependency = authenticated_subject
     application.state.human_attention_inbox_controller = (
         human_attention_controller
+    )
+    application.state.unsupported_claim_correction_controller = (
+        unsupported_claim_correction_controller
     )
     application.state.dashboard_profile_controller = (
         dashboard_profile_controller
@@ -267,6 +405,12 @@ def configure_production_automation_ui(
     application.state.dashboard_applications_controller = (
         dashboard_applications_controller
     )
+    application.state.application_review_submission_controller = (
+        application_review_submission_controller
+    )
+    application.state.reviewed_application_compatibility_controller = (
+        reviewed_application_compatibility_controller
+    )
     application.state.dashboard_overview_controller = (
         dashboard_overview_controller
     )
@@ -274,6 +418,31 @@ def configure_production_automation_ui(
     application.state.production_composition_diagnostics = dict(
         composition_diagnostics
     )
+
+
+def configure_real_application_control_plane(
+    *,
+    application: FastAPI,
+    control_plane: RealApplicationControlPlane,
+    local_session_controller: LocalDashboardSessionController,
+    authenticated_subject: AuthenticatedSubjectDependency,
+) -> None:
+    """Install the dedicated Kubernetes-control-plane boundary atomically."""
+
+    if not isinstance(application, FastAPI):
+        raise TypeError("application must be FastAPI")
+    if not isinstance(control_plane, RealApplicationControlPlane):
+        raise TypeError("control_plane is invalid")
+    if not isinstance(local_session_controller, LocalDashboardSessionController):
+        raise TypeError("local_session_controller is invalid")
+    if not callable(authenticated_subject):
+        raise TypeError("authenticated_subject is invalid")
+    application.state.real_application_control_plane = control_plane
+    application.state.local_session_controller = local_session_controller
+    application.state.authenticated_subject_dependency = authenticated_subject
+    # The Kubernetes control plane never starts a repository-local browser or
+    # any resources retained from the in-process production composition.
+    application.state.production_owned_resources = ()
 
 
 def configure_human_attention_inbox_ui(
@@ -552,17 +721,387 @@ async def _authenticated_dashboard_subject(
 
 
 @app.get("/api/health")
-async def health() -> dict:
-    """Health check for Docker and monitoring."""
-    configured = all(
-        getattr(app.state, name, None) is not None
-        for name in (
-            "job_library_refresh_controller",
-            "automation_cycle_controller",
-            "authenticated_subject_dependency",
-        )
+async def health() -> Response:
+    """Readiness check using the same closed predicate as ``run_server``."""
+
+    ready = dashboard_readiness(app)
+    return JSONResponse(
+        {"status": "ok" if ready else "not_ready"},
+        status_code=200 if ready else 503,
     )
-    return {"status": "ok" if configured else "not_ready"}
+
+
+@app.get("/api/live")
+async def live() -> dict[str, str]:
+    """Process-only liveness; it intentionally makes no dependency calls."""
+
+    return {"status": "alive"}
+
+
+@app.post("/api/auth/local-session")
+async def issue_local_dashboard_session(request: Request) -> Response:
+    """Issue an HttpOnly session only to this loopback Dashboard origin."""
+
+    controller = getattr(
+        request.app.state, "local_session_controller", None
+    )
+    if not isinstance(controller, LocalDashboardSessionController):
+        raise HTTPException(
+            status_code=503,
+            detail="Authenticated session issuance is unavailable.",
+        )
+    issued = controller.issue(request)
+    response = JSONResponse(
+        {
+            "status": "AUTHENTICATED",
+            "expires_at": issued.context.expires_at.isoformat(),
+        }
+    )
+    response.set_cookie(
+        key=AUTHENTICATED_SUBJECT_COOKIE_NAME,
+        value=(
+            f"{issued.credential.session_id}.{issued.credential.secret}"
+        ),
+        max_age=controller.issuer.ttl_seconds,
+        path="/",
+        secure=request.url.scheme == "https",
+        httponly=True,
+        samesite="strict",
+    )
+    return response
+
+
+@app.get("/api/auth/session")
+async def authenticated_dashboard_session(
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict[str, str]:
+    """Return only safe session state; the subject remains server-side."""
+
+    return {
+        "status": "AUTHENTICATED",
+        "expires_at": context.expires_at.isoformat(),
+    }
+
+
+def _real_application_control(request: Request) -> RealApplicationControlPlane:
+    control = getattr(request.app.state, "real_application_control_plane", None)
+    if not isinstance(control, RealApplicationControlPlane):
+        raise HTTPException(
+            status_code=503, detail="Real application control is unavailable."
+        )
+    return control
+
+
+def _worker_identity(
+    request: Request, control: RealApplicationControlPlane
+) -> str:
+    authorization = str(request.headers.get("authorization") or "")
+    scheme, separator, secret = authorization.partition(" ")
+    if separator != " " or scheme.casefold() != "bearer" or not secret:
+        raise HTTPException(status_code=401, detail="Worker authentication required.")
+    try:
+        return control.authenticate_worker(secret)
+    except RealApplicationNotAuthorizedError:
+        raise HTTPException(status_code=401, detail="Worker authentication failed.") from None
+
+
+def _task_lease_token(request: Request) -> str:
+    token = str(request.headers.get("x-jobops-task-lease") or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Task lease required.")
+    return token
+
+
+def _real_control_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail="Application attempt was not found.")
+    if isinstance(exc, RealApplicationNotAuthorizedError):
+        return HTTPException(status_code=403, detail="Real application action was rejected.")
+    if isinstance(exc, RealApplicationConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, (TypeError, ValueError)):
+        return HTTPException(status_code=422, detail="Real application request is invalid.")
+    return HTTPException(status_code=503, detail="Real application control failed closed.")
+
+
+@app.post("/api/worker/enroll")
+async def enroll_real_application_worker(body: dict, request: Request) -> dict:
+    control = _real_application_control(request)
+    try:
+        enrollment = control.enroll_worker(str(body.get("enrollment_token") or ""))
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {
+        "status": "ENROLLED",
+        "worker_id": enrollment.worker_id,
+        "session_secret": enrollment.session_secret,
+        "expires_at": enrollment.expires_at,
+    }
+
+
+@app.post("/api/worker/heartbeat")
+async def heartbeat_real_application_worker(request: Request) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        control.heartbeat_worker(worker_id)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "AVAILABLE"}
+
+
+@app.post("/api/worker/tasks/prepare")
+async def prepare_real_application_task(body: dict, request: Request) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        preparation = RealApplicationPreparation(**body)
+        status = control.prepare(worker_id, preparation)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": status, "attempt_id": preparation.attempt_id}
+
+
+@app.get("/api/worker/tasks/next")
+async def claim_real_application_task(request: Request) -> dict[str, Any]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        control.heartbeat_worker(worker_id)
+        claimed = control.claim_next(worker_id)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    if claimed is None:
+        return {"status": "EMPTY"}
+    return {
+        "status": "CLAIMED",
+        "task": dict(claimed.task),
+        "task_lease": {
+            "token": claimed.lease.token,
+            "expires_at": claimed.lease.expires_at,
+        },
+    }
+
+
+@app.get("/api/worker/tasks/{attempt_id}")
+async def read_real_application_worker_task(
+    attempt_id: str, request: Request
+) -> dict[str, Any]:
+    control = _real_application_control(request)
+    _worker_identity(request, control)
+    try:
+        return control.get_task(attempt_id, include_answers=False)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+
+
+@app.post("/api/worker/tasks/{attempt_id}/heartbeat")
+async def heartbeat_real_application_task(
+    attempt_id: str, request: Request
+) -> dict[str, Any]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        lease = control.heartbeat_task(
+            worker_id, attempt_id, _task_lease_token(request)
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "CURRENT", "expires_at": lease.expires_at}
+
+
+@app.post("/api/worker/tasks/{attempt_id}/human-intervention")
+async def report_real_application_human_intervention(
+    attempt_id: str, body: dict, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        control.report_human_intervention(
+            worker_id,
+            attempt_id,
+            _task_lease_token(request),
+            reason=body.get("reason", ""),
+            checkpoint=body.get("checkpoint", ""),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "HUMAN_INTERVENTION_REQUIRED"}
+
+
+@app.post("/api/worker/tasks/{attempt_id}/review")
+async def report_real_application_review(
+    attempt_id: str, body: dict, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        control.report_review(
+            worker_id,
+            attempt_id,
+            _task_lease_token(request),
+            review_hash=body.get("review_hash", ""),
+            review=body.get("review", {}),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "REVIEW_READY"}
+
+
+@app.post("/api/worker/tasks/{attempt_id}/failure")
+async def report_real_application_execution_failure(
+    attempt_id: str, body: dict, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        control.report_execution_failure(
+            worker_id,
+            attempt_id,
+            _task_lease_token(request),
+            outcome=ApplicationOutcome.from_dict(body.get("outcome", {})),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "FAILED"}
+
+
+@app.get("/api/worker/tasks/{attempt_id}/permit")
+async def load_real_application_worker_permit(
+    attempt_id: str, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        permit = control.load_worker_permit(
+            worker_id, attempt_id, _task_lease_token(request)
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "APPROVED", "permit": permit}
+
+
+@app.post("/api/worker/tasks/{attempt_id}/final-fence")
+async def execute_real_application_final_fence(
+    attempt_id: str, body: dict, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        intent = control.final_fence(
+            worker_id,
+            attempt_id,
+            _task_lease_token(request),
+            permit_token=body.get("permit", ""),
+            current_url=body.get("current_url", ""),
+            external_job_id=body.get("external_job_id", ""),
+            bundle_canonical_hash=body.get("bundle_canonical_hash", ""),
+            profile_snapshot_hash=body.get("profile_snapshot_hash", ""),
+            answer_hash=body.get("answer_hash", ""),
+            answer_bundle_hash=body.get("answer_bundle_hash", ""),
+            material_hash=body.get("material_hash", ""),
+            resume_sha256=body.get("resume_sha256", ""),
+            cover_letter_sha256=body.get("cover_letter_sha256", ""),
+            review_hash=body.get("review_hash", ""),
+            assembly_record_id=body.get("assembly_record_id", ""),
+            assembly_record_content_hash=body.get(
+                "assembly_record_content_hash", ""
+            ),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "AUTHORIZED", "submission_intent_id": intent.intent_id}
+
+
+@app.post("/api/worker/tasks/{attempt_id}/outcome")
+async def report_real_application_outcome(
+    attempt_id: str, body: dict, request: Request
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    worker_id = _worker_identity(request, control)
+    try:
+        outcome = ApplicationOutcome.from_dict(body.get("outcome", {}))
+        status = control.report_outcome(
+            worker_id,
+            attempt_id,
+            _task_lease_token(request),
+            outcome=outcome,
+            confirmation_id=str(body.get("confirmation_id") or ""),
+            success_url=str(body.get("success_url") or ""),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": status.value}
+
+
+@app.get("/api/real-applications")
+async def list_real_applications(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(_authenticated_dashboard_subject),
+) -> dict[str, Any]:
+    control = _real_application_control(request)
+    if context.subject_id != control.subject_id:
+        raise HTTPException(status_code=403, detail="Subject binding was rejected.")
+    return {
+        "executor_status": control.executor_status().value,
+        "applications": list(control.list_tasks()),
+    }
+
+
+@app.get("/api/real-applications/{attempt_id}")
+async def read_real_application(
+    attempt_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(_authenticated_dashboard_subject),
+) -> dict[str, Any]:
+    control = _real_application_control(request)
+    if context.subject_id != control.subject_id:
+        raise HTTPException(status_code=403, detail="Subject binding was rejected.")
+    try:
+        return control.get_task(attempt_id, include_answers=True)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+
+
+@app.post("/api/real-applications/{attempt_id}/continue")
+async def continue_real_application_after_human(
+    attempt_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(_authenticated_dashboard_subject),
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    if context.subject_id != control.subject_id:
+        raise HTTPException(status_code=403, detail="Subject binding was rejected.")
+    try:
+        control.continue_after_human(attempt_id)
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "CLAIMED"}
+
+
+@app.post("/api/real-applications/{attempt_id}/approve")
+async def approve_real_application(
+    attempt_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(_authenticated_dashboard_subject),
+) -> dict[str, str]:
+    control = _real_application_control(request)
+    if context.subject_id != control.subject_id:
+        raise HTTPException(status_code=403, detail="Subject binding was rejected.")
+    try:
+        control.approve(
+            attempt_id,
+            reviewed_hash=body.get("review_hash", ""),
+            external_side_effect_acknowledged=body.get(
+                "external_side_effect_acknowledged", False
+            ),
+        )
+    except Exception as exc:
+        raise _real_control_http_error(exc) from None
+    return {"status": "APPROVED"}
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +1192,13 @@ EventBus.subscribe(_on_event)
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     """Serve the single-page dashboard."""
-    return templates.TemplateResponse(request, "index.html")
+    template = (
+        "real_application.html"
+        if getattr(request.app.state, "real_application_control_plane", None)
+        is not None
+        else "index.html"
+    )
+    return templates.TemplateResponse(request, template)
 
 
 @app.post("/api/job-library/refresh")
@@ -682,8 +1227,375 @@ async def refresh_job_library_ui(
         raise HTTPException(
             status_code=422, detail="Invalid refresh request."
         ) from None
-    result = await controller.refresh(context=context, command=command)
+    try:
+        result = await controller.start(context=context, command=command)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="Automatic application could not start safely.",
+        ) from None
     return result.to_dict()
+
+
+@app.get("/api/job-library/refresh/status")
+async def job_library_refresh_status_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Poll the authenticated subject's in-process refresh state."""
+
+    controller = getattr(
+        request.app.state, "job_library_refresh_controller", None
+    )
+    if not isinstance(controller, RefreshJobLibraryUIController):
+        raise HTTPException(
+            status_code=503, detail="Job library refresh is unavailable."
+        )
+    try:
+        result = await controller.status(context=context)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="Automatic application status is unavailable.",
+        ) from None
+    return result.to_dict()
+
+
+@app.get("/api/search-profiles")
+async def read_search_profiles_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "search_profile_controller", None
+    )
+    if not isinstance(controller, SearchProfileUIController):
+        raise HTTPException(
+            status_code=503, detail="Search profile setup is unavailable."
+        )
+    return controller.read(context)
+
+
+@app.post("/api/search-profiles")
+async def save_search_profile_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "search_profile_controller", None
+    )
+    if not isinstance(controller, SearchProfileUIController):
+        raise HTTPException(
+            status_code=503, detail="Search profile setup is unavailable."
+        )
+    try:
+        raw_source = body["source"]
+        command = SaveSearchProfileUICommand(
+            display_name=body["display_name"],
+            company=body["company"],
+            title=body["title"],
+            location=body.get("location") or None,
+            source=SearchProfileSourceReference(
+                SearchProfileSourceKind(raw_source["kind"]),
+                raw_source["source_id"],
+            ),
+            enabled=body.get("enabled", True),
+            profile_id=body.get("profile_id") or None,
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid search profile request."
+        ) from None
+    result = controller.save(context, command)
+    if result["status"] == "FAILED":
+        raise HTTPException(status_code=422, detail=result["reason"])
+    return result
+
+
+@app.get("/api/prioritization-policy")
+async def read_prioritization_policy_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "prioritization_policy_controller", None
+    )
+    if not isinstance(controller, PrioritizationPolicyUIController):
+        raise HTTPException(
+            status_code=503, detail="Job preference setup is unavailable."
+        )
+    return controller.read(context)
+
+
+@app.post("/api/prioritization-policy/draft")
+async def create_prioritization_policy_draft_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "prioritization_policy_controller", None
+    )
+    if not isinstance(controller, PrioritizationPolicyUIController):
+        raise HTTPException(
+            status_code=503, detail="Job preference setup is unavailable."
+        )
+    raw_text = body.get("raw_preference_text")
+    if not isinstance(raw_text, str):
+        raise HTTPException(
+            status_code=422, detail="Invalid job preference request."
+        )
+    return await controller.create_draft(
+        context, raw_preference_text=raw_text
+    )
+
+
+@app.post("/api/prioritization-policy/approve")
+async def approve_prioritization_policy_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "prioritization_policy_controller", None
+    )
+    if not isinstance(controller, PrioritizationPolicyUIController):
+        raise HTTPException(
+            status_code=503, detail="Job preference setup is unavailable."
+        )
+    try:
+        draft_id = body["draft_id"]
+        confirm = body["confirm_hard_constraints"]
+        if not isinstance(draft_id, str) or type(confirm) is not bool:
+            raise TypeError
+        return controller.approve(
+            context,
+            draft_id=draft_id,
+            confirm_hard_constraints=confirm,
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid policy approval request."
+        ) from None
+
+
+@app.post("/api/prioritization-policy/preferences")
+async def revise_prioritization_policy_preferences_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Save exact per-item preference edits without model interpretation."""
+
+    controller = getattr(
+        request.app.state, "prioritization_policy_controller", None
+    )
+    if not isinstance(controller, PrioritizationPolicyUIController):
+        raise HTTPException(
+            status_code=503, detail="Job preference setup is unavailable."
+        )
+    expected_version = body.get("expected_policy_version")
+    preferences = body.get("preferences")
+    if type(expected_version) is not int or not isinstance(preferences, list):
+        raise HTTPException(
+            status_code=422, detail="Invalid preference revision request."
+        )
+    result = controller.revise_soft_preferences(
+        context,
+        expected_policy_version=expected_version,
+        preferences=preferences,
+    )
+    if result["status"] == "FAILED":
+        raise HTTPException(status_code=422, detail=result["message"])
+    return result
+
+
+@app.post("/api/job-source-import")
+async def import_assisted_job_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = getattr(
+        request.app.state, "assisted_job_import_controller", None
+    )
+    if not isinstance(controller, AssistedJobImportController):
+        raise HTTPException(
+            status_code=503, detail="Assisted job import is unavailable."
+        )
+    try:
+        command = AssistedJobImportCommand(
+            platform=AssistedDiscoveryPlatform(body.get("platform")),
+            job_url=body.get("job_url", ""),
+            invocation_id=body.get("invocation_id", ""),
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid assisted import request."
+        ) from None
+    return await controller.import_job(context, command)
+
+
+@app.post("/api/job-leads/capture")
+async def capture_current_job_page_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Accept one current page after an explicit user gesture; never navigate it."""
+
+    controller = getattr(
+        request.app.state, "assisted_job_import_controller", None
+    )
+    if not isinstance(controller, AssistedJobImportController):
+        raise HTTPException(
+            status_code=503, detail="Current-page job capture is unavailable."
+        )
+    try:
+        command = CurrentPageJobCaptureCommand(
+            page_url=body.get("page_url", ""),
+            page_title=body.get("page_title", ""),
+            selected_text=body.get("selected_text"),
+            invocation_id=body.get("invocation_id", ""),
+            user_gesture=body.get("user_gesture"),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid current-page capture request."
+        ) from None
+    return await controller.capture_current_page(context, command)
+
+
+@app.post("/api/job-leads/{lead_id}/resolve")
+async def resolve_job_lead_ui(
+    lead_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Verify one official employer/ATS URL and bind it to a saved lead."""
+
+    controller = getattr(
+        request.app.state, "assisted_job_import_controller", None
+    )
+    if not isinstance(controller, AssistedJobImportController):
+        raise HTTPException(
+            status_code=503, detail="Job-lead resolution is unavailable."
+        )
+    try:
+        command = ResolveJobLeadCommand(
+            lead_id=lead_id,
+            official_job_url=body.get("official_job_url", ""),
+            invocation_id=body.get("invocation_id", ""),
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid job-lead resolution request."
+        ) from None
+    return await controller.resolve_lead(context, command)
+
+
+def _conversational_job_finder_controller(
+    request: Request,
+) -> ConversationalJobFinderUIController:
+    controller = getattr(
+        request.app.state, "conversational_job_finder_controller", None
+    )
+    if not isinstance(controller, ConversationalJobFinderUIController):
+        raise HTTPException(
+            status_code=503, detail="Conversational job finder is unavailable."
+        )
+    return controller
+
+
+@app.post("/api/job-finder/message")
+async def conversational_job_finder_message_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = _conversational_job_finder_controller(request)
+    try:
+        conversation_id = body["conversation_id"]
+        raw_messages = body["messages"]
+        if not isinstance(raw_messages, list):
+            raise TypeError
+        return await controller.message(
+            context,
+            conversation_id=conversation_id,
+            messages=tuple(raw_messages),
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid conversational job request."
+        ) from None
+
+
+@app.post("/api/job-finder/select")
+async def conversational_job_finder_select_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = _conversational_job_finder_controller(request)
+    try:
+        return await controller.select_candidate(
+            context,
+            conversation_id=body["conversation_id"],
+            candidate_set_id=body["candidate_set_id"],
+            candidate_id=body["candidate_id"],
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid job candidate selection."
+        ) from None
+
+
+@app.post("/api/job-finder/resolve")
+async def conversational_job_finder_resolve_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    controller = _conversational_job_finder_controller(request)
+    try:
+        return controller.resolve(
+            context,
+            conversation_id=body["conversation_id"],
+            pending_intake_id=body["pending_intake_id"],
+            action=body["action"],
+        )
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid job intake action."
+        ) from None
 
 
 @app.post("/api/automation-cycle/run")
@@ -694,7 +1606,7 @@ async def continue_automatic_application_ui(
         _authenticated_dashboard_subject
     ),
 ) -> dict:
-    """Run exactly one authenticated P2c10a invocation."""
+    """Start one authenticated, pollable serial automation session."""
 
     controller = getattr(
         request.app.state, "automation_cycle_controller", None
@@ -705,13 +1617,68 @@ async def continue_automatic_application_ui(
         )
     try:
         command = ContinueAutomationUICommand(
-            invocation_id=body.get("invocation_id", "")
+            invocation_id=body.get("invocation_id", ""),
+            approve_gate_a=body.get("approve_gate_a", False),
         )
     except (AttributeError, TypeError, ValueError):
         raise HTTPException(
             status_code=422, detail="Invalid automation request."
         ) from None
-    result = await controller.run(context=context, command=command)
+    result = await controller.start(context=context, command=command)
+    return result.to_dict()
+
+
+@app.get("/api/automation-cycle/status")
+async def automatic_application_status_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Poll the authenticated subject's current or last automation state."""
+
+    controller = getattr(
+        request.app.state, "automation_cycle_controller", None
+    )
+    if not isinstance(controller, ContinueAutomationUIController):
+        raise HTTPException(
+            status_code=503, detail="Automatic application is unavailable."
+        )
+    return (await controller.status(context=context)).to_dict()
+
+
+@app.post("/api/automation-cycle/stop")
+async def stop_automatic_application_ui(
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Request a cooperative stop at the next persisted safe checkpoint."""
+
+    controller = getattr(
+        request.app.state, "automation_cycle_controller", None
+    )
+    if not isinstance(controller, ContinueAutomationUIController):
+        raise HTTPException(
+            status_code=503, detail="Automatic application is unavailable."
+        )
+    try:
+        command = StopAutomationUICommand(
+            invocation_id=body.get("invocation_id", "")
+        )
+    except (AttributeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid automation stop request."
+        ) from None
+    try:
+        result = await controller.stop(context=context, command=command)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=503,
+            detail="Automatic application could not stop safely.",
+        ) from None
     return result.to_dict()
 
 
@@ -813,6 +1780,215 @@ async def dashboard_overview_read_ui(
         controller_type=DashboardOverviewController,
         unavailable_message="Dashboard overview is unavailable.",
     )
+
+
+@app.get("/api/application-reviews/{application_plan_id}")
+async def application_submission_review_ui(
+    application_plan_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Load the exact current persisted Review behind one Gate B action."""
+
+    controller = getattr(
+        request.app.state, "application_review_submission_controller", None
+    )
+    if not isinstance(controller, ApplicationReviewSubmissionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Application submission review is unavailable.",
+        )
+    try:
+        result = await controller.load(
+            context=context, application_plan_id=application_plan_id
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid application review request."
+        ) from None
+    return result.to_dict()
+
+
+@app.post("/api/application-reviews/{application_plan_id}/submit")
+async def confirm_application_submission_ui(
+    application_plan_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Authorize and execute exactly one current reviewed application."""
+
+    controller = getattr(
+        request.app.state, "application_review_submission_controller", None
+    )
+    if not isinstance(controller, ApplicationReviewSubmissionUIController):
+        raise HTTPException(
+            status_code=503,
+            detail="Application submission review is unavailable.",
+        )
+    review_token = body.get("review_token")
+    confirmed = body.get("confirmed")
+    if not isinstance(review_token, str) or confirmed is not True:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm the exact current review before submitting.",
+        )
+    try:
+        result = await controller.submit(
+            context=context,
+            application_plan_id=application_plan_id,
+            review_token=review_token,
+            confirmed=confirmed,
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid application submission confirmation.",
+        ) from None
+    return result.to_dict()
+
+
+@app.get("/api/reviewed-applications")
+async def reviewed_application_compatibility_list_ui(
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """List current reviewed applications from the CSV compatibility queue."""
+
+    controller = getattr(
+        request.app.state,
+        "reviewed_application_compatibility_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ReviewedApplicationCompatibilityUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Reviewed applications are unavailable.",
+        )
+    try:
+        result = controller.list(context=context)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid reviewed application request."
+        ) from None
+    return result.to_dict()
+
+
+@app.get("/api/reviewed-applications/{run_id}")
+async def reviewed_application_compatibility_review_ui(
+    run_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Load the current exact Review for one compatibility run."""
+
+    controller = getattr(
+        request.app.state,
+        "reviewed_application_compatibility_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ReviewedApplicationCompatibilityUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Reviewed applications are unavailable.",
+        )
+    try:
+        result = controller.load(context=context, run_id=run_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid reviewed application request."
+        ) from None
+    return result.to_dict()
+
+
+@app.post("/api/reviewed-applications/{run_id}/refresh-review")
+async def refresh_reviewed_application_compatibility_ui(
+    run_id: str,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Create a fresh non-submit Review before final authorization."""
+
+    controller = getattr(
+        request.app.state,
+        "reviewed_application_compatibility_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ReviewedApplicationCompatibilityUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Reviewed applications are unavailable.",
+        )
+    try:
+        result = await controller.prepare_current_review(
+            context=context, run_id=run_id
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422, detail="Invalid reviewed application request."
+        ) from None
+    return result.to_dict()
+
+
+@app.post("/api/reviewed-applications/{run_id}/submit")
+async def confirm_reviewed_application_compatibility_submission_ui(
+    run_id: str,
+    body: dict,
+    request: Request,
+    context: AuthenticatedSubjectContext = Depends(
+        _authenticated_dashboard_subject
+    ),
+) -> dict:
+    """Authorize one exact reviewed compatibility run from the frontend."""
+
+    controller = getattr(
+        request.app.state,
+        "reviewed_application_compatibility_controller",
+        None,
+    )
+    if not isinstance(
+        controller, ReviewedApplicationCompatibilityUIController
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Reviewed applications are unavailable.",
+        )
+    review_token = body.get("review_token")
+    confirmed = body.get("confirmed")
+    if not isinstance(review_token, str) or confirmed is not True:
+        raise HTTPException(
+            status_code=422,
+            detail="Confirm the exact current review before submitting.",
+        )
+    try:
+        result = await controller.submit(
+            context=context,
+            run_id=run_id,
+            review_token=review_token,
+            confirmed=confirmed,
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid application submission confirmation.",
+        ) from None
+    return result.to_dict()
 
 
 @app.get("/api/candidate-facts/review")
@@ -3018,7 +4194,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 # Entry point
 # ===========================================================================
 
-def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
+def run_server(
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    *,
+    allow_kubernetes_bind: bool = False,
+) -> None:
     """Start the uvicorn server.  Called from main.py or directly."""
     normalized_host = str(host or "").strip().casefold()
     loopback = normalized_host == "localhost"
@@ -3027,21 +4208,21 @@ def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
             loopback = ipaddress.ip_address(normalized_host).is_loopback
         except ValueError:
             loopback = False
-    if not loopback:
+    if not loopback and not allow_kubernetes_bind:
         raise RuntimeError(
             "The production dashboard currently permits only a literal "
             "loopback bind address"
         )
-    if not all(
-        getattr(app.state, name, None) is not None
-        for name in (
-            "job_library_refresh_controller",
-            "automation_cycle_controller",
-            "authenticated_subject_dependency",
-        )
+    if (
+        not loopback
+        and getattr(app.state, "real_application_control_plane", None) is None
     ):
         raise RuntimeError(
-            "production automation composition is not installed"
+            "non-loopback bind is limited to the authenticated Kubernetes control plane"
+        )
+    if not dashboard_readiness(app):
+        raise RuntimeError(
+            "production dashboard readiness contract is not satisfied"
         )
     import uvicorn
 

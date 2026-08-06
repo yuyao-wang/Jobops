@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from core.job_library_refresh import (
     JobLibraryRefreshStatus,
     ManualJobLibraryRefreshCommand,
     PrivateHomeJobLibraryRefreshRunRepository,
+    _priority_failure_codes,
     refresh_job_library,
 )
 from core.job_search import (
@@ -29,6 +31,15 @@ from core.job_search import (
     SearchCandidate,
 )
 from core.private_home import PrivateHome
+from core.prioritization_policy import (
+    PrioritizationPolicy,
+    PrioritizationPolicyStatus,
+    PreferenceImportance,
+    SoftPreference,
+    SoftPreferenceCategory,
+    default_preparation_admission_policy,
+    policy_content_hash,
+)
 from core.search_profile import (
     PrivateHomeSearchProfileRepository,
     SaveSearchProfileCommand,
@@ -181,6 +192,73 @@ class _SearchExecutor:
         return result
 
 
+class _RequestSearchExecutor:
+    def __init__(self):
+        self.calls = []
+
+    async def search_request(self, *, source, request):
+        self.calls.append((source, request))
+        return JobSearchResult.succeeded(
+            CandidateSet(
+                candidate_set_id=f"candidate-set-{len(self.calls)}",
+                request_id=request.request_id,
+                candidates=(),
+                created_at=NOW,
+            )
+        )
+
+    async def search(self, profile):
+        raise AssertionError("approved-role discovery must use the generated request")
+
+
+class _ActivePolicyProvider:
+    def __init__(self, policy):
+        self.policy = policy
+
+    def get_active_policy(self, subject_id):
+        assert subject_id == SUBJECT
+        return self.policy
+
+
+def _active_role_policy():
+    preferences = (
+        SoftPreference(
+            preference_id="pref-role-ml",
+            category=SoftPreferenceCategory.ROLE,
+            statement="Prefer machine-learning engineer roles",
+            source_excerpt="machine-learning engineer",
+            importance=PreferenceImportance.HIGH,
+        ),
+        SoftPreference(
+            preference_id="pref-role-backend",
+            category=SoftPreferenceCategory.ROLE,
+            statement="Backend Engineer or Applied Scientist",
+            source_excerpt="Backend Engineer or Applied Scientist",
+        ),
+    )
+    raw = "Prefer machine-learning engineer, backend engineer, or applied scientist roles."
+    admission = default_preparation_admission_policy()
+    return PrioritizationPolicy(
+        policy_id="policy-approved-role-discovery",
+        subject_id=SUBJECT,
+        policy_version=1,
+        policy_content_hash=policy_content_hash(
+            raw_preference_text=raw,
+            hard_constraints=(),
+            soft_preferences=preferences,
+            preparation_admission=admission,
+        ),
+        raw_preference_text=raw,
+        hard_constraints=(),
+        soft_preferences=preferences,
+        preparation_admission=admission,
+        status=PrioritizationPolicyStatus.ACTIVE,
+        created_at=NOW,
+        approved_at=NOW,
+        interpreter_version="synthetic-policy-v1",
+    )
+
+
 class _Reader:
     def __init__(self, failures=()):
         self.failures = set(failures)
@@ -260,6 +338,26 @@ def _command(invocation="refresh-001"):
     )
 
 
+def test_priority_failure_codes_retain_typed_agent_reason() -> None:
+    result = _priority(status="FAILED", failed=1)
+    item = SimpleNamespace(
+        failure=SimpleNamespace(
+            reason_code=SimpleNamespace(value="SINGLE_JOB_FAILED"),
+            single_job_reason=SimpleNamespace(value="PROPOSAL_FAILED"),
+        ),
+        single_job_result=SimpleNamespace(
+            proposal_result=SimpleNamespace(
+                reason_code=SimpleNamespace(value="AGENT_TIMEOUT"),
+            )
+        ),
+    )
+    object.__setattr__(result, "items", (item,))
+
+    assert _priority_failure_codes(result) == (
+        "PROPOSAL_FAILED:AGENT_TIMEOUT",
+    )
+
+
 @pytest.mark.asyncio
 async def test_profiles_search_once_and_duplicate_url_reads_discovers_once(
     tmp_path,
@@ -324,7 +422,101 @@ async def test_profiles_search_once_and_duplicate_url_reads_discovers_once(
     assert len(priority.calls) == 1
     assert priority.calls[0].subject_id == SUBJECT
     assert priority.calls[0].now == NOW
+    assert priority.calls[0].job_ids == ("job-1",)
     assert priority.calls[0].max_jobs == 5
+
+
+@pytest.mark.asyncio
+async def test_refresh_searches_each_configured_source_once_with_all_role_phrases(
+    tmp_path,
+):
+    home = PrivateHome(tmp_path)
+    _profile(home, "First legacy query", "shared-board")
+    _profile(home, "Second legacy query", "shared-board")
+    executor = _RequestSearchExecutor()
+
+    result = await refresh_job_library(
+        _command("refresh-approved-role-queries"),
+        profile_provider=_ProfileProvider(
+            PrivateHomeSearchProfileRepository(home)
+        ),
+        search_executor=executor,
+        public_job_reader=_Reader(),
+        discovery=_Discovery(),
+        priority_refresh=_Priority(),
+        repository=PrivateHomeJobLibraryRefreshRunRepository(home),
+        prioritization_policy_provider=_ActivePolicyProvider(
+            _active_role_policy()
+        ),
+    )
+
+    assert result.status is JobLibraryRefreshStatus.COMPLETED
+    assert len(executor.calls) == 1
+    _source, request = executor.calls[0]
+    assert request.title_any == (
+        "machine-learning engineer",
+        "Backend Engineer",
+        "Applied Scientist",
+    )
+    assert request.location is None
+    assert request.result_limit == 1000
+
+
+@pytest.mark.asyncio
+async def test_embedded_listing_observation_skips_per_job_public_read(tmp_path):
+    home = PrivateHome(tmp_path)
+    profile = _profile(home, "Example Labs", "example")
+    url = "https://job-boards.greenhouse.io/example/jobs/1001"
+    observation = SourceJobObservation(
+        source_platform=SourcePlatform.GREENHOUSE,
+        source_job_id="1001",
+        source_url=url,
+        application_url=url,
+        company=profile.search_request.company,
+        title="Engineer",
+        description="Build synthetic systems.",
+        location="",
+        work_mode=WorkMode.UNKNOWN,
+        posted_at=None,
+        ats_type=AtsType.GREENHOUSE,
+        observed_at=NOW.isoformat(),
+        provenance=(
+            FieldProvenance(
+                field="description",
+                source=ProvenanceSource.SOURCE_API,
+                source_field="content",
+            ),
+        ),
+    )
+    candidate = SearchCandidate(
+        candidate_id="greenhouse:example:1001",
+        company=observation.company,
+        title=observation.title,
+        location=None,
+        source_platform=SourcePlatform.GREENHOUSE,
+        source_url=url,
+        source_job_id="1001",
+        observation=observation,
+    )
+    reader = _Reader()
+
+    result = await refresh_job_library(
+        _command("refresh-inline-observation"),
+        profile_provider=_ProfileProvider(
+            PrivateHomeSearchProfileRepository(home)
+        ),
+        search_executor=_SearchExecutor(
+            {profile.profile_id: _search_result(profile, (candidate,))}
+        ),
+        public_job_reader=reader,
+        discovery=_Discovery(),
+        priority_refresh=_Priority(),
+        repository=PrivateHomeJobLibraryRefreshRunRepository(home),
+    )
+
+    assert result.status is JobLibraryRefreshStatus.COMPLETED
+    assert reader.calls == []
+    assert result.run.discovery_summary.created == 1
 
 
 @pytest.mark.asyncio

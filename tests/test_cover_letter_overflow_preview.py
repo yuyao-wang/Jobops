@@ -467,7 +467,7 @@ async def test_authenticated_route_returns_only_opaque_png_preview(
         / "static"
         / "app.js"
     ).read_text(encoding="utf-8")
-    assert "Review required action" in template
+    assert "Resolve application blocker" in template
     assert "will not fake or bypass that workflow" in (
         Path(__file__).parents[1]
         / "dashboard"

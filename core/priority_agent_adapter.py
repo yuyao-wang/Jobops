@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from datetime import datetime, timezone
@@ -23,9 +24,29 @@ from .job_prioritization import (
 
 
 DEFAULT_AGENT_VERSION = "priority-agent-v1"
-DEFAULT_PROMPT_VERSION = "priority-agent-prompt-v2"
+DEFAULT_PROMPT_VERSION = "priority-agent-prompt-v4"
 PRIORITY_AGENT_OUTPUT_SCHEMA_NAME = "jobops_priority_agent_output"
-PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION = "priority-agent-output-schema-v1"
+PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION = "priority-agent-output-schema-v2"
+
+_ELIGIBILITY_CATEGORIES = (
+    "WORK_AUTHORIZATION",
+    "CITIZENSHIP_OR_RESIDENCY",
+    "STUDENT_STATUS",
+    "SECURITY_CLEARANCE",
+)
+_JOB_FIELD_NAMES = (
+    "company",
+    "location",
+    "posted_at",
+    "source_platform",
+    "title",
+    "work_mode",
+)
+_DETERMINISTIC_FACT_IDS = (
+    "evaluated_at",
+    "job_age_days",
+    "posted_at_state",
+)
 
 _SYSTEM_PROMPT_LINES = (
     *PRIORITY_AGENT_SYSTEM_RULES,
@@ -36,7 +57,14 @@ _SYSTEM_PROMPT_LINES = (
     "P3 means defer because current value is low, fit is weak, or concerns are material.",
     "EXCLUDED means an approved hard constraint is violated; cite that constraint.",
     "NEEDS_USER means missing information would materially change the decision.",
-    "Return exactly one eligibility finding for each of WORK_AUTHORIZATION, CITIZENSHIP_OR_RESIDENCY, STUDENT_STATUS, and SECURITY_CLEARANCE.",
+    "Put qualification, priority level, confidence, summary, positive signals, missing information, and user questions inside recommendation.",
+    "Return eligibility_findings as an object with exactly these four keys: WORK_AUTHORIZATION, CITIZENSHIP_OR_RESIDENCY, STUDENT_STATUS, and SECURITY_CLEARANCE.",
+    "Use only source IDs listed in output_contract_guide; never invent an evidence source ID.",
+    "Every positive signal and concern needs evidence. Use null excerpt for JOB_FIELD, POLICY, CANDIDATE, and DETERMINISTIC_FACT references. JOB_DESCRIPTION is the only reference that needs a short exact substring copied verbatim from the supplied description.",
+    "A hard-constraint finding may name only a supplied hard constraint. Put that constraint in policy_evidence and a JOB_FIELD, JOB_DESCRIPTION, or DETERMINISTIC_FACT reference in job_evidence. Omit findings you cannot evaluate safely.",
+    "For eligibility, use job_requirement_evidence only for an exact JOB_DESCRIPTION excerpt and candidate_fact_evidence only for a verified fact of the same eligibility category. NOT_APPLICABLE uses null for both; UNKNOWN uses a job requirement and null candidate fact; SATISFIED and NOT_SATISFIED require both.",
+    "Use NOT_APPLICABLE eligibility only when the posting contains no explicit requirement for that category.",
+    "QUALIFIED requires a priority level and at least one evidenced positive signal. EXCLUDED requires null priority and a matched approved hard constraint. NEEDS_USER requires null priority and at least one missing-information item or user question.",
     "For an explicit eligibility requirement, cite the exact job-description excerpt and use only verified candidate facts to resolve it.",
     "A citizenship or permanent-residence preference is not an absolute eligibility bar unless the posting explicitly says so.",
     "Unknown or unmet student status must be considered: lower priority or ask the user; exclude only when the approved policy contains a matched student-only exclusion.",
@@ -61,9 +89,17 @@ _EVIDENCE_REF_SCHEMA: dict[str, Any] = {
                 "DETERMINISTIC_FACT",
             ],
         },
-        "source_id": {"type": "string"},
-        "field": {"type": ["string", "null"]},
-        "excerpt": {"type": ["string", "null"]},
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "field": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 80,
+        },
+        "excerpt": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 1000,
+        },
     },
     "required": ["source_type", "source_id", "field", "excerpt"],
 }
@@ -72,7 +108,7 @@ _RATIONALE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "signal_id": {"type": "string"},
+        "signal_id": {"type": "string", "minLength": 1, "maxLength": 160},
         "category": {
             "type": "string",
             "enum": [
@@ -88,9 +124,11 @@ _RATIONALE_SCHEMA: dict[str, Any] = {
                 "OTHER",
             ],
         },
-        "explanation": {"type": "string"},
+        "explanation": {"type": "string", "minLength": 1, "maxLength": 2000},
         "evidence_refs": {
             "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
             "items": _EVIDENCE_REF_SCHEMA,
         },
     },
@@ -106,14 +144,17 @@ _HARD_CONSTRAINT_FINDING_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "constraint_id": {"type": "string"},
+        "constraint_id": {"type": "string", "minLength": 1, "maxLength": 160},
         "result": {
             "type": "string",
             "enum": ["MATCHED", "NOT_MATCHED", "UNKNOWN"],
         },
-        "explanation": {"type": "string"},
-        "evidence_refs": {
+        "explanation": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "policy_evidence": _EVIDENCE_REF_SCHEMA,
+        "job_evidence": _EVIDENCE_REF_SCHEMA,
+        "supporting_evidence": {
             "type": "array",
+            "maxItems": 100,
             "items": _EVIDENCE_REF_SCHEMA,
         },
     },
@@ -121,23 +162,16 @@ _HARD_CONSTRAINT_FINDING_SCHEMA: dict[str, Any] = {
         "constraint_id",
         "result",
         "explanation",
-        "evidence_refs",
+        "policy_evidence",
+        "job_evidence",
+        "supporting_evidence",
     ],
 }
 
-_ELIGIBILITY_FINDING_SCHEMA: dict[str, Any] = {
+_ELIGIBILITY_FINDING_VALUE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "category": {
-            "type": "string",
-            "enum": [
-                "WORK_AUTHORIZATION",
-                "CITIZENSHIP_OR_RESIDENCY",
-                "STUDENT_STATUS",
-                "SECURITY_CLEARANCE",
-            ],
-        },
         "result": {
             "type": "string",
             "enum": [
@@ -156,22 +190,30 @@ _ELIGIBILITY_FINDING_SCHEMA: dict[str, Any] = {
                 "EXCLUDED_BY_APPROVED_POLICY",
             ],
         },
-        "explanation": {"type": "string"},
-        "evidence_refs": {
+        "explanation": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "job_requirement_evidence": {
+            "anyOf": [_EVIDENCE_REF_SCHEMA, {"type": "null"}],
+        },
+        "candidate_fact_evidence": {
+            "anyOf": [_EVIDENCE_REF_SCHEMA, {"type": "null"}],
+        },
+        "supporting_evidence": {
             "type": "array",
+            "maxItems": 100,
             "items": _EVIDENCE_REF_SCHEMA,
         },
     },
     "required": [
-        "category",
         "result",
         "impact",
         "explanation",
-        "evidence_refs",
+        "job_requirement_evidence",
+        "candidate_fact_evidence",
+        "supporting_evidence",
     ],
 }
 
-PRIORITY_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
+_RECOMMENDATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
@@ -187,32 +229,21 @@ PRIORITY_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["HIGH", "MEDIUM", "LOW"],
         },
-        "summary": {"type": "string"},
+        "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
         "positive_signals": {
             "type": "array",
+            "maxItems": 100,
             "items": _RATIONALE_SCHEMA,
-        },
-        "concerns": {
-            "type": "array",
-            "items": _RATIONALE_SCHEMA,
-        },
-        "hard_constraint_findings": {
-            "type": "array",
-            "items": _HARD_CONSTRAINT_FINDING_SCHEMA,
-        },
-        "eligibility_findings": {
-            "type": "array",
-            "minItems": 4,
-            "maxItems": 4,
-            "items": _ELIGIBILITY_FINDING_SCHEMA,
         },
         "missing_information": {
             "type": "array",
-            "items": {"type": "string"},
+            "maxItems": 100,
+            "items": {"type": "string", "minLength": 1, "maxLength": 2000},
         },
         "questions_for_user": {
             "type": "array",
-            "items": {"type": "string"},
+            "maxItems": 100,
+            "items": {"type": "string", "minLength": 1, "maxLength": 2000},
         },
     },
     "required": [
@@ -221,13 +252,418 @@ PRIORITY_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
         "confidence",
         "summary",
         "positive_signals",
-        "concerns",
-        "hard_constraint_findings",
-        "eligibility_findings",
         "missing_information",
         "questions_for_user",
     ],
 }
+
+PRIORITY_AGENT_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "recommendation": _RECOMMENDATION_SCHEMA,
+        "concerns": {
+            "type": "array",
+            "maxItems": 100,
+            "items": _RATIONALE_SCHEMA,
+        },
+        "hard_constraint_findings": {
+            "type": "array",
+            "maxItems": 100,
+            "items": _HARD_CONSTRAINT_FINDING_SCHEMA,
+        },
+        "eligibility_findings": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                category: _ELIGIBILITY_FINDING_VALUE_SCHEMA
+                for category in _ELIGIBILITY_CATEGORIES
+            },
+            "required": list(_ELIGIBILITY_CATEGORIES),
+        },
+    },
+    "required": [
+        "recommendation",
+        "concerns",
+        "hard_constraint_findings",
+        "eligibility_findings",
+    ],
+}
+
+
+def _evidence_object_schema(
+    *,
+    source_type: str,
+    source_ids: tuple[str, ...],
+    fields: tuple[str | None, ...],
+    description_excerpt: bool = False,
+) -> dict[str, Any]:
+    excerpt_schema: dict[str, Any] = (
+        {"type": "string", "minLength": 1, "maxLength": 1000}
+        if description_excerpt
+        else {"type": "null"}
+    )
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "source_type": {"type": "string", "enum": [source_type]},
+            "source_id": {"type": "string", "enum": list(source_ids)},
+            "field": {"enum": list(fields)},
+            "excerpt": excerpt_schema,
+        },
+        "required": ["source_type", "source_id", "field", "excerpt"],
+    }
+
+
+def _context_evidence_schema(context: PriorityContext) -> dict[str, Any]:
+    branches = [
+        _evidence_object_schema(
+            source_type="JOB_FIELD",
+            source_ids=(context.job.job_id,),
+            fields=_JOB_FIELD_NAMES,
+        ),
+        _evidence_object_schema(
+            source_type="JOB_DESCRIPTION",
+            source_ids=(context.job.job_id,),
+            fields=(None, "description"),
+            description_excerpt=True,
+        ),
+        _evidence_object_schema(
+            source_type="DETERMINISTIC_FACT",
+            source_ids=_DETERMINISTIC_FACT_IDS,
+            fields=(None,),
+        ),
+    ]
+    optional_sources = (
+        (
+            "POLICY_HARD_CONSTRAINT",
+            tuple(
+                item.constraint_id
+                for item in context.policy.hard_constraints
+            ),
+        ),
+        (
+            "POLICY_SOFT_PREFERENCE",
+            tuple(item.preference_id for item in context.policy.soft_preferences),
+        ),
+        (
+            "CANDIDATE_FACT",
+            tuple(
+                item.fact_id
+                for item in context.candidate.facts
+                if item.verified and item.prioritization_safe
+            ),
+        ),
+    )
+    for source_type, source_ids in optional_sources:
+        if source_ids:
+            branches.append(
+                _evidence_object_schema(
+                    source_type=source_type,
+                    source_ids=source_ids,
+                    fields=(None,),
+                )
+            )
+    return {"anyOf": branches}
+
+
+def _job_or_deterministic_evidence_schema(
+    context: PriorityContext,
+) -> dict[str, Any]:
+    return {
+        "anyOf": [
+            _evidence_object_schema(
+                source_type="JOB_FIELD",
+                source_ids=(context.job.job_id,),
+                fields=_JOB_FIELD_NAMES,
+            ),
+            _evidence_object_schema(
+                source_type="JOB_DESCRIPTION",
+                source_ids=(context.job.job_id,),
+                fields=(None, "description"),
+                description_excerpt=True,
+            ),
+            _evidence_object_schema(
+                source_type="DETERMINISTIC_FACT",
+                source_ids=_DETERMINISTIC_FACT_IDS,
+                fields=(None,),
+            ),
+        ]
+    }
+
+
+def _schema_ref(name: str) -> dict[str, str]:
+    return {"$ref": f"#/$defs/{name}"}
+
+
+def _eligibility_value_schema(
+    *,
+    category: str,
+    general_evidence_ref: Mapping[str, Any],
+    job_requirement_ref: Mapping[str, Any],
+    candidate_fact_ref: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    def variant(
+        result: str,
+        impacts: tuple[str, ...],
+        *,
+        job_requirement: Mapping[str, Any],
+        candidate_fact: Mapping[str, Any],
+        max_supporting: int = 100,
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "result": {"type": "string", "enum": [result]},
+                "impact": {"type": "string", "enum": list(impacts)},
+                "explanation": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000,
+                },
+                "job_requirement_evidence": dict(job_requirement),
+                "candidate_fact_evidence": dict(candidate_fact),
+                "supporting_evidence": {
+                    "type": "array",
+                    "maxItems": max_supporting,
+                    "items": dict(general_evidence_ref),
+                },
+            },
+            "required": [
+                "result",
+                "impact",
+                "explanation",
+                "job_requirement_evidence",
+                "candidate_fact_evidence",
+                "supporting_evidence",
+            ],
+        }
+
+    unresolved_impacts = (
+        ("LOWER_PRIORITY", "NEEDS_USER")
+        if category == "STUDENT_STATUS"
+        else ("NONE", "LOWER_PRIORITY", "NEEDS_USER")
+    )
+    unsatisfied_impacts = (
+        (
+            "LOWER_PRIORITY",
+            "NEEDS_USER",
+            "EXCLUDED_BY_APPROVED_POLICY",
+        )
+        if category == "STUDENT_STATUS"
+        else ("LOWER_PRIORITY", "NEEDS_USER")
+    )
+    variants = [
+        variant(
+            "NOT_APPLICABLE",
+            ("NONE",),
+            job_requirement={"type": "null"},
+            candidate_fact={"type": "null"},
+            max_supporting=0,
+        ),
+        variant(
+            "UNKNOWN",
+            unresolved_impacts,
+            job_requirement=job_requirement_ref,
+            candidate_fact={"type": "null"},
+        ),
+    ]
+    if candidate_fact_ref is not None:
+        variants.extend(
+            (
+                variant(
+                    "SATISFIED",
+                    ("NONE",),
+                    job_requirement=job_requirement_ref,
+                    candidate_fact=candidate_fact_ref,
+                ),
+                variant(
+                    "NOT_SATISFIED",
+                    unsatisfied_impacts,
+                    job_requirement=job_requirement_ref,
+                    candidate_fact=candidate_fact_ref,
+                ),
+            )
+        )
+    return {"anyOf": variants}
+
+
+def _recommendation_output_schema(
+    *,
+    rationale_ref: Mapping[str, Any],
+    allow_excluded: bool,
+) -> dict[str, Any]:
+    def variant(
+        qualification: str,
+        priority_schema: Mapping[str, Any],
+        *,
+        min_positive: int = 0,
+        min_missing: int = 0,
+        min_questions: int = 0,
+    ) -> dict[str, Any]:
+        value = copy.deepcopy(_RECOMMENDATION_SCHEMA)
+        properties = value["properties"]
+        properties["proposed_qualification"] = {
+            "type": "string",
+            "enum": [qualification],
+        }
+        properties["proposed_priority_level"] = dict(priority_schema)
+        properties["positive_signals"]["items"] = dict(rationale_ref)
+        properties["positive_signals"]["minItems"] = min_positive
+        properties["missing_information"]["minItems"] = min_missing
+        properties["questions_for_user"]["minItems"] = min_questions
+        return value
+
+    variants = [
+        variant(
+            "QUALIFIED",
+            {
+                "type": "string",
+                "enum": ["P0", "P1", "P2", "P3"],
+            },
+            min_positive=1,
+        )
+    ]
+    if allow_excluded:
+        variants.append(
+            variant("EXCLUDED", {"type": "null"})
+        )
+    variants.extend(
+        (
+            variant(
+                "NEEDS_USER",
+                {"type": "null"},
+                min_missing=1,
+            ),
+            variant(
+                "NEEDS_USER",
+                {"type": "null"},
+                min_questions=1,
+            ),
+        )
+    )
+    return {"anyOf": variants}
+
+
+def priority_agent_output_schema(
+    context: PriorityContext,
+) -> dict[str, Any]:
+    """Bind generated evidence IDs and eligibility coverage to one context."""
+
+    if not isinstance(context, PriorityContext):
+        raise TypeError("context must be a PriorityContext")
+    schema = copy.deepcopy(PRIORITY_AGENT_OUTPUT_SCHEMA)
+    definitions: dict[str, Any] = {
+        "context_evidence": _context_evidence_schema(context),
+        "job_description_evidence": _evidence_object_schema(
+            source_type="JOB_DESCRIPTION",
+            source_ids=(context.job.job_id,),
+            fields=(None, "description"),
+            description_excerpt=True,
+        ),
+        "job_or_deterministic_evidence": (
+            _job_or_deterministic_evidence_schema(context)
+        ),
+    }
+    general_evidence_ref = _schema_ref("context_evidence")
+    rationale = copy.deepcopy(_RATIONALE_SCHEMA)
+    rationale["properties"]["evidence_refs"]["items"] = (
+        general_evidence_ref
+    )
+    definitions["rationale"] = rationale
+    schema["$defs"] = definitions
+    properties = schema["properties"]
+    hard_ids = tuple(
+        item.constraint_id for item in context.policy.hard_constraints
+    )
+    properties["recommendation"] = _recommendation_output_schema(
+        rationale_ref=_schema_ref("rationale"),
+        allow_excluded=bool(hard_ids),
+    )
+    properties["concerns"]["items"] = _schema_ref("rationale")
+    finding_schema = properties["hard_constraint_findings"]
+    if hard_ids:
+        hard_branches: list[dict[str, Any]] = []
+        for index, constraint_id in enumerate(hard_ids):
+            definition_name = f"hard_constraint_evidence_{index}"
+            definitions[definition_name] = _evidence_object_schema(
+                source_type="POLICY_HARD_CONSTRAINT",
+                source_ids=(constraint_id,),
+                fields=(None,),
+            )
+            hard_branches.append(
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "constraint_id": {
+                            "type": "string",
+                            "enum": [constraint_id],
+                        },
+                        "result": {
+                            "type": "string",
+                            "enum": ["MATCHED", "NOT_MATCHED", "UNKNOWN"],
+                        },
+                        "explanation": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2000,
+                        },
+                        "policy_evidence": _schema_ref(definition_name),
+                        "job_evidence": _schema_ref(
+                            "job_or_deterministic_evidence"
+                        ),
+                        "supporting_evidence": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": general_evidence_ref,
+                        },
+                    },
+                    "required": [
+                        "constraint_id",
+                        "result",
+                        "explanation",
+                        "policy_evidence",
+                        "job_evidence",
+                        "supporting_evidence",
+                    ],
+                }
+            )
+        finding_schema["items"] = {"anyOf": hard_branches}
+        finding_schema["maxItems"] = len(hard_ids)
+    else:
+        finding_schema["maxItems"] = 0
+    eligibility = properties["eligibility_findings"]["properties"]
+    for category in _ELIGIBILITY_CATEGORIES:
+        fact_ids = tuple(
+            item.fact_id
+            for item in context.candidate.facts
+            if item.verified
+            and item.prioritization_safe
+            and item.category.value == category
+        )
+        candidate_fact_ref: Mapping[str, Any] | None = None
+        if fact_ids:
+            definition_name = (
+                "eligibility_candidate_fact_" + category.casefold()
+            )
+            definitions[definition_name] = _evidence_object_schema(
+                source_type="CANDIDATE_FACT",
+                source_ids=fact_ids,
+                fields=(None,),
+            )
+            candidate_fact_ref = _schema_ref(definition_name)
+        eligibility[category] = _eligibility_value_schema(
+            category=category,
+            general_evidence_ref=general_evidence_ref,
+            job_requirement_ref=_schema_ref(
+                "job_description_evidence"
+            ),
+            candidate_fact_ref=candidate_fact_ref,
+        )
+    return schema
 
 
 class _StructuredOutputClient(Protocol):
@@ -263,6 +699,22 @@ def priority_context_data(context: PriorityContext) -> dict[str, Any]:
         raise TypeError("context must be a PriorityContext")
     return {
         "data_type": "PriorityContext",
+        "output_contract_guide": {
+            "job_id": context.job.job_id,
+            "job_field_names": list(_JOB_FIELD_NAMES),
+            "hard_constraint_ids": [
+                item.constraint_id for item in context.policy.hard_constraints
+            ],
+            "soft_preference_ids": [
+                item.preference_id for item in context.policy.soft_preferences
+            ],
+            "candidate_fact_ids": [
+                item.fact_id
+                for item in context.candidate.facts
+                if item.verified and item.prioritization_safe
+            ],
+            "deterministic_fact_ids": list(_DETERMINISTIC_FACT_IDS),
+        },
         "context": {
             "request_id": context.request_id,
             "subject_id": context.subject_id,
@@ -386,7 +838,14 @@ def _parse_finding(value: Any) -> HardConstraintFinding:
     item = _exact_mapping(
         value,
         keys=frozenset(
-            {"constraint_id", "result", "explanation", "evidence_refs"}
+            {
+                "constraint_id",
+                "result",
+                "explanation",
+                "policy_evidence",
+                "job_evidence",
+                "supporting_evidence",
+            }
         ),
         name="hard-constraint finding",
     )
@@ -394,12 +853,16 @@ def _parse_finding(value: Any) -> HardConstraintFinding:
         constraint_id=item["constraint_id"],
         result=item["result"],
         explanation=item["explanation"],
-        evidence_refs=tuple(
-            _parse_evidence_ref(reference)
-            for reference in _items(
-                item["evidence_refs"],
-                name="finding evidence_refs",
-            )
+        evidence_refs=(
+            _parse_evidence_ref(item["policy_evidence"]),
+            _parse_evidence_ref(item["job_evidence"]),
+            *(
+                _parse_evidence_ref(reference)
+                for reference in _items(
+                    item["supporting_evidence"],
+                    name="finding supporting_evidence",
+                )
+            ),
         ),
     )
 
@@ -413,7 +876,9 @@ def _parse_eligibility_finding(value: Any) -> EligibilityFinding:
                 "result",
                 "impact",
                 "explanation",
-                "evidence_refs",
+                "job_requirement_evidence",
+                "candidate_fact_evidence",
+                "supporting_evidence",
             }
         ),
         name="eligibility finding",
@@ -425,10 +890,15 @@ def _parse_eligibility_finding(value: Any) -> EligibilityFinding:
         explanation=item["explanation"],
         evidence_refs=tuple(
             _parse_evidence_ref(reference)
-            for reference in _items(
-                item["evidence_refs"],
-                name="eligibility finding evidence_refs",
+            for reference in (
+                item["job_requirement_evidence"],
+                item["candidate_fact_evidence"],
+                *_items(
+                    item["supporting_evidence"],
+                    name="eligibility finding supporting_evidence",
+                ),
             )
+            if reference is not None
         ),
     )
 
@@ -441,23 +911,35 @@ def priority_agent_output_from_data(value: Any) -> PriorityAgentOutput:
         keys=frozenset(PRIORITY_AGENT_OUTPUT_SCHEMA["required"]),
         name="priority agent output",
     )
+    recommendation = _exact_mapping(
+        item["recommendation"],
+        keys=frozenset(_RECOMMENDATION_SCHEMA["required"]),
+        name="priority recommendation",
+    )
     missing_information = _items(
-        item["missing_information"],
+        recommendation["missing_information"],
         name="missing_information",
     )
     questions_for_user = _items(
-        item["questions_for_user"],
+        recommendation["questions_for_user"],
         name="questions_for_user",
     )
+    eligibility = _exact_mapping(
+        item["eligibility_findings"],
+        keys=frozenset(_ELIGIBILITY_CATEGORIES),
+        name="eligibility_findings",
+    )
     return PriorityAgentOutput(
-        proposed_qualification=item["proposed_qualification"],
-        proposed_priority_level=item["proposed_priority_level"],
-        confidence=item["confidence"],
-        summary=item["summary"],
+        proposed_qualification=recommendation["proposed_qualification"],
+        proposed_priority_level=recommendation[
+            "proposed_priority_level"
+        ],
+        confidence=recommendation["confidence"],
+        summary=recommendation["summary"],
         positive_signals=tuple(
             _parse_rationale(value)
             for value in _items(
-                item["positive_signals"],
+                recommendation["positive_signals"],
                 name="positive_signals",
             )
         ),
@@ -473,11 +955,10 @@ def priority_agent_output_from_data(value: Any) -> PriorityAgentOutput:
             )
         ),
         eligibility_findings=tuple(
-            _parse_eligibility_finding(value)
-            for value in _items(
-                item["eligibility_findings"],
-                name="eligibility_findings",
+            _parse_eligibility_finding(
+                {"category": category, **eligibility[category]}
             )
+            for category in _ELIGIBILITY_CATEGORIES
         ),
         missing_information=tuple(missing_information),
         questions_for_user=tuple(questions_for_user),
@@ -517,6 +998,7 @@ class OpenAIPriorityAgentAdapter:
 
     async def evaluate(self, context: PriorityContext) -> PriorityAgentOutput:
         payload = priority_context_data(context)
+        schema = priority_agent_output_schema(context)
         started = time.monotonic()
         try:
             raw = await asyncio.to_thread(
@@ -524,7 +1006,7 @@ class OpenAIPriorityAgentAdapter:
                 system_prompt=PRIORITY_AGENT_SYSTEM_PROMPT,
                 input_data=payload,
                 schema_name=PRIORITY_AGENT_OUTPUT_SCHEMA_NAME,
-                schema=PRIORITY_AGENT_OUTPUT_SCHEMA,
+                schema=schema,
                 timeout=self._timeout,
             )
         except TimeoutError:
@@ -595,6 +1077,7 @@ __all__ = [
     "PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION",
     "PRIORITY_AGENT_OUTPUT_SCHEMA",
     "PRIORITY_AGENT_SYSTEM_PROMPT",
+    "priority_agent_output_schema",
     "priority_agent_output_from_data",
     "priority_context_data",
 ]

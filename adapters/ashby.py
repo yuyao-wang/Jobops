@@ -28,10 +28,12 @@ class AshbyAdapter(BaseATSAdapter):
         FieldSpec("cover_letter", ('textarea[name*="cover" i]', 'textarea[aria-label*="cover letter" i]'), "textarea", "Cover letter"),
     )
     submit_selectors = (
+        '.ashby-application-form-submit-button',
         'button[data-testid="application-submit"]',
         'button[type="submit"]',
     )
     confirmation_selectors = (
+        '.ashby-application-form-success-container',
         '[data-testid="application-confirmation"]',
         '[data-testid="application-success"]',
         '.ashby-application-confirmation',

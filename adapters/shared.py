@@ -32,15 +32,68 @@ _SENSITIVE_TERMS = (
     "sponsor",
     "visa",
     "security clearance",
+    "employment status",
+    "currently employed",
+    "full time experience",
+    "in office",
+    "graduation date",
+    "date of graduation",
+    "accommodation",
     "salary",
     "compensation",
     "gender",
     "race",
     "ethnicity",
+    "categories describe you",
     "disability",
     "veteran",
     "criminal record",
     "background check",
+)
+
+_EXPLICIT_SENSITIVE_KEY_PATTERNS = (
+    (
+        CanonicalApplicationAnswerKey.EMPLOYMENT_STATUS,
+        (
+            re.compile(
+                r"(?:(?:what is|select|please select)\s+)?"
+                r"(?:your\s+)?(?:current\s+)?employment\s+status"
+            ),
+            re.compile(r"(?:are\s+you\s+)?currently\s+employed"),
+        ),
+    ),
+    (
+        CanonicalApplicationAnswerKey.GRADUATION_DATE,
+        (
+            re.compile(
+                r"(?:(?:what is|enter|select|please enter|please select)\s+)?"
+                r"(?:your\s+)?(?:actual\s+|expected\s+)?graduation\s+"
+                r"(?:date|month|year)(?:\s+(?:mm|dd|yyyy|month|year))*"
+            ),
+            re.compile(
+                r"(?:your\s+)?(?:actual\s+|expected\s+)?"
+                r"date\s+of\s+graduation"
+                r"(?:\s+(?:mm|dd|yyyy|month|year))*"
+            ),
+        ),
+    ),
+    (
+        CanonicalApplicationAnswerKey.ACCOMMODATION,
+        (
+            re.compile(
+                r"(?:(?:do|will)\s+you\s+)?(?:need|require)"
+                r"(?:\s+(?:any|an?))?\s+"
+                r"(?:(?:reasonable|workplace)\s+)?"
+                r"accommodations?(?:\s+(?:to\s+(?:apply|interview|participate)"
+                r"|(?:during|for)\s+(?:the\s+)?"
+                r"(?:application|interview|hiring)\s+process))?"
+            ),
+            re.compile(
+                r"(?:reasonable|workplace|interview|application\s+process|"
+                r"hiring\s+process)\s+accommodations?"
+            ),
+        ),
+    ),
 )
 
 _THIRD_PARTY_IDENTITY_TERMS = (
@@ -70,6 +123,28 @@ def normalize_text(value: Any) -> str:
     """Return a conservative key used for exact local answer matching."""
 
     return _NON_WORD_RE.sub(" ", str(value or "").casefold()).strip()
+
+
+def _explicit_sensitive_key_for(
+    label: str, name: str = ""
+) -> CanonicalApplicationAnswerKey | None:
+    """Map only self-evident employment, education, or health labels."""
+
+    descriptors = tuple(
+        dict.fromkeys(
+            normalized
+            for normalized in (normalize_text(label), normalize_text(name))
+            if normalized
+        )
+    )
+    for key, patterns in _EXPLICIT_SENSITIVE_KEY_PATTERNS:
+        if any(
+            pattern.fullmatch(descriptor)
+            for descriptor in descriptors
+            for pattern in patterns
+        ):
+            return key
+    return None
 
 
 def is_sensitive_question(label: str, name: str = "") -> bool:
@@ -166,6 +241,37 @@ def _legacy_canonical_key_for(
         )
     ):
         return f"custom:{normalize_text(label or name) or 'unnamed'}"
+    explicit_sensitive_key = _explicit_sensitive_key_for(label, name)
+    if explicit_sensitive_key is not None:
+        return explicit_sensitive_key.value
+    if (
+        "best describes your work authorization" in text
+        or "which of the following best describes" in text
+        and "work authorization" in text
+    ):
+        return "work_authorization_detail"
+    if (
+        "full time experience" in text
+        and ("how many years" in text or "excluding internships" in text)
+    ):
+        return "full_time_experience"
+    if (
+        "in office" in text
+        and (
+            "commit" in text
+            or "days per week" in text
+            or "hybrid schedule" in text
+        )
+    ):
+        return "office_attendance"
+    if "how familiar" in text and (
+        "company" in text or "job posting" in text
+    ):
+        return "company_familiarity"
+    if "how did you hear about" in text:
+        return "job_discovery_source"
+    if "which categories describe you" in text and "select all" in text:
+        return "race_ethnicity"
     # Consequential fields may map only to an explicit canonical answer key.
     # Everything else stays a custom question and therefore hands off.
     if is_sensitive_question(label, name):
@@ -316,16 +422,32 @@ async def element_label(locator: Any, fallback: str = "") -> str:
 async def select_exact_option(locator: Any, value: Any) -> bool:
     """Select an option by exact value or exact normalized label."""
 
-    target = str(value)
+    multiple = isinstance(value, (list, tuple, set))
+    targets = list(value) if multiple else [value]
+    if not targets or any(not isinstance(item, str) or not item.strip() for item in targets):
+        return False
     options = await locator.locator("option").evaluate_all(
         "options => options.map(option => ({value: option.value, label: option.textContent || ''}))"
     )
-    normalized = normalize_text(target)
-    for option in options:
-        if option["value"] == target or normalize_text(option["label"]) == normalized:
-            await locator.select_option(value=option["value"])
-            return True
-    return False
+    matched: list[str] = []
+    for target_value in targets:
+        target = str(target_value)
+        normalized = normalize_text(target)
+        match = next(
+            (
+                option["value"]
+                for option in options
+                if option["value"] == target
+                or normalize_text(option["label"]) == normalized
+            ),
+            None,
+        )
+        if match is None:
+            return False
+        if match not in matched:
+            matched.append(match)
+    await locator.select_option(value=matched if multiple else matched[0])
+    return True
 
 
 async def maybe_await(value: Any) -> Any:

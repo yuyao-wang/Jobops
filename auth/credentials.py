@@ -11,7 +11,9 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import platform
+import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
@@ -60,6 +62,88 @@ class InMemoryCredentialStore:
     def delete(self, service: str, account: str) -> bool:
         _validate_key(service, account)
         return self._items.pop((service, account), None) is not None
+
+
+class SQLiteCredentialStore:
+    """Owner-only persistent store for control-plane credential records.
+
+    This backend is for the Kubernetes control plane's hashed Dashboard
+    session records.  It is not an ATS password store and is never selected by
+    the local browser executor, which continues to use macOS Keychain.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser().resolve()
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self.path.parent.chmod(0o700)
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS credentials (
+                        service TEXT NOT NULL,
+                        account TEXT NOT NULL,
+                        secret TEXT NOT NULL,
+                        PRIMARY KEY(service, account)
+                    )
+                    """
+                )
+            self.path.chmod(0o600)
+        except (OSError, sqlite3.Error) as exc:
+            raise CredentialStoreError(
+                "SQLite credential store could not be initialized"
+            ) from exc
+
+    def _connect(self) -> sqlite3.Connection:
+        try:
+            connection = sqlite3.connect(self.path, timeout=30.0)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=FULL")
+            return connection
+        except sqlite3.Error as exc:
+            raise CredentialStoreError(
+                "SQLite credential store is unavailable"
+            ) from exc
+
+    def get(self, service: str, account: str) -> str | None:
+        _validate_key(service, account)
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT secret FROM credentials WHERE service = ? AND account = ?",
+                    (service, account),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise CredentialStoreError("SQLite credential lookup failed") from exc
+        return str(row[0]) if row is not None else None
+
+    def set(self, service: str, account: str, secret: str) -> None:
+        _validate_item(service, account, secret)
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO credentials(service, account, secret)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(service, account)
+                    DO UPDATE SET secret = excluded.secret
+                    """,
+                    (service, account, secret),
+                )
+        except sqlite3.Error as exc:
+            raise CredentialStoreError("SQLite credential update failed") from exc
+
+    def delete(self, service: str, account: str) -> bool:
+        _validate_key(service, account)
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM credentials WHERE service = ? AND account = ?",
+                    (service, account),
+                )
+        except sqlite3.Error as exc:
+            raise CredentialStoreError("SQLite credential delete failed") from exc
+        return cursor.rowcount == 1
 
 
 class _CFDictionaryKeyCallBacks(ctypes.Structure):

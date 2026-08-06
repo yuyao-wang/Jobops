@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: jobops-demo
+resources:
+  - ../../base
+  - namespace.yaml
+  - postgres.yaml
+  - redis.yaml
+  - minio.yaml
+  - network-policies.yaml
+patches:
+  - path: local-config.yaml

@@ -9,12 +9,14 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, Awaitable, Callable, Mapping
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .application_execution_profile import (
     APPLICATION_EXECUTION_IDENTITY_FIELD_DEFINITIONS,
     ApplicationExecutionIdentityFieldRequiredness,
 )
 from .application_plan import ApplicationPlanListStatus
+from .application_execution_orchestrator import ApplicationExecutionStage
 from .application_preparation_orchestrator import (
     ApplicationPreparationRunReadStatus,
     ApplicationPreparationRunStatus,
@@ -32,18 +34,32 @@ from .current_application_execution_queue import (
     CurrentApplicationExecutionQueueStatus,
     CurrentApplicationExecutionStatus,
 )
-from .current_priority_queue import CurrentPriorityItemStatus
+from .current_priority_queue import (
+    CurrentPriorityItemStatus,
+    CurrentPriorityQueueReason,
+)
 from .human_attention_queue import (
     HumanAttentionAudience,
     HumanAttentionQueueStatus,
 )
 from .job_prioritization import PriorityQualification
+from .job_leads import (
+    JobLead,
+    JobLeadListStatus,
+    JobLeadSource,
+    JobLeadStatus,
+    canonicalize_job_lead_url,
+)
 from .runnable_application_queue import (
+    RunnableApplicationQueueItem,
+    RunnableApplicationQueueReason,
     RunnableApplicationQueueCommand,
     RunnableApplicationQueueStatus,
+    RunnableApplicationReason,
     RunnableApplicationStatus,
 )
 from .search_profile import SearchProfileListStatus
+from .subject_job_library import SubjectJobPostingReadStatus
 
 
 DASHBOARD_READ_CONTRACT_VERSION = "dashboard-read-v1"
@@ -112,6 +128,7 @@ class DashboardProgressStepState(StrEnum):
 
 class DashboardApplicationNextAction(StrEnum):
     REVIEW_ATTENTION = "REVIEW_ATTENTION"
+    REVIEW_AND_SUBMIT = "REVIEW_AND_SUBMIT"
     VIEW_PROGRESS = "VIEW_PROGRESS"
     CONTINUE_AUTOMATION = "CONTINUE_AUTOMATION"
     VIEW_SUBMISSION = "VIEW_SUBMISSION"
@@ -458,6 +475,22 @@ class DashboardJobItem:
     next_action: str
     discovered_at: str
     updated_at: str
+    authoritative_source: str
+    source_verified_at: str
+    discovered_via: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardNeedsUserJobLead:
+    lead_id: str
+    source: str
+    origin: str
+    source_url: str
+    title_hint: str | None
+    company_hint: str | None
+    location_hint: str | None
+    reason: str
+    discovered_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +499,8 @@ class DashboardJobsReadModel:
     last_refreshed_at: datetime | None
     library_state: DashboardJobLibraryState
     counts: Mapping[str, int | None]
+    lead_summary: Mapping[str, int]
+    needs_user_leads: tuple[DashboardNeedsUserJobLead, ...]
     ordered_items: tuple[DashboardJobItem, ...]
     snapshot_hash: str
     evaluated_at: datetime
@@ -494,6 +529,71 @@ _JOB_STATUS_ORDER = {
     DashboardJobStatus.SYSTEM_ISSUE: 7,
 }
 _PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, None: 4}
+_MAX_DASHBOARD_NEEDS_USER_LEADS = 25
+_SENSITIVE_LEAD_QUERY_KEYS = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "auth",
+        "authorization",
+        "clientsecret",
+        "credential",
+        "key",
+        "password",
+        "session",
+        "sessionid",
+        "sig",
+        "signature",
+        "token",
+        "xamzcredential",
+        "xamzsecuritytoken",
+        "xamzsignature",
+    }
+)
+
+
+def _job_lead_url_identity(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return canonicalize_job_lead_url("job_url", value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _public_job_lead_url(value: str) -> str:
+    canonical = canonicalize_job_lead_url("source_url", value)
+    parsed = urlsplit(canonical)
+    safe_query = urlencode(
+        [
+            (key, item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if "".join(character for character in key.casefold() if character.isalnum())
+            not in _SENSITIVE_LEAD_QUERY_KEYS
+        ],
+        doseq=True,
+    )
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, safe_query, "")
+    )
+
+
+def _empty_lead_summary() -> dict[str, int]:
+    return {
+        "total": 0,
+        "discovered": 0,
+        "resolved": 0,
+        "needs_user": 0,
+        "stale": 0,
+    }
+
+
+def _job_lead_discovered_via(lead: JobLead | None) -> str | None:
+    if lead is None:
+        return None
+    if lead.source is JobLeadSource.AUTHORIZED_WEB_SEARCH:
+        return lead.origin.value
+    return lead.source.value
 
 
 class DashboardJobsReader:
@@ -502,14 +602,125 @@ class DashboardJobsReader:
         *,
         runnable_queue_reader: Callable[..., Awaitable[Any] | Any],
         application_plan_repository: Any,
+        subject_job_reader: Any | None = None,
+        job_lead_repository: Any | None = None,
     ) -> None:
         self._queue = runnable_queue_reader
         self._plans = application_plan_repository
+        self._subject_jobs = subject_job_reader
+        self._job_leads = job_lead_repository
 
     async def read(
         self, *, subject_id: str, evaluated_at: datetime
     ) -> DashboardJobsReadModel:
         _aware(evaluated_at)
+        lead_summary = _empty_lead_summary()
+        needs_user_leads: tuple[DashboardNeedsUserJobLead, ...] = ()
+        resolved_leads: tuple[JobLead, ...] = ()
+        lead_identities: tuple[dict[str, Any], ...] = ()
+        subject_jobs = None
+        if self._job_leads is not None:
+            try:
+                listed_leads = self._job_leads.list_current(subject_id)
+            except Exception:
+                return self._failed(
+                    evaluated_at, DashboardReadStatus.FAILED
+                )
+            if listed_leads.status is not JobLeadListStatus.SUCCEEDED:
+                return self._failed(
+                    evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
+                )
+            if any(lead.subject_id != subject_id for lead in listed_leads.leads):
+                return self._failed(
+                    evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
+                )
+            leads = tuple(listed_leads.leads)
+            lead_summary = {
+                "total": len(leads),
+                "discovered": sum(
+                    lead.status is JobLeadStatus.DISCOVERED for lead in leads
+                ),
+                "resolved": sum(
+                    lead.status is JobLeadStatus.RESOLVED for lead in leads
+                ),
+                "needs_user": sum(
+                    lead.status is JobLeadStatus.NEEDS_USER for lead in leads
+                ),
+                "stale": sum(
+                    lead.status is JobLeadStatus.STALE for lead in leads
+                ),
+            }
+            needs_user_leads = tuple(
+                DashboardNeedsUserJobLead(
+                    lead_id=lead.lead_id,
+                    source=lead.source.value,
+                    origin=lead.origin.value,
+                    source_url=_public_job_lead_url(lead.source_url),
+                    title_hint=lead.title_hint,
+                    company_hint=lead.company_hint,
+                    location_hint=lead.location_hint,
+                    reason=lead.reason or "This lead needs your review.",
+                    discovered_at=lead.discovered_at,
+                )
+                for lead in sorted(
+                    (
+                        lead
+                        for lead in leads
+                        if lead.status is JobLeadStatus.NEEDS_USER
+                    ),
+                    key=lambda lead: (lead.discovered_at, lead.lead_id),
+                    reverse=True,
+                )[:_MAX_DASHBOARD_NEEDS_USER_LEADS]
+            )
+            resolved_leads = tuple(
+                sorted(
+                    (
+                        lead
+                        for lead in leads
+                        if lead.status is JobLeadStatus.RESOLVED
+                        and lead.canonical_url is not None
+                    ),
+                    key=lambda lead: (lead.discovered_at, lead.lead_id),
+                )
+            )
+            lead_identities = tuple(
+                {
+                    "content_hash": lead.content_hash,
+                    "lead_id": lead.lead_id,
+                    "lead_version": lead.lead_version,
+                    "status": lead.status.value,
+                }
+                for lead in leads
+            )
+        if self._subject_jobs is not None:
+            try:
+                subject_jobs = self._subject_jobs.list_current(
+                    subject_id=subject_id,
+                    now=evaluated_at,
+                )
+            except Exception:
+                return self._failed(
+                    evaluated_at, DashboardReadStatus.FAILED
+                )
+            if subject_jobs.status is SubjectJobPostingReadStatus.EMPTY:
+                return self._empty(
+                    subject_id=subject_id,
+                    evaluated_at=evaluated_at,
+                    membership_snapshot_hash=(
+                        subject_jobs.membership_snapshot_hash
+                    ),
+                    lead_summary=lead_summary,
+                    needs_user_leads=needs_user_leads,
+                    lead_identities=lead_identities,
+                )
+            if subject_jobs.status is not SubjectJobPostingReadStatus.READY:
+                return self._failed(
+                    evaluated_at,
+                    DashboardReadStatus.INTEGRITY_FAILURE
+                    if subject_jobs.status
+                    is SubjectJobPostingReadStatus.INTEGRITY_FAILURE
+                    else DashboardReadStatus.FAILED,
+                )
         try:
             queue = await _call(
                 self._queue,
@@ -520,7 +731,20 @@ class DashboardJobsReader:
             plans = self._plans.list_for_subject(subject_id)
         except Exception:
             return self._failed(evaluated_at, DashboardReadStatus.FAILED)
-        if queue.status is not RunnableApplicationQueueStatus.SUCCEEDED:
+        priority_not_configured = (
+            queue.status is RunnableApplicationQueueStatus.FAILED
+            and queue.reason_code
+            is RunnableApplicationQueueReason.PRIORITY_QUEUE_FAILED
+            and queue.priority_queue_result is not None
+            and queue.priority_queue_result.reason_code
+            is CurrentPriorityQueueReason.ACTIVE_POLICY_NOT_FOUND
+            and subject_jobs is not None
+            and subject_jobs.status is SubjectJobPostingReadStatus.READY
+        )
+        if (
+            queue.status is not RunnableApplicationQueueStatus.SUCCEEDED
+            and not priority_not_configured
+        ):
             return self._failed(evaluated_at, DashboardReadStatus.FAILED)
         if (
             plans.status is ApplicationPlanListStatus.INTEGRITY_FAILURE
@@ -530,16 +754,46 @@ class DashboardJobsReader:
                 evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
             )
         plan_jobs = {plan.job_id for plan in plans.plans}
+        queue_items = (
+            tuple(
+                RunnableApplicationQueueItem(
+                    subject_id=subject_id,
+                    job=item.job_posting,
+                    priority_queue_status=CurrentPriorityItemStatus.MISSING,
+                    runnable_status=(
+                        RunnableApplicationStatus.BLOCKED_NOT_CURRENT
+                    ),
+                    priority_decision=None,
+                    application_intent=None,
+                    reasons=(
+                        RunnableApplicationReason.PRIORITY_NOT_CURRENT,
+                    ),
+                )
+                for item in subject_jobs.ordered_items
+            )
+            if priority_not_configured and subject_jobs is not None
+            else queue.items
+        )
+        leads_by_canonical_url: dict[str, JobLead] = {}
+        for lead in resolved_leads:
+            identity = _job_lead_url_identity(lead.canonical_url)
+            if identity is not None and identity not in leads_by_canonical_url:
+                leads_by_canonical_url[identity] = lead
         items: list[DashboardJobItem] = []
         identities: list[dict[str, Any]] = []
-        for source in queue.items:
+        for source in queue_items:
             if source.subject_id != subject_id:
                 return self._failed(
                     evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
                 )
             decision = source.priority_decision
+            priority_failure_reason = getattr(
+                source, "priority_failure_reason", None
+            )
             if source.job.job_id in plan_jobs:
                 status = DashboardJobStatus.APPLICATION_CREATED
+            elif priority_failure_reason is not None:
+                status = DashboardJobStatus.SYSTEM_ISSUE
             elif source.priority_queue_status is CurrentPriorityItemStatus.INCOMPLETE:
                 status = DashboardJobStatus.SYSTEM_ISSUE
             elif source.priority_queue_status in {
@@ -572,6 +826,11 @@ class DashboardJobsReader:
                 else None
             )
             reasons = (
+                (
+                    "Priority evaluation hit a system or contract issue. "
+                    "Retry Priority."
+                ),
+            ) if priority_failure_reason is not None else (
                 tuple(
                     item.explanation
                     for item in decision.positive_signals[:3]
@@ -579,6 +838,18 @@ class DashboardJobsReader:
                 )
                 if decision is not None
                 else ()
+            )
+            matched_lead = next(
+                (
+                    leads_by_canonical_url[identity]
+                    for identity in (
+                        _job_lead_url_identity(source.job.application_url),
+                        _job_lead_url_identity(source.job.source_url),
+                    )
+                    if identity is not None
+                    and identity in leads_by_canonical_url
+                ),
+                None,
             )
             item = DashboardJobItem(
                 job_id=source.job.job_id,
@@ -610,10 +881,15 @@ class DashboardJobsReader:
                         DashboardJobStatus.READY_TO_PREPARE,
                         DashboardJobStatus.HIGH_MATCH,
                     }
+                    else "RETRY_PRIORITY"
+                    if priority_failure_reason is not None
                     else "VIEW_JOB"
                 ),
                 discovered_at=source.job.observed_at,
                 updated_at=source.job.observed_at,
+                authoritative_source=source.job.source_platform,
+                source_verified_at=source.job.observed_at,
+                discovered_via=_job_lead_discovered_via(matched_lead),
             )
             items.append(item)
             identities.append(
@@ -681,17 +957,66 @@ class DashboardJobsReader:
                 else DashboardJobLibraryState.EMPTY
             ),
             counts=counts,
+            lead_summary=lead_summary,
+            needs_user_leads=needs_user_leads,
             ordered_items=ordered,
             snapshot_hash=_hash(
                 {
                     "contract": DASHBOARD_READ_CONTRACT_VERSION,
                     "identities": identities,
+                    "lead_identities": lead_identities,
                     "mapping": DASHBOARD_MAPPING_POLICY_VERSION,
                     "membership_snapshot": (
-                        queue.priority_queue_result.membership_snapshot_hash
+                        subject_jobs.membership_snapshot_hash
+                        if priority_not_configured and subject_jobs is not None
+                        else queue.priority_queue_result.membership_snapshot_hash
                         if queue.priority_queue_result is not None
                         else None
                     ),
+                    "subject_id": subject_id,
+                }
+            ),
+            evaluated_at=evaluated_at,
+            capabilities={
+                "last_refresh": "UNAVAILABLE",
+                "new_since_last_refresh": "UNAVAILABLE",
+                "staleness": "UNAVAILABLE",
+            },
+        )
+
+    @staticmethod
+    def _empty(
+        *,
+        subject_id: str,
+        evaluated_at: datetime,
+        membership_snapshot_hash: str,
+        lead_summary: Mapping[str, int] | None = None,
+        needs_user_leads: tuple[DashboardNeedsUserJobLead, ...] = (),
+        lead_identities: tuple[dict[str, Any], ...] = (),
+    ) -> DashboardJobsReadModel:
+        return DashboardJobsReadModel(
+            read_status=DashboardReadStatus.EMPTY,
+            last_refreshed_at=None,
+            library_state=DashboardJobLibraryState.EMPTY,
+            counts={
+                "total": 0,
+                "current_priority": 0,
+                "high_match": 0,
+                "ready_to_prepare": 0,
+                "needs_input": 0,
+                "excluded": 0,
+                "new_since_last_refresh": None,
+            },
+            lead_summary=lead_summary or _empty_lead_summary(),
+            needs_user_leads=needs_user_leads,
+            ordered_items=(),
+            snapshot_hash=_hash(
+                {
+                    "contract": DASHBOARD_READ_CONTRACT_VERSION,
+                    "identities": (),
+                    "lead_identities": lead_identities,
+                    "mapping": DASHBOARD_MAPPING_POLICY_VERSION,
+                    "membership_snapshot": membership_snapshot_hash,
                     "subject_id": subject_id,
                 }
             ),
@@ -723,6 +1048,8 @@ class DashboardJobsReader:
                     "new_since_last_refresh",
                 )
             },
+            lead_summary=_empty_lead_summary(),
+            needs_user_leads=(),
             ordered_items=(),
             snapshot_hash=_hash({"status": status.value}),
             evaluated_at=evaluated_at,
@@ -890,12 +1217,7 @@ class DashboardApplicationsReader:
                     evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
                 )
             job = self._jobs.get(plan.job_id)
-            if (
-                job is None
-                or job.job_id != plan.job_id
-                or job.revision != plan.job_revision
-                or job.content_hash != plan.job_content_hash
-            ):
+            if job is None or job.job_id != plan.job_id:
                 return self._failed(
                     evaluated_at, DashboardReadStatus.INTEGRITY_FAILURE
                 )
@@ -914,6 +1236,15 @@ class DashboardApplicationsReader:
                 for item in attention_items
             )
             operator_count = len(attention_items) - user_count
+            gate_b_review_ready = (
+                execution_item is not None
+                and execution_item.execution_status
+                is CurrentApplicationExecutionStatus.DEFERRED
+                and execution_item.deferred_stage
+                is ApplicationExecutionStage.GATE_B_AUTHORIZATION
+                and execution_item.deferred_reason
+                == "USER_AUTHORIZATION_REQUIRED"
+            )
             if (
                 execution_item is not None
                 and execution_item.execution_status
@@ -928,6 +1259,8 @@ class DashboardApplicationsReader:
                 status = DashboardApplicationStatus.SUBMISSION_UNCERTAIN
             elif user_count:
                 status = DashboardApplicationStatus.NEEDS_ATTENTION
+            elif gate_b_review_ready:
+                status = DashboardApplicationStatus.READY
             elif operator_count or (
                 execution_item is not None
                 and execution_item.execution_status
@@ -937,7 +1270,8 @@ class DashboardApplicationsReader:
                 }
             ) or (
                 prep is not None
-                and prep.status is ApplicationPreparationRunStatus.FAILED
+                and prep.overall_status
+                is ApplicationPreparationRunStatus.FAILED
             ):
                 status = DashboardApplicationStatus.SYSTEM_ISSUE
             elif (
@@ -969,9 +1303,17 @@ class DashboardApplicationsReader:
                 attention_count=len(attention_items),
                 user_attention_count=user_count,
                 operator_attention_count=operator_count,
-                next_action=_APPLICATION_ACTION[status],
+                next_action=(
+                    DashboardApplicationNextAction.REVIEW_AND_SUBMIT
+                    if gate_b_review_ready
+                    else _APPLICATION_ACTION[status]
+                ),
                 last_business_event_at=max(event_times),
-                safe_status_detail=_APPLICATION_DETAIL[status],
+                safe_status_detail=(
+                    "Review complete — your approval is required before submission."
+                    if gate_b_review_ready
+                    else _APPLICATION_DETAIL[status]
+                ),
             )
             result_items.append(item)
             identity.append(
@@ -1138,6 +1480,17 @@ class DashboardOverviewReader:
             status = DashboardReadStatus.READY
         elif jobs.library_state is DashboardJobLibraryState.EMPTY:
             next_step = DashboardNextStep.REFRESH_JOB_LIBRARY
+            status = DashboardReadStatus.READY
+        elif any(
+            item.application_status
+            in {
+                DashboardJobStatus.NOT_EVALUATED,
+                DashboardJobStatus.HIGH_MATCH,
+                DashboardJobStatus.READY_TO_PREPARE,
+            }
+            for item in jobs.ordered_items
+        ):
+            next_step = DashboardNextStep.CONTINUE_AUTOMATION
             status = DashboardReadStatus.READY
         elif any(
             item.product_status

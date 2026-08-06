@@ -100,10 +100,10 @@ def test_verified_answer_requires_provenance_scope_and_unexpired_confirmation(
         {
             "schema_version": 1,
             "answers": {
-                "global": _record("Yes"),
-                "scoped": _record("No", scope={"job_id": "job-allowed"}),
-                "expired": _record("No", expires_at="2025-01-01T00:00:00Z"),
-                "missing_source": {
+                "work_authorization": _record(True),
+                "sponsorship": _record(False, scope={"job_id": "job-allowed"}),
+                "relocation": _record(False, expires_at="2025-01-01T00:00:00Z"),
+                "salary": {
                     "value": "No",
                     "verified": True,
                     "sensitivity": "legal",
@@ -111,6 +111,7 @@ def test_verified_answer_requires_provenance_scope_and_unexpired_confirmation(
                     "confirmed_at": "2026-01-01T00:00:00Z",
                     "expires_at": None,
                 },
+                "future_answer_key": _record("must not project"),
             },
         },
     )
@@ -119,10 +120,45 @@ def test_verified_answer_requires_provenance_scope_and_unexpired_confirmation(
     vault = CandidateVault.load(home)
     report = vault.answer_trust_report(job_id="job-other")
 
-    assert report.values == {"global": "Yes"}
-    assert report.invalid_verified_keys == ("expired", "missing_source")
+    assert report.values == {"work_authorization": True}
+    assert report.invalid_verified_keys == (
+        "future_answer_key",
+        "relocation",
+        "salary",
+    )
     assert report.all_projected_answers_verified is False
-    assert vault.answer_trust_report(job_id="job-allowed").values["scoped"] == "No"
+    assert (
+        vault.answer_trust_report(job_id="job-allowed").values["sponsorship"]
+        is False
+    )
+
+
+def test_verified_answer_alias_normalizes_but_collision_fails_closed(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "private")
+    paths = home.ensure()
+    _write(paths.profile_facts, {"schema_version": 1, "normalized": {}})
+    _write(
+        paths.verified_answers,
+        {
+            "schema_version": 1,
+            "answers": {
+                "authorized_to_work": _record(True),
+                "phone": _record("+1 555 0100"),
+                "phone_number": _record("+1 555 0199"),
+            },
+        },
+    )
+    _write(paths.policy, {"schema_version": 1, "autonomy": {}})
+
+    report = CandidateVault.load(home).answer_trust_report()
+
+    assert report.values == {"work_authorization": True}
+    assert report.accepted_keys == ("work_authorization",)
+    assert report.rejected_keys == ("phone", "phone_number")
+    assert report.invalid_verified_keys == ("phone", "phone_number")
+    assert report.all_projected_answers_verified is False
 
 
 def test_private_vault_contains_no_credentials_field(tmp_path: Path) -> None:

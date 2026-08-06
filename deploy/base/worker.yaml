@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobops-worker
+  labels:
+    app.kubernetes.io/name: jobops-worker
+    app.kubernetes.io/part-of: jobops
+  annotations:
+    jobops.dev/status: pending-business-entrypoint
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jobops-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jobops-worker
+        app.kubernetes.io/part-of: jobops
+    spec:
+      serviceAccountName: jobops-worker
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: jobops:demo
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - jobops.worker
+          envFrom:
+            - configMapRef:
+                name: jobops-runtime
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: jobops-runtime-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: jobops-runtime-secrets
+                  key: REDIS_URL
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jobops-runtime-secrets
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: jobops-runtime-secrets
+                  key: S3_SECRET_KEY
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: shared-memory
+              mountPath: /dev/shm
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: shared-memory
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi

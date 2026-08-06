@@ -285,6 +285,48 @@ async def test_nonready_terminal_and_uncertain_items_are_never_executed(
 
 
 @pytest.mark.asyncio
+async def test_exact_gate_a_approval_resumes_only_gate_a_deferred_plan(
+    tmp_path,
+):
+    subject, now, queue, items, _ = await _environment(
+        tmp_path,
+        ((
+            "gate-a",
+            CurrentApplicationExecutionStatus.DEFERRED,
+            ProposedPriorityLevel.P2,
+        ),),
+    )
+    item = items["gate-a"]
+    execution = _Execution(
+        {item.assembly_record_id: ApplicationExecutionStatus.DEFERRED}
+    )
+
+    result = await run_selective_batch_execution(
+        SelectiveBatchExecutionCommand(
+            subject_id=subject,
+            now=now,
+            application_plan_ids=(item.application_plan_id,),
+            plan_inputs=(
+                BatchExecutionPlanInput(
+                    application_plan_id=item.application_plan_id,
+                    approve_gate_a=True,
+                ),
+            ),
+        ),
+        execution_queue_reader=_QueueReader(queue),
+        single_job_execution=execution,
+    )
+
+    assert len(execution.calls) == 1
+    assert execution.calls[0].approve_gate_a is True
+    assert result.summary.selected == 1
+    assert result.summary.deferred == 1
+    assert result.items[0].queue_status is (
+        CurrentApplicationExecutionStatus.READY
+    )
+
+
+@pytest.mark.asyncio
 async def test_defer_failure_and_uncertain_do_not_stop_later_ready_plans(
     tmp_path,
 ):

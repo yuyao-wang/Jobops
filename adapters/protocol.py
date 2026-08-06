@@ -12,6 +12,7 @@ import hashlib
 import base64
 import json
 import re
+import time
 from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
@@ -58,7 +59,8 @@ from .document_upload import (
 )
 
 
-PROTOCOL_VERSION = "jobops.adapter/v1"
+PROTOCOL_VERSION = "jobops.adapter/v2"
+REVIEW_BINDING_VERSION = "review-binding-v4"
 
 
 class FieldKind(str, Enum):
@@ -68,6 +70,7 @@ class FieldKind(str, Enum):
     TEL = "tel"
     URL = "url"
     SELECT = "select"
+    COMBOBOX = "combobox"
     CHECKBOX = "checkbox"
     RADIO = "radio"
     FILE = "file"
@@ -139,6 +142,7 @@ class ApplicationContext:
     navigate: bool = True
     navigation_timeout_ms: int = 30_000
     settle_timeout_ms: int = 250
+    submission_evidence_timeout_ms: int = 10_000
     materials: MaterialBundle | None = None
     private_home: PrivateHome | None = None
 
@@ -205,6 +209,7 @@ class ReviewDigest:
 
     def to_safe_dict(self) -> dict[str, Any]:
         return {
+            "binding_version": REVIEW_BINDING_VERSION,
             "fingerprint": self.fingerprint,
             "adapter": self.adapter,
             "job_id": self.job_id,
@@ -265,12 +270,13 @@ class SubmissionEvidence:
 
 
 _POSITIVE_CONFIRMATION_RE = re.compile(
-    r"\b(thank you|application (?:was )?(?:received|submitted)|"
+    r"\b(thank you|thanks for applying|application (?:was )?(?:received|submitted)|"
     r"successfully submitted|submission (?:was )?received|application complete)\b",
     re.IGNORECASE,
 )
 _CONFIRMATION_URL_RE = re.compile(
-    r"(?:confirmation|thank[-_]?you|application[-_]?submitted|submitted=true)",
+    r"(?:confirmation|thank[-_]?you|thanks(?:[-_/]?for[-_/]?applying)?|"
+    r"application[-_]?submitted|submitted=true)",
     re.IGNORECASE,
 )
 
@@ -321,6 +327,7 @@ class BaseATSAdapter(ABC):
                     name: element.name || '',
                     type: (element.type || element.tagName || 'text').toLowerCase(),
                     tag: element.tagName.toLowerCase(),
+                    role: (element.getAttribute('role') || '').toLowerCase(),
                     required: Boolean(element.required) || element.getAttribute('aria-required') === 'true',
                     options: element.tagName === 'SELECT'
                         ? Array.from(element.options).map(option => [option.value, option.textContent || ''])
@@ -329,9 +336,17 @@ class BaseATSAdapter(ABC):
             )
             kind = _kind_from_attributes(attrs, spec.kind)
             label = await element_label(locator, spec.label or spec.canonical_key.replace("_", " ").title())
+            canonical_key = spec.canonical_key
+            if (
+                kind is FieldKind.FILE
+                and canonical_key is CanonicalApplicationAnswerKey.COVER_LETTER
+            ):
+                canonical_key = (
+                    CanonicalApplicationAnswerKey.COVER_LETTER_FILE
+                )
             fields.append(
                 FieldIR(
-                    canonical_key=spec.canonical_key,
+                    canonical_key=canonical_key,
                     label=label,
                     selectors=(selector,),
                     kind=kind,
@@ -349,16 +364,34 @@ class BaseATSAdapter(ABC):
         required_controls = await page.evaluate(
             """() => Array.from(document.querySelectorAll(
                 'input[type="file"], input[required], textarea[required], select[required], '
-                + '[aria-required="true"]'
-            )).filter(element => !element.disabled && !['hidden', 'submit', 'button'].includes((element.type || '').toLowerCase()))
+                + 'input[aria-required="true"], textarea[aria-required="true"], '
+                + 'select[aria-required="true"]'
+            )).filter(element => {
+                if (element.disabled || ['hidden', 'submit', 'button'].includes(
+                    (element.type || '').toLowerCase()
+                )) return false;
+                const validatingSelectInput = element.tabIndex < 0
+                    && String(element.className || '').includes('requiredInput')
+                    && element.closest('.select-shell');
+                const validatingCheckboxInput = Boolean(element.id)
+                    && Array.from(document.querySelectorAll('input[type="checkbox"]'))
+                        .some(item => item.name === element.id);
+                return !validatingSelectInput && !validatingCheckboxInput;
+            })
             .map((element, index) => {
                 if (!element.id && !element.name && !element.dataset.jobopsInspectId) {
                     element.dataset.jobopsInspectId = String(index);
                 }
-                const label = element.getAttribute('aria-label') ||
+                const ownLabel = element.getAttribute('aria-label') ||
                     (element.labels && element.labels.length
                         ? Array.from(element.labels).map(item => item.innerText || item.textContent || '').join(' ')
                         : '');
+                const fieldset = ['checkbox', 'radio'].includes(
+                    (element.type || '').toLowerCase()
+                ) ? element.closest('fieldset') : null;
+                const legend = fieldset && fieldset.querySelector('legend');
+                const label = (legend && (legend.innerText || legend.textContent))
+                    || ownLabel;
                 let selector;
                 if (element.id) selector = '#' + CSS.escape(element.id);
                 else if (element.name) selector = element.tagName.toLowerCase() + '[name=' + JSON.stringify(element.name) + ']';
@@ -368,6 +401,7 @@ class BaseATSAdapter(ABC):
                     name: element.name || '',
                     type: (element.type || element.tagName || 'text').toLowerCase(),
                     tag: element.tagName.toLowerCase(),
+                    role: (element.getAttribute('role') || '').toLowerCase(),
                     label: label.trim(),
                     selector,
                     options: element.tagName === 'SELECT'
@@ -415,6 +449,11 @@ class BaseATSAdapter(ABC):
             }
             for item in fields
         ]
+        signature_payload.sort(
+            key=lambda item: json.dumps(
+                item, sort_keys=True, separators=(",", ":")
+            )
+        )
         signature = hashlib.sha256(
             json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -458,6 +497,22 @@ class BaseATSAdapter(ABC):
                         item.control_id: item
                         for item in upload_result.plan.items
                     }
+        location_constraints = tuple(
+            str(value)
+            for key in (
+                CanonicalApplicationAnswerKey.STATE,
+                CanonicalApplicationAnswerKey.COUNTRY,
+            )
+            if (
+                value := resolve_confirmed_value(
+                    key,
+                    key.value,
+                    profile=context.profile,
+                    answers=context.answers,
+                    cover_letter=context.cover_letter,
+                )
+            )
+        )
 
         for form_field in form.fields:
             locator, _ = await first_locator(page, form_field.selectors)
@@ -472,13 +527,10 @@ class BaseATSAdapter(ABC):
                             document_control_id(form_field)
                         )
                         if item is not None:
-                            await locator.set_input_files(
-                                str(item.resolved_path)
-                            )
-                            uploaded_name = await locator.evaluate(
-                                "element => element.files && element.files.length ? element.files[0].name : ''"
-                            )
-                            if uploaded_name:
+                            await locator.set_input_files(str(item.resolved_path))
+                            if await _file_upload_is_recognized(
+                                page, form_field, item.resolved_path
+                            ):
                                 uploaded.append(
                                     item.canonical_material_key
                                 )
@@ -511,10 +563,9 @@ class BaseATSAdapter(ABC):
                                 unresolved.append(UnresolvedField("resume", form_field.label, "resume file is missing", form_field.sensitive))
                             continue
                         await locator.set_input_files(str(path))
-                        uploaded_name = await locator.evaluate(
-                            "element => element.files && element.files.length ? element.files[0].name : ''"
-                        )
-                        if uploaded_name:
+                        if await _file_upload_is_recognized(
+                            page, form_field, path
+                        ):
                             # Record the artifact role, never the private local
                             # filename (which often contains the applicant name).
                             uploaded.append(form_field.canonical_key)
@@ -544,7 +595,13 @@ class BaseATSAdapter(ABC):
                         )
                     continue
 
-                was_filled = await _fill_locator(page, locator, form_field, value)
+                was_filled = await _fill_locator(
+                    page,
+                    locator,
+                    form_field,
+                    value,
+                    location_constraints=location_constraints,
+                )
                 if was_filled:
                     filled.append(form_field.canonical_key)
                 elif form_field.required:
@@ -577,6 +634,11 @@ class BaseATSAdapter(ABC):
                 continue
             locator, _ = await first_locator(page, form_field.selectors)
             if locator is None:
+                if (
+                    form_field.kind is FieldKind.FILE
+                    and form_field.canonical_key in fill.uploaded_files
+                ):
+                    continue
                 missing.append(form_field.label)
                 continue
             try:
@@ -603,6 +665,17 @@ class BaseATSAdapter(ABC):
     ) -> ReviewDigest:
         unresolved_labels = tuple(item.label for item in fill.unresolved_required)
         submit_control, _ = await first_locator(page, form.submit_selectors)
+        if submit_control is None and context.navigate and form.submit_selectors:
+            # React ATS forms may briefly unmount the footer while a resume
+            # upload is parsed.  Do not turn that transient render gap into a
+            # human-attention blocker; wait for the deterministic control to
+            # return before concluding that the form is unsupported.
+            deadline = time.monotonic() + 5.0
+            while submit_control is None and time.monotonic() < deadline:
+                await page.wait_for_timeout(100)
+                submit_control, _ = await first_locator(
+                    page, form.submit_selectors
+                )
         submit_control_present = submit_control is not None
         review_marker_present = False
         if form.review_selectors:
@@ -617,6 +690,7 @@ class BaseATSAdapter(ABC):
         review_errors.extend(binding_errors)
         payload = {
             "protocol": PROTOCOL_VERSION,
+            "review_binding": REVIEW_BINDING_VERSION,
             "adapter": self.name,
             "job_id": context.job_id,
             "form_signature": form.signature,
@@ -701,6 +775,21 @@ class BaseATSAdapter(ABC):
         if _CONFIRMATION_URL_RE.search(page.url):
             return SubmissionEvidence(confirmation_url=page.url)
         return SubmissionEvidence()
+
+    async def wait_for_submission_evidence(
+        self, page: Any, context: ApplicationContext
+    ) -> SubmissionEvidence:
+        """Poll for delayed ATS confirmation after the one permitted click."""
+
+        timeout_ms = max(0, int(context.submission_evidence_timeout_ms))
+        deadline = time.monotonic() + (timeout_ms / 1_000)
+        while True:
+            evidence = await self.verify_submission(page, context)
+            if evidence.verified or time.monotonic() >= deadline:
+                return evidence
+            await page.wait_for_timeout(
+                min(250, max(1, int((deadline - time.monotonic()) * 1_000)))
+            )
 
     async def run(self, context: ApplicationContext) -> ApplicationOutcome:
         current_phase = OutcomePhase.INSPECT
@@ -813,7 +902,9 @@ class BaseATSAdapter(ABC):
                     details=details,
                 )
             current_phase = OutcomePhase.VERIFY
-            evidence = await self.verify_submission(context.page, context)
+            evidence = await self.wait_for_submission_evidence(
+                context.page, context
+            )
             if not evidence.verified:
                 return self._outcome(
                     context,
@@ -874,6 +965,28 @@ class BaseATSAdapter(ABC):
 
 _REVIEW_STATE_SCRIPT = r"""async element => {
     const type = String(element.type || '').toLowerCase();
+    if (String(element.getAttribute('role') || '').toLowerCase() === 'combobox') {
+        const shell = element.closest('.select-shell')
+            || element.closest('.field-wrapper');
+        const selected = shell ? Array.from(shell.querySelectorAll(
+            '.select__single-value, .select__multi-value__label, '
+            + '[class*="single-value"], [class*="multi-value__label"]'
+        )).map(item => String(item.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean) : [];
+        const announcements = shell ? Array.from(shell.querySelectorAll(
+            '[aria-live], [role="status"]'
+        )).map(item => String(item.textContent || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean) : [];
+        return {
+            kind: 'combobox',
+            value: selected.length ? selected[0] : '',
+            selected,
+            announcements,
+            selectionDigest: element.getAttribute(
+                'data-jobops-selected-option-digest'
+            ) || ''
+        };
+    }
     if (type === 'file') {
         const files = [];
         for (const file of Array.from(element.files || [])) {
@@ -905,14 +1018,35 @@ _REVIEW_STATE_SCRIPT = r"""async element => {
         };
     }
     if (type === 'checkbox') {
-        return {kind: 'checkbox', checked: Boolean(element.checked)};
+        const group = element.name
+            ? Array.from(document.querySelectorAll(
+                `input[type="checkbox"][name="${CSS.escape(element.name)}"]`
+            ))
+            : [element];
+        const selected = group.filter(item => item.checked).map(item => {
+            const label = item.labels && item.labels.length
+                ? Array.from(item.labels)
+                    .map(node => node.innerText || node.textContent || '')
+                    .join(' ')
+                : item.getAttribute('aria-label');
+            return {
+                value: String(item.value || ''),
+                label: String(label || '').replace(/\s+/g, ' ').trim()
+            };
+        });
+        return {kind: 'checkbox', checked: Boolean(element.checked), selected};
     }
     if (element.tagName === 'SELECT') {
-        const selected = element.selectedIndex >= 0 ? element.options[element.selectedIndex] : null;
+        const selectedOptions = Array.from(element.selectedOptions || []).map(option => ({
+            value: String(option.value || ''),
+            label: String(option.textContent || '').replace(/\s+/g, ' ').trim()
+        }));
+        const selected = selectedOptions.length ? selectedOptions[0] : null;
         return {
             kind: 'select',
-            value: String(element.value || ''),
-            label: String(selected?.textContent || '').replace(/\s+/g, ' ').trim()
+            value: String(selected?.value || ''),
+            label: String(selected?.label || ''),
+            selected: selectedOptions
         };
     }
     return {kind: 'value', value: String(element.value || '')};
@@ -927,6 +1061,92 @@ def _sha256_json(value: Any) -> str:
     ).hexdigest()
 
 
+def _review_field_identity(field: FieldIR) -> str:
+    """Return an order-independent public identity for one ATS control.
+
+    DOM position, generated IDs and selectors are presentation details and may
+    change between otherwise identical Greenhouse renders.  Duplicate public
+    identities remain safe because the digest input is a sorted multiset of
+    identity/state pairs.
+    """
+
+    return _sha256_json(
+        {
+            "canonical_key": str(field.canonical_key),
+            "kind": field.kind.value,
+            "label": normalize_text(field.label),
+            "options": sorted(
+                normalize_text(label) for _, label in field.options
+            ),
+            "required": field.required,
+            "sensitive": field.sensitive,
+        }
+    )
+
+
+def _stable_review_state(
+    state: Mapping[str, Any], field: FieldIR
+) -> Mapping[str, Any]:
+    """Remove render-only ATS state from an already verified read-back.
+
+    React/Select controls may change live-region announcements and generated
+    option values between otherwise identical renders.  Those values are useful
+    while matching the browser state to the verified answer, but they are not
+    part of the submitted application.  Gate B therefore binds the stable,
+    user-visible selection after ``_readback_matches_verified_value`` has
+    validated it.
+    """
+
+    if field.kind is FieldKind.COMBOBOX:
+        return {
+            "kind": "combobox",
+            "selected": sorted(
+                normalized
+                for item in state.get("selected") or ()
+                if (normalized := normalize_text(item))
+            ),
+            "selectionDigest": str(state.get("selectionDigest") or ""),
+        }
+    if field.kind is FieldKind.SELECT:
+        return {
+            "kind": "select",
+            "selected": sorted(
+                normalized
+                for item in state.get("selected") or ()
+                if isinstance(item, Mapping)
+                and (
+                    normalized := normalize_text(
+                        item.get("label") or item.get("value")
+                    )
+                )
+            ),
+        }
+    if field.kind is FieldKind.RADIO:
+        return {
+            "kind": "radio",
+            "checked": bool(state.get("checked")),
+            "selection": normalize_text(
+                state.get("label") or state.get("value")
+            ),
+        }
+    if field.kind is FieldKind.CHECKBOX:
+        return {
+            "kind": "checkbox",
+            "checked": bool(state.get("checked")),
+            "selected": sorted(
+                normalized
+                for item in state.get("selected") or ()
+                if isinstance(item, Mapping)
+                and (
+                    normalized := normalize_text(
+                        item.get("label") or item.get("value")
+                    )
+                )
+            ),
+        }
+    return state
+
+
 async def _review_binding_digests(
     page: Any,
     context: ApplicationContext,
@@ -935,14 +1155,49 @@ async def _review_binding_digests(
 ) -> tuple[str, str, tuple[str, ...]]:
     """Verify and hash exact read-back without retaining raw candidate values."""
 
-    readbacks: list[tuple[int, str, str]] = []
-    materials: list[tuple[int, str, str]] = []
+    readbacks: list[tuple[str, str]] = []
+    materials: list[tuple[str, str]] = []
     errors: list[str] = []
     uploaded_roles = set(fill.uploaded_files)
     filled_roles = set(fill.filled_fields)
-    for index, field in enumerate(form.fields):
+    for field in form.fields:
+        field_identity = _review_field_identity(field)
         locator, _ = await first_locator(page, field.selectors)
         if locator is None:
+            if (
+                field.kind is FieldKind.FILE
+                and field.canonical_key in uploaded_roles
+            ):
+                expected = _expected_field_value(context, field)
+                expected_path = Path(str(expected or "")).expanduser()
+                try:
+                    if (
+                        not expected_path.is_file()
+                        or not await _file_upload_is_recognized(
+                            page, field, expected_path
+                        )
+                    ):
+                        raise ValueError("uploaded file UI evidence is absent")
+                    digest = hashlib.sha256(
+                        expected_path.read_bytes()
+                    ).hexdigest()
+                    materials.append((str(field.canonical_key), digest))
+                    readbacks.append(
+                        (
+                            field_identity,
+                            _sha256_json(
+                                {
+                                    "contentSha256": digest,
+                                    "kind": "uploaded-file-ui-confirmed",
+                                }
+                            ),
+                        )
+                    )
+                except (OSError, ValueError):
+                    errors.append(
+                        f"Uploaded material read-back unavailable for {field.canonical_key}"
+                    )
+                continue
             if field.required or field.canonical_key in fill.filled_fields:
                 errors.append(f"Review read-back unavailable for {field.canonical_key}")
             continue
@@ -982,7 +1237,8 @@ async def _review_binding_digests(
                         f"Uploaded material read-back unavailable for {field.canonical_key}"
                     )
                 materials.extend(
-                    (index, field.canonical_key, digest) for digest in content_hashes
+                    (str(field.canonical_key), digest)
+                    for digest in content_hashes
                 )
                 if should_match:
                     expected_path = Path(str(expected or "")).expanduser()
@@ -1008,13 +1264,23 @@ async def _review_binding_digests(
                         f"Review read-back differs from verified value for {field.canonical_key}"
                     )
             readbacks.append(
-                (index, field.canonical_key, _sha256_json(safe_state))
+                (
+                    field_identity,
+                    _sha256_json(_stable_review_state(safe_state, field)),
+                )
             )
         except Exception:
             errors.append(f"Review read-back failed for {field.canonical_key}")
     return (
-        _sha256_json({"fields": sorted(readbacks)}),
-        _sha256_json({"materials": sorted(materials)}),
+        _sha256_json(
+            {"binding": REVIEW_BINDING_VERSION, "fields": sorted(readbacks)}
+        ),
+        _sha256_json(
+            {
+                "binding": REVIEW_BINDING_VERSION,
+                "materials": sorted(materials),
+            }
+        ),
         unique(errors),
     )
 
@@ -1052,11 +1318,154 @@ def _fold_readback(value: Any) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
+def _is_decline_answer(value: Any) -> bool:
+    normalized = normalize_text(value)
+    return any(
+        marker in normalized
+        for marker in (
+            "decline",
+            "prefer not",
+            "choose not",
+            "do not wish",
+            "don t wish",
+            "not disclosed",
+        )
+    )
+
+
+def _canonical_option_target(field: FieldIR, expected: Any) -> str:
+    if type(expected) is bool:
+        return "Yes" if expected else "No"
+    normalized = normalize_text(expected)
+    if field.canonical_key in {
+        CanonicalApplicationAnswerKey.GENDER,
+        CanonicalApplicationAnswerKey.RACE_ETHNICITY,
+        CanonicalApplicationAnswerKey.VETERAN_STATUS,
+        CanonicalApplicationAnswerKey.DISABILITY_STATUS,
+    } and _is_decline_answer(expected):
+        return "I don't wish to answer"
+    if field.canonical_key is CanonicalApplicationAnswerKey.GENDER:
+        aliases = {
+            "male": "Man, male or masculine",
+            "man": "Man, male or masculine",
+            "man male or masculine": "Man, male or masculine",
+            "female": "Woman, female or feminine",
+            "woman": "Woman, female or feminine",
+            "woman female or feminine": "Woman, female or feminine",
+            "non binary": (
+                "Non-binary/third gender (For example - bigender, gender "
+                "non-conforming, androgynous)"
+            ),
+            "nonbinary": (
+                "Non-binary/third gender (For example - bigender, gender "
+                "non-conforming, androgynous)"
+            ),
+            "transgender man": "Transgender man, male, or masculine",
+            "trans man": "Transgender man, male, or masculine",
+            "transgender woman": "Transgender woman, female or feminine",
+            "trans woman": "Transgender woman, female or feminine",
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+    return str(expected).strip()
+
+
+def _selection_attestation(field: FieldIR, expected: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "canonicalKey": field.canonical_key.value,
+                "expected": normalize_text(
+                    _canonical_option_target(field, expected)
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _option_matches_verified_value(
+    field: FieldIR,
+    expected: Any,
+    option_value: Any,
+    option_label: Any,
+) -> bool:
+    target = _canonical_option_target(field, expected)
+    normalized_target = normalize_text(target)
+    if any(
+        normalize_text(candidate) == normalized_target
+        for candidate in (option_value, option_label)
+    ):
+        return True
+    label = str(option_label or "").strip()
+    if field.canonical_key is CanonicalApplicationAnswerKey.COUNTRY:
+        normalized_label = normalize_text(label)
+        suffix = normalized_label.removeprefix(normalized_target).strip()
+        return (
+            normalized_label.startswith(normalized_target + " ")
+            and bool(suffix)
+            and suffix.split()[0].isdigit()
+        )
+    if field.canonical_key is CanonicalApplicationAnswerKey.CITY:
+        province_aliases = {
+            "ab": "alberta",
+            "bc": "british columbia",
+            "mb": "manitoba",
+            "nb": "new brunswick",
+            "nl": "newfoundland and labrador",
+            "ns": "nova scotia",
+            "nt": "northwest territories",
+            "nu": "nunavut",
+            "on": "ontario",
+            "pe": "prince edward island",
+            "qc": "quebec",
+            "sk": "saskatchewan",
+            "yt": "yukon",
+        }
+
+        def parts(raw: str) -> tuple[str, ...]:
+            return tuple(
+                province_aliases.get(item, item)
+                for item in (
+                    normalize_text(part)
+                    for part in raw.split(",")
+                )
+                if item
+            )
+
+        expected_parts = parts(str(target))
+        label_parts = parts(label)
+        if (
+            not expected_parts
+            or not label_parts
+            or expected_parts[0] != label_parts[0]
+        ):
+            return False
+        cursor = 1
+        for expected_part in expected_parts[1:]:
+            try:
+                cursor = label_parts.index(expected_part, cursor) + 1
+            except ValueError:
+                return False
+        return True
+    return False
+
+
 def _readback_matches_verified_value(
     state: Mapping[str, Any], field: FieldIR, expected: Any
 ) -> bool:
     target = str(expected)
     if field.kind is FieldKind.CHECKBOX:
+        if isinstance(expected, (list, tuple, set)):
+            wanted = {normalize_text(item) for item in expected}
+            selected = state.get("selected") or ()
+            actual = {
+                normalize_text(item.get("label") or item.get("value"))
+                for item in selected
+                if isinstance(item, Mapping)
+            }
+            return actual == wanted
         expected_checked = (
             expected
             if isinstance(expected, bool)
@@ -1067,13 +1476,58 @@ def _readback_matches_verified_value(
         if not bool(state.get("checked")):
             return False
         return any(
-            _fold_readback(candidate) == _fold_readback(target)
+            _option_matches_verified_value(
+                field, expected, candidate, candidate
+            )
             for candidate in (state.get("value"), state.get("label"))
         )
     if field.kind is FieldKind.SELECT:
+        if isinstance(expected, (list, tuple, set)):
+            wanted = {normalize_text(item) for item in expected}
+            selected = state.get("selected") or ()
+            actual = {
+                normalize_text(item.get("label") or item.get("value"))
+                for item in selected
+                if isinstance(item, Mapping)
+            }
+            return actual == wanted
         return any(
-            _fold_readback(candidate) == _fold_readback(target)
+            _option_matches_verified_value(
+                field, expected, candidate, candidate
+            )
             for candidate in (state.get("value"), state.get("label"))
+        )
+    if field.kind is FieldKind.COMBOBOX:
+        if isinstance(expected, (list, tuple, set)):
+            selected = tuple(state.get("selected") or ())
+            return len(selected) == len(expected) and all(
+                any(
+                    _option_matches_verified_value(
+                        field, item, label, label
+                    )
+                    for label in selected
+                )
+                for item in expected
+            )
+        selected = tuple(state.get("selected") or ())
+        if selected and state.get("selectionDigest") == (
+            _selection_attestation(field, expected)
+        ):
+            return True
+        candidates = tuple(
+            dict.fromkeys(
+                (
+                    state.get("value"),
+                    *(state.get("selected") or ()),
+                    *(state.get("announcements") or ()),
+                )
+            )
+        )
+        return any(
+            _option_matches_verified_value(
+                field, expected, candidate, candidate
+            )
+            for candidate in candidates
         )
 
     actual = str(state.get("value") or "")
@@ -1090,7 +1544,9 @@ def _readback_matches_verified_value(
 
 def _kind_from_attributes(attrs: Mapping[str, Any], fallback: str = "text") -> FieldKind:
     raw = str(attrs.get("type") or attrs.get("tag") or fallback).casefold()
-    if attrs.get("tag") == "textarea":
+    if str(attrs.get("role") or "").casefold() == "combobox":
+        raw = "combobox"
+    elif attrs.get("tag") == "textarea":
         raw = "textarea"
     elif attrs.get("tag") == "select":
         raw = "select"
@@ -1104,10 +1560,105 @@ def _kind_from_attributes(attrs: Mapping[str, Any], fallback: str = "text") -> F
             return FieldKind.TEXT
 
 
-async def _fill_locator(page: Any, locator: Any, field: FieldIR, value: Any) -> bool:
+async def _fill_locator(
+    page: Any,
+    locator: Any,
+    field: FieldIR,
+    value: Any,
+    *,
+    location_constraints: Sequence[str] = (),
+) -> bool:
     if field.kind is FieldKind.SELECT:
-        return await select_exact_option(locator, value)
+        return await select_exact_option(
+            locator, _canonical_option_target(field, value)
+        )
+    if field.kind is FieldKind.COMBOBOX:
+        if isinstance(value, (list, tuple, set)):
+            return False
+        target = _canonical_option_target(field, value)
+        await locator.click()
+        await locator.fill(target)
+        await locator.press("ArrowDown")
+        options = page.locator('[role="option"]')
+        matches: list[tuple[Any, str]] = []
+        for attempt in range(50):
+            matches = []
+            for index in range(await options.count()):
+                option = options.nth(index)
+                if not await option.is_visible():
+                    continue
+                label = (await option.inner_text()).strip()
+                option_value = await option.get_attribute("data-value") or label
+                if _option_matches_verified_value(
+                    field, value, option_value, label
+                ):
+                    matches.append((option, label))
+            if matches:
+                break
+            if attempt < 49:
+                await page.wait_for_timeout(100)
+        if (
+            field.canonical_key is CanonicalApplicationAnswerKey.CITY
+            and len(matches) > 1
+            and location_constraints
+        ):
+            normalized_constraints = {
+                normalize_text(item)
+                for item in location_constraints
+                if normalize_text(item)
+            }
+            constrained = [
+                match
+                for match in matches
+                if normalized_constraints.issubset(
+                    {
+                        normalize_text(part)
+                        for part in match[1].split(",")
+                        if normalize_text(part)
+                    }
+                )
+            ]
+            matches = constrained
+        if len(matches) != 1:
+            await locator.press("Escape")
+            return False
+        await matches[0][0].click()
+        await locator.evaluate(
+            "(element, digest) => element.setAttribute("
+            "'data-jobops-selected-option-digest', digest)",
+            _selection_attestation(field, value),
+        )
+        return True
     if field.kind is FieldKind.CHECKBOX:
+        if isinstance(value, (list, tuple, set)):
+            if not field.name or not value:
+                return False
+            requested = {normalize_text(item) for item in value}
+            if "" in requested:
+                return False
+            checkboxes = page.locator(
+                f'input[type="checkbox"][name={css_string(field.name)}]'
+            )
+            matched: dict[str, Any] = {}
+            all_boxes: list[Any] = []
+            for index in range(await checkboxes.count()):
+                checkbox = checkboxes.nth(index)
+                all_boxes.append(checkbox)
+                option_value = await checkbox.get_attribute("value") or ""
+                option_label = await element_label(checkbox, option_value)
+                for candidate in (option_value, option_label):
+                    normalized = normalize_text(candidate)
+                    if normalized in requested and normalized not in matched:
+                        matched[normalized] = checkbox
+            if set(matched) != requested:
+                return False
+            selected_ids = {id(box) for box in matched.values()}
+            for checkbox in all_boxes:
+                if id(checkbox) in selected_ids:
+                    await checkbox.check()
+                else:
+                    await checkbox.uncheck()
+            return True
         expected = value if isinstance(value, bool) else normalize_text(value) in {"yes", "true", "1", "checked"}
         if expected:
             await locator.check()
@@ -1118,12 +1669,13 @@ async def _fill_locator(page: Any, locator: Any, field: FieldIR, value: Any) -> 
         if not field.name:
             return False
         radios = page.locator(f'input[type="radio"][name={css_string(field.name)}]')
-        normalized = normalize_text(value)
         for index in range(await radios.count()):
             radio = radios.nth(index)
             option_value = await radio.get_attribute("value") or ""
             option_label = await element_label(radio, option_value)
-            if option_value == str(value) or normalize_text(option_label) == normalized:
+            if _option_matches_verified_value(
+                field, value, option_value, option_label
+            ):
                 await radio.check()
                 return True
         return False
@@ -1137,12 +1689,68 @@ async def _is_populated(page: Any, locator: Any, field: FieldIR) -> bool:
     if field.kind is FieldKind.FILE:
         return bool(await locator.evaluate("element => element.files && element.files.length"))
     if field.kind is FieldKind.CHECKBOX:
+        if field.name:
+            return bool(
+                await page.locator(
+                    f'input[type="checkbox"][name={css_string(field.name)}]:checked'
+                ).count()
+            )
         return bool(await locator.is_checked())
     if field.kind is FieldKind.RADIO:
         if not field.name:
             return bool(await locator.is_checked())
         return bool(await page.locator(f'input[type="radio"][name={css_string(field.name)}]:checked').count())
+    if field.kind is FieldKind.COMBOBOX:
+        return bool(
+            await locator.evaluate(
+                """element => {
+                    const shell = element.closest('.select-shell')
+                        || element.closest('.field-wrapper');
+                    if (!shell) return false;
+                    const selected = shell.querySelector(
+                        '.select__single-value, .select__multi-value__label, '
+                        + '[class*="single-value"], [class*="multi-value__label"]'
+                    );
+                    return Boolean(selected && String(
+                        selected.textContent || ''
+                    ).trim());
+                }"""
+            )
+        )
     return bool((await locator.input_value()).strip())
+
+
+async def _file_upload_is_recognized(
+    page: Any, field: FieldIR, path: Path, *, timeout_ms: int = 10_000
+) -> bool:
+    """Verify either the retained file input or Greenhouse's upload receipt UI."""
+
+    attempts = max(1, timeout_ms // 100)
+    for attempt in range(attempts):
+        locator, _ = await first_locator(page, field.selectors)
+        if locator is not None:
+            try:
+                if await locator.evaluate(
+                    "element => Boolean(element.files && element.files.length)"
+                ):
+                    return True
+            except Exception:
+                pass
+        try:
+            receipts = page.get_by_text(path.name, exact=True)
+            for index in range(await receipts.count()):
+                if await receipts.nth(index).is_visible():
+                    return True
+            if await page.locator("body").evaluate(
+                "(body, name) => String(body.innerText || '').includes(name)",
+                path.name,
+            ):
+                return True
+        except Exception:
+            return False
+        if attempt + 1 < attempts:
+            await page.wait_for_timeout(100)
+    return False
 
 
 def _unique_unresolved(items: Sequence[UnresolvedField]) -> list[UnresolvedField]:

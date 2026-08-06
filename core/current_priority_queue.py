@@ -95,6 +95,7 @@ class CurrentPriorityQueueItem:
     decision: PriorityDecision | None
     stale_reasons: tuple[CurrentPriorityStaleReason, ...]
     orchestration_id: str | None
+    latest_failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -110,6 +111,14 @@ class CurrentPriorityQueueItem:
                 for item in self.stale_reasons
             ),
         )
+        if self.latest_failure_reason is not None:
+            failure_reason = self.latest_failure_reason.strip()
+            if (
+                not failure_reason
+                or len(failure_reason) > 160
+                or failure_reason != self.latest_failure_reason
+            ):
+                raise ValueError("latest priority failure reason is invalid")
         if (
             not isinstance(self.subject_id, str)
             or not self.subject_id
@@ -129,6 +138,7 @@ class CurrentPriorityQueueItem:
                 or self.proposal is None
                 or self.decision is None
                 or self.stale_reasons
+                or self.latest_failure_reason is not None
                 or self.orchestration_id
                 != self.expected_binding.input_binding
             ):
@@ -246,7 +256,13 @@ def priority_binding_stale_reasons(
     expected: SingleJobPriorityBinding,
     stored: SingleJobPriorityBinding,
 ) -> tuple[CurrentPriorityStaleReason, ...]:
-    """Return only stale reasons directly proved by immutable bindings."""
+    """Return only stale reasons directly proved by immutable bindings.
+
+    ``evaluated_at`` remains part of the immutable P1d1 orchestration identity,
+    but P1d2 freshness uses its canonical UTC calendar day.  This keeps a
+    completed decision current throughout the day in which it was evaluated
+    while still requiring a fresh evaluation on the next UTC day.
+    """
 
     if not isinstance(expected, SingleJobPriorityBinding) or not isinstance(
         stored,
@@ -284,7 +300,13 @@ def priority_binding_stale_reasons(
         reasons.append(CurrentPriorityStaleReason.PROMPT_VERSION_CHANGED)
     if expected.model_id != stored.model_id:
         reasons.append(CurrentPriorityStaleReason.MODEL_VERSION_CHANGED)
-    if expected.evaluated_at != stored.evaluated_at:
+    expected_evaluation_day = datetime.fromisoformat(
+        expected.evaluated_at.removesuffix("Z") + "+00:00"
+    ).date()
+    stored_evaluation_day = datetime.fromisoformat(
+        stored.evaluated_at.removesuffix("Z") + "+00:00"
+    ).date()
+    if expected_evaluation_day != stored_evaluation_day:
         reasons.append(CurrentPriorityStaleReason.EVALUATION_TIME_CHANGED)
     if expected.validation_version != stored.validation_version:
         reasons.append(CurrentPriorityStaleReason.GATE_VERSION_CHANGED)
@@ -338,6 +360,31 @@ def _historical_sort_key(
     record: StoredSingleJobPriority,
 ) -> tuple[str, str]:
     return (record.binding.evaluated_at, record.input_binding)
+
+
+def _latest_applicable_failure(
+    *,
+    history: list[StoredSingleJobPriority],
+    expected: SingleJobPriorityBinding,
+) -> StoredSingleJobPriority | None:
+    """Return only a safe failed attempt for otherwise-current inputs."""
+
+    allowed_staleness = {
+        CurrentPriorityStaleReason.EVALUATION_TIME_CHANGED,
+    }
+    failures = tuple(
+        record
+        for record in history
+        if record.status is OrchestrationRecordStatus.FAILED
+        and record.failure_reason is not None
+        and set(
+            priority_binding_stale_reasons(
+                expected=expected,
+                stored=record.binding,
+            )
+        ).issubset(allowed_staleness)
+    )
+    return max(failures, key=_historical_sort_key) if failures else None
 
 
 def _current_sort_key(
@@ -550,6 +597,7 @@ async def build_current_priority_queue(
                         decision=None,
                         stale_reasons=(),
                         orchestration_id=exact.input_binding,
+                        latest_failure_reason=exact.failure_reason,
                     )
                 )
                 continue
@@ -586,6 +634,10 @@ async def build_current_priority_queue(
             )
             continue
 
+        latest_failure = _latest_applicable_failure(
+            history=history,
+            expected=expected,
+        )
         completed = tuple(
             record
             for record in history
@@ -603,6 +655,11 @@ async def build_current_priority_queue(
                     decision=None,
                     stale_reasons=(),
                     orchestration_id=None,
+                    latest_failure_reason=(
+                        latest_failure.failure_reason
+                        if latest_failure is not None
+                        else None
+                    ),
                 )
             )
             continue
@@ -613,11 +670,38 @@ async def build_current_priority_queue(
             stored=previous.binding,
         )
         if not stale_reasons:
-            return _failure(
-                command,
-                CurrentPriorityQueueReason.PRIORITY_DATA_INTEGRITY_FAILED,
-                "A completed orchestration has an inconsistent identity.",
+            try:
+                decision = _load_completed_decision(
+                    record=previous,
+                    decision_repository=decision_repository,
+                )
+            except PriorityDecisionRepositoryError:
+                return _failure(
+                    command,
+                    CurrentPriorityQueueReason.DECISION_REPOSITORY_FAILED,
+                    "A completed PriorityDecision could not be read.",
+                    retryable=True,
+                )
+            except ValueError:
+                return _failure(
+                    command,
+                    CurrentPriorityQueueReason.PRIORITY_DATA_INTEGRITY_FAILED,
+                    "A completed priority orchestration is inconsistent.",
+                )
+            items.append(
+                CurrentPriorityQueueItem(
+                    subject_id=subject_id,
+                    job=job,
+                    status=CurrentPriorityItemStatus.CURRENT,
+                    expected_binding=previous.binding,
+                    stored_binding=previous.binding,
+                    proposal=previous.proposal,
+                    decision=decision,
+                    stale_reasons=(),
+                    orchestration_id=previous.input_binding,
+                )
             )
+            continue
         try:
             _load_completed_decision(
                 record=previous,
@@ -647,6 +731,13 @@ async def build_current_priority_queue(
                 decision=None,
                 stale_reasons=stale_reasons,
                 orchestration_id=previous.input_binding,
+                latest_failure_reason=(
+                    latest_failure.failure_reason
+                    if latest_failure is not None
+                    and _historical_sort_key(latest_failure)
+                    > _historical_sort_key(previous)
+                    else None
+                ),
             )
         )
 

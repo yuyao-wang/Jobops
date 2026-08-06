@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>JobOps · Real Applications</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script defer src="/static/real_application.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <header class="app-header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="JobOps real applications">
+        <span class="brand-mark" aria-hidden="true">J</span>
+        <span>JobOps</span>
+      </a>
+      <nav class="primary-nav" aria-label="Control plane">
+        <span class="nav-link is-active">Real applications</span>
+      </nav>
+      <div class="header-status" id="header-status" role="status">
+        <span class="status-dot"></span><span>Authenticating</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main-content" class="shell" tabindex="-1">
+    <div id="global-notice" class="notice" hidden role="alert"></div>
+    <section class="page" aria-labelledby="page-title">
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">Real Application Closure</p>
+          <h1 id="page-title">Review and control one external submission</h1>
+          <p>The control plane never receives your browser profile, ATS credentials, cookies, MFA secrets, or candidate document bytes.</p>
+        </div>
+        <span class="status-pill neutral" id="executor-status">Checking executor</span>
+      </div>
+
+      <section class="section-card" aria-labelledby="attempts-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="attempts-title">Application attempts</h2>
+            <p>Only formally prepared attempts can be claimed by the local browser executor.</p>
+          </div>
+          <button class="button secondary" id="refresh-attempts">Refresh</button>
+        </div>
+        <div id="attempt-list" class="application-list" aria-live="polite"></div>
+      </section>
+
+      <section class="section-card" id="attempt-review" aria-labelledby="review-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Application review</p>
+            <h2 id="review-title">Prepared submission</h2>
+          </div>
+          <span class="status-pill neutral" id="attempt-status"></span>
+        </div>
+        <div id="job-summary" class="definition-grid"></div>
+
+        <section aria-labelledby="files-title">
+          <h3 id="files-title">Candidate files</h3>
+          <div id="file-summary" class="definition-grid"></div>
+        </section>
+
+        <section aria-labelledby="answers-title">
+          <h3 id="answers-title">Answers that will be submitted</h3>
+          <div id="answer-summary" class="stack"></div>
+        </section>
+
+        <section aria-labelledby="legal-title">
+          <h3 id="legal-title">Legal declarations and external side effect</h3>
+          <div id="legal-summary" class="capability-note"></div>
+        </section>
+
+        <section aria-labelledby="timeline-title">
+          <h3 id="timeline-title">Attempt timeline</h3>
+          <ol id="attempt-timeline" class="reasons"></ol>
+        </section>
+
+        <div id="human-actions" class="button-row" hidden>
+          <p id="human-reason"></p>
+          <button class="button primary" id="continue-application">I completed the browser step — continue</button>
+        </div>
+
+        <div id="approval-actions" class="confirmation" hidden>
+          <label class="item-row">
+            <input id="approval-confirmation" type="checkbox">
+            <span>I reviewed every answer and file hash, the visible legal declarations, and I explicitly authorize this one Workday Submit click.</span>
+          </label>
+          <p>This creates a short-lived, one-time permit. Any change to the job, subject, answers, review, or uploaded file hashes closes the fence without clicking Submit.</p>
+          <button class="button primary" id="approve-application" disabled>Approve and apply</button>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

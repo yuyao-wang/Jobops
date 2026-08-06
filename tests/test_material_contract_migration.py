@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,7 @@ from core.plan_material_manifest import (
 from core.plan_material_manifest_cover_letter import (
     IncludeCoverLetterInPlanMaterialManifestCommand,
 )
+from core.materials import project_materials_for_legacy_execution
 from core.policy import (
     AutonomyMode,
     JobTier,
@@ -420,6 +422,50 @@ def test_managed_cover_pdf_reference_is_strictly_typed() -> None:
             byte_size=0,
             media_type="application/pdf",
         )
+
+
+def test_legacy_targeted_cover_is_compiled_into_faithful_managed_pdf(
+    tmp_path: Path,
+) -> None:
+    if shutil.which("pdflatex") is None:
+        pytest.skip("allowlisted pdflatex is unavailable")
+    home = PrivateHome(tmp_path / "private")
+    resume = home.paths.master_documents / "synthetic-resume.pdf"
+    home.write_bytes(resume, b"%PDF-1.4\n% synthetic resume\n%%EOF\n")
+    materials = MaterialBundle.build(
+        resume_path=resume,
+        cover_letter=(
+            "Dear Hiring Team,\n\n"
+            "I'm applying with a synthetic, verified letter.\n\n"
+            "Sincerely,\nSynthetic Candidate"
+        ),
+    )
+
+    projected = project_materials_for_legacy_execution(
+        home=home,
+        subject_id="synthetic-subject",
+        job_id="job-" + "a" * 24,
+        materials=materials,
+    )
+    replayed = project_materials_for_legacy_execution(
+        home=home,
+        subject_id="synthetic-subject",
+        job_id="job-" + "a" * 24,
+        materials=materials,
+    )
+
+    assert projected.resume_path.relative_to(home.root).parts[:2] == (
+        "state",
+        "preparation",
+    )
+    assert projected.cover_letter_pdf is not None
+    cover_path = home.contained_path(
+        projected.cover_letter_pdf.reference
+    )
+    assert cover_path.read_bytes().startswith(b"%PDF-")
+    assert projected.cover_letter == materials.cover_letter
+    assert replayed.cover_letter_pdf == projected.cover_letter_pdf
+    assert replayed.digest == projected.digest
 
 
 def test_only_shared_p2c2_path_selects_cover_pdf() -> None:

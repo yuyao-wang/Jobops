@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 
 
 RESUME_TAILORING_CONTRACT_VERSION = "resume-tailoring-v1"
-RESUME_TAILORING_POLICY_VERSION = "resume-tailoring-policy-v1"
+RESUME_TAILORING_POLICY_VERSION = "resume-tailoring-policy-v2"
 
 RESUME_TAILORING_AGENT_POLICY = """Resume Tailoring Agent policy (static, non-negotiable):
 
@@ -105,6 +105,22 @@ Forbidden edits:
 - Changing identity facts: names, companies, titles, degrees, dates.
 - Introducing any fact absent from the supplied CandidateEvidence.
 - Returning free text instead of the typed structured result.
+
+Output completeness rules:
+- Return exactly one section proposal for every supplied source section and
+  assign contiguous section order values starting at zero.
+- Within those sections, return exactly one bullet proposal for every supplied
+  source block, including non-bullet blocks whose source_bullet_id is null.
+- Preserve the exact source_section_id, source_block_id, and source_bullet_id
+  bindings. Never invent or omit an identifier.
+- To preserve a block, use UNCHANGED with its exact source text and empty
+  evidence_ids and jd_alignment arrays. This is the required safe default when
+  a rewrite is uncertain.
+- To omit a block, use OMITTED with null text. Otherwise text must be non-empty.
+- A REWRITTEN block must cite supplied evidence IDs and exact substrings from
+  the trusted job description. Do not paraphrase jd_alignment references.
+- Every section must contain at least one proposal. Account for all source
+  blocks even when several are omitted.
 """
 
 WEAK_LEADING_VERBS = frozenset(
@@ -1084,6 +1100,7 @@ class TailorResumeResult:
     reason_code: ResumeTailoringFailureReason | None
     retryable: bool
     message: str
+    diagnostic_code: str | None = None
 
     def __post_init__(self) -> None:
         status = ResumeTailoringStatus(self.status)
@@ -1098,6 +1115,13 @@ class TailorResumeResult:
             raise TypeError("retryable must be a boolean")
         if not isinstance(self.message, str) or not self.message:
             raise ValueError("message must be non-empty")
+        if self.diagnostic_code is not None:
+            if (
+                not isinstance(self.diagnostic_code, str)
+                or not self.diagnostic_code
+                or len(self.diagnostic_code) > 120
+            ):
+                raise ValueError("diagnostic_code must be a short non-empty string")
         if status in {
             ResumeTailoringStatus.CREATED,
             ResumeTailoringStatus.UNCHANGED,
@@ -1142,6 +1166,7 @@ def _failure(
     retryable: bool = False,
     tailoring_binding: str = "",
     write_result: TailoredResumeDraftWriteResult | None = None,
+    diagnostic_code: str | None = None,
 ) -> TailorResumeResult:
     return TailorResumeResult(
         status=ResumeTailoringStatus.FAILED,
@@ -1161,6 +1186,7 @@ def _failure(
         reason_code=reason,
         retryable=retryable,
         message=f"Resume tailoring failed: {reason.value}.",
+        diagnostic_code=diagnostic_code,
     )
 
 
@@ -1169,6 +1195,7 @@ def _needs_human(
     *,
     tailoring_binding: str,
     detail: str,
+    diagnostic_code: str | None = None,
 ) -> TailorResumeResult:
     return TailorResumeResult(
         status=ResumeTailoringStatus.DEFERRED_NEEDS_HUMAN,
@@ -1180,11 +1207,18 @@ def _needs_human(
         reason_code=ResumeTailoringFailureReason.AGENT_OUTPUT_UNSAFE,
         retryable=False,
         message=f"The tailored resume needs human review: {detail}",
+        diagnostic_code=diagnostic_code,
     )
 
 
 class _OutputRejected(ValueError):
     """The Agent output failed a deterministic safety check."""
+
+
+def _output_rejection_diagnostic(rejection: _OutputRejected) -> str:
+    return re.sub(
+        r"[^A-Z0-9]+", "_", str(rejection).upper()
+    ).strip("_")[:120]
 
 
 def _words(text: str) -> tuple[str, ...]:
@@ -1702,25 +1736,28 @@ async def tailor_resume(
             retryable=True,
             tailoring_binding=binding,
         )
-    except ResumeTailoringAgentUnavailableError:
+    except ResumeTailoringAgentUnavailableError as error:
         return _failure(
             command,
             ResumeTailoringFailureReason.AGENT_UNAVAILABLE,
             retryable=True,
             tailoring_binding=binding,
+            diagnostic_code=(str(error) or None),
         )
-    except Exception:
+    except Exception as error:
         return _failure(
             command,
             ResumeTailoringFailureReason.AGENT_UNAVAILABLE,
             retryable=True,
             tailoring_binding=binding,
+            diagnostic_code=type(error).__name__,
         )
     if not isinstance(output, ResumeTailoringAgentOutput):
         return _needs_human(
             command,
             tailoring_binding=binding,
             detail="the Agent did not return a typed structured result.",
+            diagnostic_code="UNTYPED_STRUCTURED_RESULT",
         )
     if (
         output.disposition
@@ -1752,12 +1789,16 @@ async def tailor_resume(
             command,
             tailoring_binding=binding,
             detail=f"{rejection}.",
+            diagnostic_code=_output_rejection_diagnostic(rejection),
         )
-    except (AttributeError, TypeError, ValueError):
+    except (AttributeError, TypeError, ValueError) as error:
         return _needs_human(
             command,
             tailoring_binding=binding,
             detail="the Agent output could not be safely validated.",
+            diagnostic_code=(
+                "OUTPUT_VALIDATION_" + type(error).__name__.upper()
+            ),
         )
 
     content = {
@@ -1904,6 +1945,7 @@ def tailored_resume_draft_public_result(
         code=reason,
         contract_version=TAILORED_RESUME_DRAFT_STOP_REASON_CONTRACT_VERSION,
         outcome=outcome,
+        diagnostic_code=result.diagnostic_code,
         upstream_lineage_id=result.tailoring_binding or None,
     )
     constructor = (

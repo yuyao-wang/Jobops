@@ -15,19 +15,102 @@ authentication:
     service: jobops.dashboard.session
     account: local
   cookie_policy: HTTP_ONLY_SAME_SITE_STRICT
+  local_subject_id: subject-local-primary
   local_subject_binding_policy: SESSION_RECORD
+  local_session_issuance_policy: LOOPBACK_SAME_ORIGIN_AUTO
+  session_ttl_seconds: 43200
   trusted_proxy_policy: LOOPBACK_ONLY
-  contract_version: production-authentication-runtime-v1
+  contract_version: production-authentication-runtime-v2
 
 search:
-  enabled_providers: [GREENHOUSE]
-  boards:
-    - canonical_company: Example Company
-      board_token: example
-      aliases: []
+  # Start with no company tenant. Add only boards the user actually intends
+  # to follow, and add the matching provider ID at the same time.
+  enabled_providers: []
+  # boards:
+  #   - canonical_company: Example Company
+  #     board_token: example
+  #     aliases: []
+  boards: []
+  # ashby_boards:
+  #   - canonical_company: Example Ashby Company
+  #     board_name: example-ashby
+  #     aliases: []
+  ashby_boards: []
+  # lever_sites:
+  #   - canonical_company: Example Lever Company
+  #     site_name: example-lever
+  #     aliases: []
+  #     region: GLOBAL
+  lever_sites: []
+  # Enable GLASSDOOR only after a valid partner contract and secret references
+  # are available. Results must retain the required Glassdoor attribution.
+  # Add GLASSDOOR to enabled_providers at the same time.
+  # glassdoor:
+  #   source_id: glassdoor-partner
+  #   partner_id_ref:
+  #     source: KEYCHAIN
+  #     service: jobops.search.glassdoor.partner-id
+  #     account: local
+  #   partner_key_ref:
+  #     source: KEYCHAIN
+  #     service: jobops.search.glassdoor.partner-key
+  #     account: local
+  #   user_ip: 127.0.0.1
+  glassdoor: null
+  # Enable JOBVITE only for a licensed customer feed. API credentials are
+  # repository-external SecretReference objects, never inline values.
+  # Add JOBVITE to enabled_providers at the same time.
+  # jobvite_feeds:
+  #   - canonical_company: Example Jobvite Company
+  #     career_site: example-jobvite
+  #     aliases: []
+  #     api_key_ref:
+  #       source: KEYCHAIN
+  #       service: jobops.search.jobvite.api-key
+  #       account: local
+  #     api_secret_ref:
+  #       source: KEYCHAIN
+  #       service: jobops.search.jobvite.api-secret
+  #       account: local
+  jobvite_feeds: []
+  # Optional cross-platform discovery. This is a search-index API, not a
+  # LinkedIn/Indeed scraper. Enable only under an API plan that explicitly
+  # permits storing the returned URLs and snippets.
+  # authorized_web_search:
+  #   provider_id: BRAVE
+  #   api_key_ref:
+  #     source: KEYCHAIN
+  #     service: jobops.discovery.brave.api-key
+  #     account: local
+  #   storage_rights_confirmed: true
+  #   country: CA
+  #   search_language: en
+  #   lookback_days: 14
+  #   max_search_requests: 20
+  #   results_per_request: 20
+  #   max_resolution_searches: 20
+  authorized_web_search: null
+  # Optional local read-only alert inbox. Use a dedicated mailbox or label and
+  # explicit user authorization. The Kubernetes control plane keeps this null.
+  # job_alert_inbox:
+  #   host: imap.example.com
+  #   recipient: alerts@example.com
+  #   credential_ref:
+  #     source: KEYCHAIN
+  #     service: jobops.discovery.alert-inbox
+  #     account: alerts@example.com
+  #   mailbox: JobOps Alerts
+  #   port: 993
+  #   allowed_sender_domains: [linkedin.com, indeed.com]
+  #   # Authentication-Results is trusted only when stamped by this receiving
+  #   # mail system. Use the authserv-id from your own verified inbound hop.
+  #   trusted_authserv_ids: [mx.example.com]
+  #   max_age_hours: 24
+  #   max_messages: 25
+  job_alert_inbox: null
   request_limits:
     max_queries_per_refresh: 20
-    max_results_per_query: 10
+    max_results_per_query: 1000
     max_response_bytes: 5000000
     max_redirects: 2
     max_concurrent_requests: 1
@@ -99,7 +182,7 @@ automation:
   max_bundle_assemblies: 5
   max_executions: 2
   rate_limit_policy: SERIAL_BOUNDED_V1
-  cycle_contract_version: automation-cycle-ui-budgets-v2
+  cycle_contract_version: automation-cycle-ui-budgets-v3
   composition_binding: jobops-production-automation-v1
 
 infrastructure:

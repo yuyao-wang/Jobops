@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#ffffff">
   <title>JobOps</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script defer src="/static/app.js"></script>
+  <link rel="stylesheet" href="/static/style.css?v=multi-source-leads-v8">
+  <script defer src="/static/app.js?v=demo-ready-v11"></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to content</a>
@@ -128,6 +128,44 @@
         <button id="refresh-jobs" class="button primary">Refresh job library</button>
       </div>
       <div class="summary-strip" id="job-counts"></div>
+      <section class="section-card" aria-labelledby="jobs-preference-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Current matching criteria</p>
+            <h2 id="jobs-preference-title">Current job preferences</h2>
+            <p>This read-only summary shows the approved preferences currently used for discovery and Priority.</p>
+          </div>
+        </div>
+        <div id="jobs-preference-summary"></div>
+      </section>
+      <section class="section-card" aria-labelledby="job-finder-title">
+        <div class="section-heading">
+          <div>
+            <h2 id="job-finder-title">Find a specific job</h2>
+            <p>Paste a job URL or enter a company, title, and location to add a position to your job list.</p>
+          </div>
+        </div>
+        <div id="job-finder-transcript" class="job-finder-transcript" aria-live="polite" hidden></div>
+        <label class="sr-only" for="job-finder-input">Position details or public job URL</label>
+        <textarea id="job-finder-input" rows="2" maxlength="4000" placeholder="Company, position, location, or public job URL"></textarea>
+        <div class="button-row">
+          <button id="send-job-finder-message" class="button primary" type="button">Add position</button>
+          <button id="reset-job-finder" class="button secondary" type="button">Clear</button>
+        </div>
+        <p id="job-finder-status" class="capability-note" role="status"></p>
+        <div id="job-finder-results" class="stack" aria-live="polite"></div>
+      </section>
+      <section id="job-leads-review" class="lead-review" aria-labelledby="job-leads-review-title" aria-live="polite" hidden>
+        <div class="lead-review-heading">
+          <div>
+            <p class="eyebrow">Unresolved job leads</p>
+            <h2 id="job-leads-review-title">Needs your review</h2>
+          </div>
+          <span id="job-leads-review-count" class="status-pill warning"></span>
+        </div>
+        <p>These are clues, not verified jobs. Open a source yourself, then paste the final public employer or ATS URL to verify and add it.</p>
+        <div id="job-leads-review-list" class="lead-review-list"></div>
+      </section>
       <div class="toolbar" aria-label="Job filters">
         <label>
           <span class="sr-only">Filter jobs</span>
@@ -154,10 +192,27 @@
         <div>
           <p class="eyebrow">Applications</p>
           <h1 id="applications-title">Track every application</h1>
-          <p>Progress is shown in five user-facing stages while formal execution records remain unchanged.</p>
+          <p>Saved outcomes are shown in five user-facing stages while formal execution records remain unchanged.</p>
+          <p id="automation-scope-note" class="automation-scope-note">Starting resumes an already prepared eligible application first. If none can resume, it enables automatic-application intent for every enabled search profile, refreshes the job library and Priority decisions, then processes eligible jobs one at a time. For P2 jobs, Start also approves the exact prepared materials at Gate A. JobOps still pauses for final review and submit confirmation, missing verified answers, CAPTCHA, MFA, or uncertain submission evidence; Start never approves Gate B.</p>
         </div>
-        <button id="run-automation" class="button primary">Continue automatic applications</button>
+        <div class="button-row application-automation-actions">
+          <button id="run-automation" class="button primary" type="button" aria-describedby="automation-scope-note" disabled>Continue automatic applications</button>
+          <button id="stop-automation" class="button danger" type="button" hidden>Stop after current application</button>
+        </div>
       </div>
+      <section id="automation-progress" class="automation-progress" aria-busy="false" hidden>
+        <div class="item-row">
+          <div>
+            <p class="eyebrow">Automatic applications</p>
+            <h2 id="automation-progress-title" tabindex="-1">Automatic applications in progress</h2>
+          </div>
+          <span id="automation-progress-status" class="status-pill neutral">running</span>
+        </div>
+        <p id="automation-progress-message" role="status" aria-live="polite" aria-atomic="true">Checking the next eligible job.</p>
+        <div id="automation-progress-summary" class="summary-strip automation-summary"></div>
+        <ol id="automation-stage-list" class="automation-stage-list" aria-label="Automatic application stages"></ol>
+        <p class="automation-stop-note">Stopping takes effect after the current application reaches a safe saved boundary. It never bypasses review, authorization, submission evidence, CAPTCHA, or MFA safeguards.</p>
+      </section>
       <div class="tab-list" role="tablist" aria-label="Application status">
         <button role="tab" aria-selected="true" data-application-tab="NEEDS_ATTENTION">Needs attention</button>
         <button role="tab" aria-selected="false" data-application-tab="PREPARING">Preparing</button>
@@ -210,7 +265,14 @@
             <div id="identity-fields" class="definition-grid"></div>
           </section>
           <section class="section-card" id="profile-preferences">
-            <h2>Job Preferences</h2>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Job Preferences</p>
+                <h2>What kind of job do you want?</h2>
+                <p>Edit each preference below or use AI to add new preferences. Saved changes become the approved conditions used for discovery and Priority.</p>
+              </div>
+              <button id="open-preference-dialog" class="button primary" type="button">Add preferences with AI</button>
+            </div>
             <div id="preference-summary"></div>
           </section>
           <section class="section-card" id="profile-answers">
@@ -253,25 +315,103 @@
     </section>
   </main>
 
+  <dialog id="submission-review-dialog" class="attention-dialog" aria-labelledby="submission-review-dialog-title">
+    <div class="dialog-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Final submission approval</p>
+          <h2 id="submission-review-dialog-title">Review this application before submitting</h2>
+        </div>
+        <button id="close-submission-review" class="button secondary" type="button" aria-label="Cancel final submission">Cancel</button>
+      </div>
+      <p>JobOps has completed the form without clicking Submit. Confirm the exact reviewed application below.</p>
+      <dl class="detail-list">
+        <div><dt>Company</dt><dd id="submission-review-company">Loading…</dd></div>
+        <div><dt>Position</dt><dd id="submission-review-title">Loading…</dd></div>
+        <div><dt>Location</dt><dd id="submission-review-location">Loading…</dd></div>
+        <div><dt>Application system</dt><dd id="submission-review-ats">Loading…</dd></div>
+        <div><dt>Prepared materials</dt><dd id="submission-review-materials">Loading…</dd></div>
+        <div><dt>Application answers</dt><dd id="submission-review-answers">Loading…</dd></div>
+        <div><dt>Reviewed</dt><dd id="submission-review-time">Loading…</dd></div>
+        <div><dt>Review fingerprint</dt><dd id="submission-review-fingerprint">Loading…</dd></div>
+      </dl>
+      <p class="capability-note"><strong>Confirm and submit</strong> authorizes one final submit attempt for this application and this reviewed version only. If submission evidence is uncertain, JobOps stops and does not retry automatically.</p>
+      <div class="button-row">
+        <button id="confirm-application-submission" class="button primary" type="button" disabled>Confirm and submit</button>
+      </div>
+      <p id="submission-review-status" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
   <dialog id="attention-dialog" class="attention-dialog" aria-labelledby="attention-dialog-title">
     <form method="dialog" class="dialog-card">
       <div class="section-heading">
         <div>
           <p class="eyebrow">Needs your attention</p>
-          <h2 id="attention-dialog-title">Review required action</h2>
+          <h2 id="attention-dialog-title">Resolve application blocker</h2>
         </div>
         <button class="button secondary" value="cancel" aria-label="Close attention dialog">Close</button>
       </div>
       <p id="attention-dialog-action"></p>
       <div id="attention-response-area">
+        <p id="attention-dialog-question" class="callout"></p>
         <label for="attention-response"><strong>Your response</strong></label>
         <textarea id="attention-response" rows="5" placeholder="Provide the requested information clearly."></textarea>
         <p class="capability-note">Your response is sent only to the existing authenticated Human Attention resolution controller.</p>
-        <button id="submit-attention-response" class="button primary" type="button">Submit response</button>
+        <button id="submit-attention-response" class="button primary" type="button">Save response and continue</button>
       </div>
       <div id="attention-specialized-message" class="capability-note" hidden></div>
+      <button id="remove-unsupported-claim" class="button primary" type="button" hidden>Remove unsupported statement and retry</button>
       <p id="attention-dialog-status" role="status"></p>
     </form>
   </dialog>
+
+  <dialog id="job-clipper-dialog" class="attention-dialog" aria-labelledby="job-clipper-dialog-title">
+    <div class="dialog-card">
+      <div class="dialog-heading">
+        <div>
+          <span class="eyebrow">JobOps Web Clipper</span>
+          <h2 id="job-clipper-dialog-title">Save this current page?</h2>
+        </div>
+        <button id="cancel-job-clip" class="button secondary" type="button" aria-label="Cancel current-page capture">Cancel</button>
+      </div>
+      <p>JobOps will save only the page you opened and explicitly approved. It will not search, paginate, or operate the source website.</p>
+      <dl class="detail-list">
+        <div><dt>Page title</dt><dd id="job-clipper-title"></dd></div>
+        <div><dt>Page URL</dt><dd id="job-clipper-url" class="break-anywhere"></dd></div>
+        <div id="job-clipper-selection-row"><dt>Selected text</dt><dd id="job-clipper-selection"></dd></div>
+      </dl>
+      <div class="button-row">
+        <button id="save-job-clip" class="button primary" type="button">Save to JobOps</button>
+      </div>
+      <p id="job-clipper-status" class="capability-note" role="status"></p>
+    </div>
+  </dialog>
+
+  <dialog id="preference-dialog" class="attention-dialog preference-dialog" aria-labelledby="preference-dialog-title">
+    <div class="dialog-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Priority input</p>
+          <h2 id="preference-dialog-title">Describe the jobs you want</h2>
+        </div>
+        <button id="close-preference-dialog" class="button secondary" type="button" aria-label="Close preference dialog">Close</button>
+      </div>
+      <p>Write naturally. Useful angles include roles and seniority, domains or companies, location and work mode, freshness, application effort, and explicit must-not-have constraints. Do not add legal or eligibility facts unless you want them stated explicitly.</p>
+      <label for="preference-input"><strong>Your priority preferences</strong></label>
+      <textarea id="preference-input" rows="8" maxlength="20000" placeholder="Example: Focus on machine-learning engineer and applied researcher roles. Remote in Canada is strongly preferred. Prefer climate, robotics, and developer-tool companies. Exclude unpaid and student-only roles. New postings are more important than long applications."></textarea>
+      <div class="button-row">
+        <button id="interpret-preferences" class="button primary" type="button">Summarize for review</button>
+      </div>
+      <p id="preference-dialog-status" class="capability-note" role="status"></p>
+      <div id="preference-draft" class="stack" hidden></div>
+      <label id="hard-constraint-confirmation" class="confirmation-row" hidden>
+        <input id="confirm-hard-constraints" type="checkbox">
+        <span>I reviewed and explicitly confirm every hard constraint shown above.</span>
+      </label>
+      <button id="approve-preferences" class="button primary" type="button" hidden>Approve and use for Priority</button>
+    </div>
+  </dialog>
+
 </body>
 </html>

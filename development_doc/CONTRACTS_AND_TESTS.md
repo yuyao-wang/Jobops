@@ -34,7 +34,7 @@ This document is the authority for component contracts and implementation eviden
 | `run_selective_bundle_assembly()` / `SelectiveBundleAssemblyResult` | Implemented P2c10b/P2c10b1 as the bounded serial public P2b6-lineage → exact execution-context binding → P2c1-v2 handoff with typed context failures and no repository scan |
 | `RecoverableApplicationBundleEnvelopeRepository.get_for_assembly()` | Implemented P2c1b as the immutable, subject-isolated and hash-verified recovery contract for the exact P2c1 ApplicationBundle |
 | `plan_application_document_uploads()` / `ApplicationDocumentUploadPlan` | Implemented P2c2 as deterministic at-most-once Resume/Cover Letter PDF selection for typed FormIR file controls and shared BaseATSAdapter fill |
-| `execute_non_submit_application()` / `NonSubmitApplicationExecutionRecord` | Implemented P2c3 as the Gate-A-aware, one-shot Browser/Engine handoff for one recovered P2c1 bundle with a hard non-submit boundary |
+| `execute_non_submit_application()` / `NonSubmitApplicationExecutionRecord` | Implemented P2c3 non-submit policy v3 as the Gate-A-aware, one-shot Browser/Engine handoff for one recovered P2c1 bundle with a hard non-submit boundary, value-free unresolved-field plus validation-error persistence, and current deterministic adapter binding |
 | `BrowserRuntimeConfig` / `ProductionBrowserRuntime` / `ProductionBrowserLeaseProvider` | Implemented P2c7a as the closed application-level Chromium configuration, server-owned Playwright and persistent-context lifecycle, exact shared P2c3/P2c6 `lease(owner=...)` port, existing LeaseManager-backed exclusive TTL lease and fresh-page-per-lease policy |
 | `decide_submission_authorization()` / `SubmissionAuthorizationDecision` | Implemented P2c4 as the offline Gate B policy decision for one exact P2c3 Review, with automatic or review-scoped explicit-user authorization and zero submission side effects |
 | `PlanScopedSubmissionPermitBindings` / `GateAConsumptionReference` / `OpaquePermitTokenReference` | Implemented P2c5a as an explicit versioned extension of the existing Foundation Permit contract; legacy permit bytes and semantics remain unchanged, P2c3 v2 records persist verifiable Gate A consumption provenance, signer metadata is read-only, and bearer tokens remain behind subject-isolated opaque credential references |
@@ -43,31 +43,46 @@ This document is the authority for component contracts and implementation eviden
 | `run_application_execution()` / `ApplicationExecutionRun` | Implemented P2c7 as strict serial composition of the four public P2c3–P2c6 stages, with typed ordered lineage, defer/block/failure short-circuiting, terminal uncertainty and completed/uncertain zero-call replay |
 | `build_current_application_execution_queue()` / `CurrentApplicationExecutionQueueResult` | Implemented P2c8 as the zero-write subject read model that combines deterministic current Assemblies with terminal/current ExecutionRuns into stable READY, DEFERRED, FAILED, SUBMISSION_UNCERTAIN and SUBMITTED items |
 | `run_selective_batch_execution()` / `SelectiveBatchExecutionResult` | Implemented P2c9 as one-snapshot, READY-only, bounded serial P2c7 composition with caller-order allowlists, terminal skips and per-Plan defer/failure/uncertainty isolation |
-| `run_automation_cycle()` / `AutomationCycleRun` | Implemented P2c10a/P2c10b as invocation-scoped immutable v2 audit over one bounded serial P1d3 → P2a1b → P2b6 → Bundle → P2c9 cycle, with exact v1 four-stage reads |
+| `run_automation_cycle()` / `AutomationCycleRun` | Implemented P2c10a/P2c10b as invocation-scoped immutable v4 audit over one bounded serial P1d3 → P2a1b → P2b6 → Bundle → P2c9 cycle; optional ordered job targets and explicit P2 Gate A input flow to exact Plan IDs for Preparation and Execution, with exact v1/v2/v3 reads |
 | `SemanticMapper.map_controls()` | Implemented as an in-process provider-neutral Protocol |
 | `AdapterRegistry.run()` / deterministic ATS lifecycle | Implemented |
 | `run_discovery(JobDiscoveryRequest)` | Implemented for typed conversational proposals and Private Home upsert |
-| `save_search_profile()` / `SearchProfileProvider` | Implemented S3a subject-scoped immutable search configuration with canonical JobSearchRequest, typed Greenhouse board source and deterministic current/enabled reads |
-| `build_production_job_search_ports()` / `GreenhouseBoardJobSearch` | Implemented S3b1 exact SearchProfile-source bindings over injected bounded HTTP, stable validated Greenhouse candidates, typed transport/content failures and explicit unsupported Lever capability |
-| `refresh_job_library()` / `JobLibraryRefreshRun` | Implemented S3b manual all-enabled-profile Search → Public Read → formal ADD_JOB Discovery → optional explicit S3c intent decision → bounded P1d3 flow with canonical URL de-duplication and invocation replay |
-| `save_search_profile_intent_policy()` / `decide_search_profile_intent()` | Implemented S3c immutable subject/profile policy with default ADD_JOB_ONLY and explicit AUTO_REQUEST_APPLICATION |
+| `save_search_profile()` / `SearchProfileProvider` | Implemented S3a subject-scoped immutable search configuration with canonical JobSearchRequest, five typed configured-source kinds, v1 Greenhouse-record compatibility and deterministic current/enabled reads |
+| `build_production_job_search_ports()` / provider search ports | Implemented S3b1 factory v2 exact SearchProfile-source bindings over injected bounded HTTP for Greenhouse, Ashby, Lever, credential-gated Glassdoor and licensed credential-gated Jobvite; listing/feed observations, stable matching and typed failures share one contract |
+| `refresh_job_library()` / `JobLibraryRefreshRun` | Implemented S3b manual all-enabled-profile Search → bound listing/feed observation or Public Read fallback → formal ADD_JOB Discovery → optional explicit S3c intent decision → bounded P1d3 flow with canonical URL de-duplication and invocation replay |
+| `JobLead` / `PrivateHomeJobLeadRepository` | Implemented `job-lead-v1` as immutable, subject-scoped pre-normalization evidence for authorized search, alert email, Web Clipper and pasted-URL sources, with separate source/origin, secret-free canonical URL identity, strict transitions, content-hash ancestry and integrity-checked current reads |
+| `AuthorizedWebSearchPort` / `BraveAuthorizedWebSearch` | Implemented `authorized-web-search-v1` as an optional fixed-host, bounded Brave Search API adapter; secret headers are redacted and configuration requires an explicit result-storage-rights attestation; returned hits are unverified Leads |
+| `discover_job_leads()` / `resolve_persisted_job_leads()` | Implemented deterministic policy-derived planning over twelve search-index source families, bounded fair pagination, per-source summaries, canonical official-posting resolution, unique-observation fencing and formal membership provenance `JOB_LEAD_RESOLUTION` |
+| `JobAlertInboxIngestor` / `ingest_job_alerts_for_subject()` | Implemented optional, read-only, bounded IMAP alert ingestion for LinkedIn, Indeed and employer/ATS messages; only sanitized Lead fields and a message digest persist |
+| `CurrentPageJobCaptureCommand` / `POST /api/job-leads/capture` | Implemented authenticated current-page capture requiring `user_gesture=true`; aggregator pages persist as `NEEDS_USER`, while public employer/ATS pages reuse the existing PublicJobReader and formal Discovery |
+| `ResolveJobLeadCommand` / `POST /api/job-leads/{lead_id}/resolve` | Implemented authenticated continuation of one subject-owned `DISCOVERED`/`NEEDS_USER` Lead through one user-supplied public employer/ATS URL, PublicJobReader verification, formal Discovery with `source_ref=lead_id`, and append-only `RESOLVED` transition; aggregator targets are never read |
+| JobOps Web Clipper | Implemented as a local MV3 `activeTab`/`scripting` extension with no host permissions, current-page-only fragment handoff and a second explicit Dashboard confirmation; it has no search, pagination or batch-capture capability |
+| `SearchProfileUIController` / `/api/search-profiles` | Implemented authenticated read/save of only production-composed source references; request payload cannot select a subject or configure an uncomposed provider |
+| `AssistedJobImportController` / `/api/job-source-import` | Implemented LinkedIn/Indeed local-browser handoff; a plain pasted URL first creates/reuses a `PASTED_URL` Lead, and only a verified public employer/ATS destination enters subject-aware formal Discovery with its real `lead_id`; authenticated aggregator pages and challenges are never fetched or bypassed |
+| `ConversationalJobFinderUIController` / `/api/job-finder/*` | Implemented guided URL-or-named-job intake over the existing conversational contracts: one isolated clue-extraction call, at most one clarification, configured-provider routing, explicit candidate selection and explicit add/apply-intent resolution using only the authenticated session subject |
+| `save_search_profile_intent_policy()` / `enable_auto_request_application_for_enabled_search_profiles()` / `decide_search_profile_intent()` | Implemented S3c immutable subject/profile policy with default ADD_JOB_ONLY, explicit AUTO_REQUEST_APPLICATION, and a typed serial subject-scoped batch used only by explicit automatic-session Start |
 | `resolve_authenticated_subject()` / `AuthenticatedSubjectContext` | Implemented S3d0 as fixed-cookie, Keychain-backed server-side subject resolution with explicit-now expiry and a reusable FastAPI dependency |
-| `RefreshJobLibraryUIController.refresh()` / `/api/job-library/refresh` | Implemented S3d as the authenticated, one-invocation UI adapter over the injected S3b public callable with in-flight de-duplication and a bounded safe result projection |
-| `ContinueAutomationUIController.run()` / `/api/automation-cycle/run` | Implemented S3e as the authenticated, server-budgeted UI adapter over the injected P2c10a public callable with in-flight de-duplication and typed safe stage summaries |
+| `LocalAuthenticatedSubjectSessionIssuer` / `POST /api/auth/local-session` / `GET /api/auth/session` | Implemented as the authentication-runtime-v2 loopback, exact-origin bootstrap for the one server-configured subject, with bounded TTL, credential-hash persistence and HttpOnly SameSite=Strict cookie issuance |
+| `RefreshJobLibraryUIController.start()/status()` / `/api/job-library/refresh[/status]` | Implemented S3d as an authenticated non-blocking start/poll UI adapter over configured-provider S3b plus optional JobLead refresh, with subject-scoped in-flight de-duplication, per-channel Lead counts and a bounded safe terminal projection |
+| `ContinueAutomationUIController.start()/status()/stop()` / `/api/automation-cycle/{run,status,stop}` | Implemented S3e as an authenticated non-blocking preflight plus finite, one-job-at-a-time P2c10a supervisor with reload-safe polling, authoritative runnable/execution snapshots, cooperative safe-checkpoint Stop, invocation-bound P2/LOW Gate A approval, replay-stable Gate B and blocker checkpoints, task cleanup, and typed cumulative stage summaries; safely classified Priority provider/contract failures are recorded per job and do not block later runnable jobs |
+| `ApplicationReviewSubmissionUIController.load()/submit()` / `/api/application-reviews/{plan_id}[/submit]` | Implemented as the authenticated Gate B UI boundary: it projects only an exact current `REVIEW_READY` summary, requires a review-token plus explicit `confirmed=true`, rereads all plan/run/assembly/answer/review bindings at action time, creates the existing review-scoped explicit authorization, and invokes the existing single-job P2c7 execution exactly once; stale, duplicate, blocked and uncertain states fail closed without automatic retry |
+| `ReviewedApplicationCompatibilityUIController.list()/load()/submit()` / `/api/reviewed-applications[/{run_id}[/submit]]` | Implemented as the temporary authenticated UI bridge for current Private Home CSV reviews: list returns safe current Ready/submitted/uncertain projections without a token; load rereads the exact Event Ledger Review and CSV identity and returns an opaque action-time token; submit requires `confirmed=true`, revalidates the token, and invokes the shared `submit_reviewed_application()` path once with the production Keychain and server-owned Browser lease. It never implements ATS behavior itself and never retries `SUBMIT_UNKNOWN` |
 | `HumanAttentionInboxUIController.load()` / `/api/human-attention-inbox` | Implemented S3f as the authenticated, read-only UI projection of one injected P2b5 snapshot with order-preserving USER/OPERATOR groups |
 | `resolve_application_answer()` / `/api/human-attention-inbox/{item_id}/resolve` | Implemented S3g1 for current USER Application Answers items with one bounded parser call, deterministic taxonomy validation, authoritative fact or plan-scoped attestation writes, immutable receipts and one P2b4 rerun |
 | `resolve_version_choice()` / `/api/human-attention-inbox/{item_id}/resolve-version-choice` | Implemented S3g2 for current P2a3/P2a6b USER choice items with public selectable-option validation, deterministic or one-call parser resolution, immutable plan-scoped overrides/receipts and one P2b4 rerun |
+| `DashboardJobsReader.read()` formal membership projection | Implemented S4a0 as a membership-first read: an authoritatively empty library returns `EMPTY` without P1d2/P1d4, PrioritizationPolicy or CandidateSummary; a non-empty formal library remains visible with `NOT_EVALUATED` when the specifically typed condition is `ACTIVE_POLICY_NOT_FOUND` |
 | `read_public_job(ReadJobRequest)` | Implemented provider-neutral entry with Greenhouse, Lever and bounded Generic JSON-LD branches |
 | `handle_conversational_url_intake(ConversationalIntakeRequest)` | Implemented I1 single-URL read ending at `WAITING_FOR_ACTION` |
 | `handle_conversational_intake(ConversationalIntakeRequest)` | Implemented S1b URL-first routing and named-job search ending at candidate selection |
 | `select_search_candidate(CandidateSelectionRequest)` | Implemented S2 candidate read ending at existing `WAITING_FOR_ACTION` state |
 | `resolve_pending_intake(ResolvePendingIntakeRequest)` | Implemented I2 add/apply resolution through an injected callable Discovery port |
-| `search_jobs(JobSearchRequest)` | Implemented S1a provider-neutral entry for configured Greenhouse boards |
+| `search_jobs(JobSearchRequest)` | Implemented S1a provider-neutral entry consumed by configured Greenhouse, Ashby, Lever, Glassdoor and Jobvite search ports |
 | `GreenhousePublicJobReader.read_job()` | Implemented connector detail retained for tests and legacy compatibility |
 | `LeverPublicJobReader.read_job()` | Implemented internal connector detail |
 | `SourceJobObservation` source/ATS identity | Implemented with distinct `SourcePlatform` and `AtsType` enums |
-| `PrioritizationPolicyInterpreterPort` | P1a injected contract; fake implementation only |
+| `PrioritizationPolicyInterpreterPort` / production structured interpreter | Implemented as one isolated, no-tool, strict-schema NLP call over the configured Priority backend; only raw preference text leaves the controller and output remains an unapproved draft |
 | `PrioritizationPolicyDraft` / `PrioritizationPolicy` | Implemented P1a with review-gated approval and Private Home version history |
+| `PrioritizationPolicyUIController` / `/api/prioritization-policy` | Implemented authenticated read, draft and approval endpoints; request body/query/header subject IDs have no authority and every extracted hard constraint requires explicit confirmation |
 | `PreparationAdmissionPolicy` | Implemented P1a2 as reviewed, versioned policy content for Application Preparation eligibility |
 | `PriorityAgentPort` / `PriorityProposal` | Implemented P1b as one injected, tool-free call followed by ordinary-code validation |
 | `build_production_priority_agent()` | Implemented P1b3 as the unique provider-neutral async Priority adapter factory over M1 resolution, the existing P1b context/prompt/schema/parser, stable backend metadata and no fallback |
@@ -109,6 +124,43 @@ Machine-readable contracts:
 - [`contracts/mapping-result.schema.json`](contracts/mapping-result.schema.json) — mapper result and allowed key/status pairs.
 
 Python dataclasses and Protocols remain authoritative for the current in-process runtime. A machine schema becomes runtime-authoritative only when its boundary is implemented and covered by equivalence tests.
+
+### Local production Dashboard authentication
+
+```text
+GET /api/auth/session
+  cookie: jobops_session=<opaque-session-id>.<credential>
+  → 200 {status, expires_at} | 401
+
+POST /api/auth/local-session
+  authoritative input: request transport/origin only
+  → 200 {status, expires_at} + Set-Cookie
+  | 403 unsafe client/host/origin/fetch-site
+  | 503 issuer or credential-store unavailable
+```
+
+The POST contract accepts no subject selector. Body, query and ordinary header
+values are outside the issuer command, and the safe response omits the subject.
+Both the peer and request URL host must be loopback; `Origin` must exactly match
+scheme, host and port; `Sec-Fetch-Site` is optional but, when present, must be
+`same-origin`. The cookie is path `/`, HttpOnly and SameSite=Strict, with
+`max-age` equal to the bounded server TTL and Secure set only for HTTPS.
+
+The server-side record binds the configured subject and stores only the
+credential hash. Authentication failure is always 401 and never consults
+request identity fields. Issuance failure is 503 and never creates an unsigned
+or in-memory production fallback. The current issuer uses a fresh session ID
+as the CredentialStore account on every issuance; because the store exposes
+point get/set/delete but no enumeration contract, repeated issuance currently
+accumulates records. Bounding that state is planned below and is not claimed as
+implemented.
+
+The browser contract probes GET first. A 401 permits one shared in-flight local
+POST; ordinary Dashboard JSON requests also perform at most one
+401→local-session→retry sequence. 403, 404 and 503 are shown as distinct safe
+UI failures. These behaviors currently have in-process endpoint/controller
+tests and static JavaScript assertions only, not a running-server Playwright
+acceptance test.
 
 ### Core interfaces
 
@@ -230,13 +282,134 @@ the unchanged domain timestamp/stable-ID selection, with any explicit
 affects precedence. Neither value is a submission permit or Application Engine
 intent.
 
+#### `JobLead` / `PrivateHomeJobLeadRepository`
+
+`job-lead-v1` is a durable pre-normalization contract. Identity binds the
+authenticated subject, acquisition source, page origin, canonical source URL
+and optional query/message provenance. Content binds immutable version ancestry,
+bounded hints, confidence, timestamps, resolution URL and safe reason. The
+repository supports exact/current subject reads and append-only transitions:
+
+```text
+DISCOVERED → RESOLVED | NEEDS_USER | STALE
+NEEDS_USER → RESOLVED | STALE
+RESOLVED → STALE
+```
+
+Integrity failure is typed and fails closed. Search snippets, alert text,
+Clipper page titles and user selection are never projected as JobPosting facts.
+The repository has no JobPosting, Priority, intent, preparation or execution
+write capability.
+
+`canonicalize_job_lead_url(...)` runs before Lead identity or persistence.
+External URLs require HTTPS and reject userinfo, control characters and
+malformed ports. Fragments and all non-allowlisted query state are removed;
+retained values are bounded posting identifiers, never credential/session/
+campaign state. LinkedIn and Indeed normalize to stable job-ID forms.
+SuccessFactors retains the ordered `company`, `career_job_req_id`, and
+normalized `career_ns=job_listing` identity tuple. Repository and Dashboard
+tests prove secret/tracking values are absent from durable bytes and public
+Lead projections.
+
+#### Authorized Web Search and JobLead discovery
+
+```text
+AuthorizedWebSearchPort.search(AuthorizedWebSearchRequest)
+  -> AuthorizedWebSearchResult
+
+discover_job_leads(command, approved_policy, ports...)
+  -> JobLeadDiscoveryRunSummary
+
+resolve_persisted_job_leads(command, ports...)
+  -> JobLeadDiscoveryRunSummary
+```
+
+`authorized-web-search-v1` bounds query text/word count, `count` to 1–20,
+offset to 0–9, response bytes, redirects and accepted HTTPS result URLs. The
+Brave adapter calls one fixed API host, carries the API key only as a secret
+header, omits it from representations/diagnostics, and requires configuration
+to assert result-storage rights. Tests use fake bounded HTTP only; there is no
+live credential or network reliability evidence.
+
+`job-lead-discovery-v1` derives queries from an ACTIVE approved policy and
+allocates the initial request budget source-fairly across LinkedIn, Indeed,
+Glassdoor, Greenhouse, Lever, Ashby, Jobvite, Workday, SmartRecruiters, iCIMS,
+SuccessFactors and generic careers clauses before later offsets. Request, hit,
+unique-Lead and canonical-resolution counts are bounded and reported per
+source with typed partial/truncated states.
+
+Initial search-index requests, canonical-resolution searches and public
+official-page reads have separate explicit budgets. A zero canonical budget
+does not consume spare initial-search capacity, and a public-read limit cannot
+turn a partially inspected candidate set into a unique observation. Per-source
+results keep requests, completions, raw search hits, unique/duplicate Leads,
+public reads, resolutions, review items, failures and truncation separate.
+
+The resolver never gives LinkedIn, Indeed or Glassdoor URLs to
+`PublicJobReader`. It may use an exact configured company source and an
+authorized canonical web query; every official observation must match the
+Lead's company/title hints. Exactly one distinct verified observation is
+required before subject-aware formal Discovery is called with membership source
+`JOB_LEAD_RESOLUTION`. Zero or multiple observations produce `NEEDS_USER`.
+Without Web Search configuration, direct recognized-ATS Leads may still be
+read and an aggregator or unknown-web Lead with explicit company/title hints
+may resolve from an exact configured company feed. A careers-looking path on
+an unknown host is never sufficient authority for an automatic read. An
+explicitly pasted or Clipper-confirmed public employer URL may still use the
+authenticated user-continuation path. If no trusted path yields one verified
+result, the Lead fails closed to user review.
+
+#### Job Alert Inbox and current-page Web Clipper
+
+`JobAlertInboxIngestor` uses a read-only TLS IMAP port whose mailbox, recipient,
+sender domains, age, message count, link count and content size are bounded.
+The Keychain/CredentialStore account must equal the configured recipient.
+`IMAPMailboxProvider` reduces only `Authentication-Results` stamped by a
+configured trusted receiving `authserv-id`; ingestion requires DMARC PASS and
+at least one SPF/DKIM PASS. Missing, failed, conflicting, oversized or
+untrusted evidence is `UNKNOWN`/not authenticated and produces no Lead. Parsing
+is deterministic; explicit `title at company` and `company hiring title [in
+location]` anchor forms can supply both hints, while all other non-generic
+anchor text supplies at most title and no company inference. Only sanitized
+Lead hints, canonical source URLs and a message digest persist. Raw mail, raw
+authentication headers, credentials and attachments are excluded. The current
+adapter is generic IMAP, not Gmail OAuth, and has no scheduler.
+
+`CurrentPageJobCaptureCommand` requires `user_gesture=True` and accepts one
+public page URL, a bounded title and optional bounded selected text. The
+packaged MV3 Clipper has only `activeTab` and `scripting`, no host permissions
+or network call, and hands the current-page payload to the loopback Dashboard in
+a URL fragment. Dashboard JavaScript removes the fragment, displays a review
+dialog, and calls authenticated `POST /api/job-leads/capture` only after a
+second explicit Save. Platform URLs become `NEEDS_USER`; verified employer/ATS
+URLs reuse the existing PublicJobReader and formal Discovery path.
+
+```text
+POST /api/job-leads/{lead_id}/resolve
+  body: official_job_url, invocation_id
+```
+
+The authenticated session supplies the subject; the body cannot select one.
+The current Lead must belong to that subject and be `DISCOVERED` or
+`NEEDS_USER`. An aggregator target returns Human Intervention with zero public
+read. One successful employer/ATS read enters subject-aware formal Discovery
+with membership source `JOB_LEAD_RESOLUTION` and `source_ref=lead_id`; only an
+accepted Discovery result appends `RESOLVED` with the reader's verified final
+URL. A failed read leaves or moves the Lead to `NEEDS_USER`. This user-selected
+continuation does not infer application intent, run Priority or authorize a
+submit.
+
 #### `run_discovery()`
 
 ```text
 run_discovery(JobDiscoveryRequest) -> JobDiscoveryResponse
 ```
 
-The current trigger is only `CONVERSATIONAL`. The request contains one explicit `JobIntakeProposal`; no intent is inferred. `RESOLVED` may create, update, or leave unchanged one schema-compatible `JobPosting`. `INCOMPLETE` and `AMBIGUOUS` return `NEEDS_CLARIFICATION` without persistence. `UNSUPPORTED` and invalid formal requests persist a failed `DiscoveryRun`.
+Current triggers are `CONVERSATIONAL` and `MANUAL_LIBRARY_REFRESH`. The request
+contains one explicit `JobIntakeProposal`; no intent is inferred. `RESOLVED` may
+create, update, or leave unchanged one schema-compatible `JobPosting`.
+`INCOMPLETE` and `AMBIGUOUS` return `NEEDS_CLARIFICATION` without persistence.
+`UNSUPPORTED` and invalid formal requests persist a failed `DiscoveryRun`.
 
 Canonical URL identity owns cross-run upsert. Tracking parameters do not create a second posting. `REQUEST_APPLICATION` is returned unchanged and has no application or ATS execution capability. The entry does not call models, fetch URLs, search jobs, invoke legacy collectors, or expose repository formats to callers.
 
@@ -276,17 +449,34 @@ company, title, plain-text description, optional location and publication time,
 
 The Generic branch performs a bounded public HTML/XHTML fetch and accepts
 exactly one Schema.org `JobPosting` across one object, an array or `@graph`.
-It uses `source_platform=GENERIC_WEB` and `ats_type=UNKNOWN`. The initial URL,
-DNS results and every redirect target must be public; unsafe targets return
-non-retryable `UNSAFE_URL` before the rejected request. Fetching is limited to
+The initial URL, DNS results and every redirect target must be public; unsafe
+targets return non-retryable `UNSAFE_URL` before the rejected request.
+For each hop DNS is resolved once and every answer is checked. The reader may
+try only that prevalidated address set, in order and under one shared deadline,
+while HTTP Host and TLS SNI retain the original hostname; a second, rebinding
+DNS answer cannot choose the peer.
+LinkedIn, Indeed and Glassdoor exact hosts, subdomains and trailing-dot forms
+are also `UNSAFE_URL` before the initial or redirect-hop request, enforcing the
+aggregator no-read rule independently of the caller. Fetching is limited to
 three redirects, 10 seconds and 2 MB, without cookies, authentication,
 JavaScript, browser execution or link exploration.
+
+For generic JSON-LD content, host classification preserves a recognized source
+family without claiming a deterministic adapter. Workday returns
+`SourcePlatform.WORKDAY/AtsType.WORKDAY`; SmartRecruiters, iCIMS and
+SuccessFactors return their corresponding `SourcePlatform` with
+`AtsType.UNKNOWN`; other public hosts remain
+`SourcePlatform.GENERIC_WEB/AtsType.UNKNOWN`.
 
 `source_platform` identifies where the observation was read; `ats_type`
 identifies the application system. They use distinct enums even when both
 serialize to `"GREENHOUSE"`. Current contract values are
-`SourcePlatform.{GREENHOUSE, LEVER, GENERIC_WEB}` and
-`AtsType.{GREENHOUSE, LEVER, UNKNOWN}`.
+`SourcePlatform.{GREENHOUSE, LEVER, ASHBY, JOBVITE, GLASSDOOR, WORKDAY,
+SMARTRECRUITERS, ICIMS, SUCCESSFACTORS, GENERIC_WEB}` and
+`AtsType.{GREENHOUSE, LEVER, ASHBY, JOBVITE, WORKDAY, UNKNOWN}`. Assisted
+LinkedIn/Indeed discovery retains its origin in membership provenance; because
+the platform page is not read, it does not relabel the final employer/ATS
+observation as a LinkedIn or Indeed observation.
 
 `UNSAFE_URL` means a structurally valid HTTP(S) URL was rejected by public
 network policy before accessing the initial target or a redirect target. It is
@@ -308,10 +498,11 @@ async search_jobs(
 ) -> JobSearchResult
 ```
 
-`JobSearchRequest` contains only `request_id`, company, title and optional
-location. It contains no board token, source selector, URL, `JobPosting` or
-natural-language message. Search and single-URL read have separate result and
-reason types.
+`JobSearchRequest` contains `request_id`, company, compatibility title,
+optional location, optional `title_any` OR phrases, and optional bounded
+`result_limit`. It contains no board token, source selector, URL, `JobPosting`
+or natural-language message. Search and single-URL read have separate result
+and reason types.
 
 Invariants:
 
@@ -320,13 +511,36 @@ Invariants:
 - `UNSUPPORTED_COMPANY` is non-retryable and sends no request;
 - timeout, rate limit and 5xx unavailability are retryable; invalid input or
   response is not;
-- S1a resolves only normalized exact canonical names or explicit aliases from
-  an injected Greenhouse allowlist;
-- title matching is exact-first, then normalized contiguous phrase; optional
+- company-scoped ports resolve only normalized exact canonical names or
+  explicit aliases from injected production configuration; Glassdoor is the
+  one query-scoped partner search and still requires an exact returned employer
+  match;
+- title matching is exact-first, then normalized contiguous phrase across any
+  supplied `title_any` value; optional
   location uses normalized containment;
-- results are stably ordered, capped at 10 and never auto-selected;
-- one board listing GET returns summaries only; search does not read details,
-  persist, call Discovery, invoke models, browser or ATS execution.
+- results are stably ordered, capped at the request/policy bound (maximum
+  1,000) and never auto-selected;
+- every port performs one bounded backend `GET`: Greenhouse requests board jobs
+  with `content=true`, Ashby requests public posting API v1, Lever requests
+  postings `mode=json`, Glassdoor calls the configured partner Jobs action, and
+  Jobvite requests only Open/External requisitions then retains
+  `distribution=true`;
+- a `SearchCandidate` may bind a complete identity-matched
+  `SourceJobObservation`. Greenhouse, Ashby, Lever, Glassdoor and Jobvite use
+  listing/feed descriptions for that binding, so refresh does not issue a
+  per-job detail request. Missing Greenhouse content leaves the binding empty
+  and preserves PublicJobReader fallback;
+- this configured-provider `search_jobs(JobSearchRequest)` operation does not
+  persist, call Discovery, invoke models, execute browser automation or perform
+  ATS application execution. Authorized search-index orchestration is a
+  separate contract that may persist only `JobLead`, never `JobPosting`.
+
+Production factory v2 exposes capabilities in the fixed order Greenhouse,
+Ashby, Lever, Glassdoor, Jobvite. A capability is `SUPPORTED` only when at
+least one exact source is configured. Glassdoor partner ID/key and Jobvite API
+key/secret resolve only from repository-external `SecretReference` values;
+secret query parameters are absent from request/config `repr`. No credential
+is accepted from SearchProfile or Dashboard request data.
 
 #### `save_search_profile()` / `SearchProfileProvider`
 
@@ -339,10 +553,7 @@ save_search_profile(
         company,
         title,
         optional location,
-        SearchProfileSourceReference(
-            KNOWN_GREENHOUSE_BOARD,
-            board_token,
-        ),
+        SearchProfileSourceReference(source_kind, source_id),
         enabled,
         refresh_mode=MANUAL,
         now,
@@ -354,14 +565,58 @@ SearchProfileProvider.list_current(subject_id)
 SearchProfileProvider.list_enabled(subject_id)
 ```
 
+`source_kind` is exactly one of `KNOWN_GREENHOUSE_BOARD`, `KNOWN_ASHBY_BOARD`,
+`KNOWN_LEVER_SITE`, `GLASSDOOR_PARTNER_SEARCH`, or `KNOWN_JOBVITE_FEED`.
 The persisted query is a real `JobSearchRequest`. Company and title/location
-use the same exported canonicalizers as Known Greenhouse Board Search, so
-case, whitespace and punctuation-equivalent queries replay `UNCHANGED`.
+use the same exported canonicalizers as production search, so case, whitespace
+and punctuation-equivalent queries replay `UNCHANGED`.
 Content changes append a new immutable version and retain the original
 `created_at`; time is excluded from content hash. `get()` and list reads parse
 and validate every selected record, fail closed on version corruption, isolate
 subjects and use display-name/profile-ID domain ordering. This contract has no
 JobSearchPort, network, Discovery, Priority or application capability.
+The serialized record stays at contract v1; the enum expansion changes no
+record fields and old Greenhouse bytes are not rewritten.
+
+#### Configured discovery sources and Dashboard conversational job finder
+
+The closed production search config permits an empty, internally consistent
+configured-provider set. The shipped example uses `enabled_providers: []` and
+empty Greenhouse/Ashby/Lever/Jobvite tenant lists with Glassdoor disabled; it
+does not silently search fictitious example tenants. Optional Brave search,
+the alert inbox and persisted Clipper/pasted Leads compose independently of
+those provider ports. A real company feed becomes executable only when its
+matching provider ID and exact source configuration are both present.
+
+```text
+GET  /api/search-profiles
+POST /api/search-profiles
+POST /api/job-finder/message
+POST /api/job-finder/select
+POST /api/job-finder/resolve
+```
+
+All routes require the existing authenticated subject cookie. Search-profile
+reads expose only exact sources installed by production composition; saves
+reject any other source as `SOURCE_NOT_CONFIGURED`. These SearchProfile routes
+remain a runtime/configuration contract and are not rendered as a Dashboard
+form. A request body has no subject field and cannot override the
+server-resolved subject partition.
+
+The guided Jobs page exposes one always-visible conversational text box, not
+platform/provenance fields. It sends one or two user turns to an isolated
+strict-schema clue extractor. URL
+input bypasses NLP; named input requires explicit company/title clues and uses
+the production-composed provider router. The response can ask one
+clarification, present a CandidateSet, or present one reread job awaiting
+action. Only `/resolve` accepts `ADD_JOB` or `REQUEST_APPLICATION`, and the
+controller derives its internal conversation binding and durable write subject
+from the authenticated session. Accepted results therefore use the same
+JobPosting normalization, canonical identity, SubjectJobLibraryMembership and
+accepted-intent repository. The compatibility `/api/job-source-import` route
+remains, but is no longer the guided UI. This contract performs no general web
+search, challenge bypass, authenticated scraping, application planning or
+submission.
 
 #### `refresh_job_library()`
 
@@ -379,27 +634,54 @@ await refresh_job_library(
     discovery=JobDiscoveryPort callable,
     priority_refresh=P1d3 callable,
     repository=JobLibraryRefreshRunRepository,
+    prioritization_policy_provider=ActivePrioritizationPolicyProvider,
+    progress_observer=optional JobLibraryRefreshProgressObserver,
 ) -> ManualJobLibraryRefreshResult
 ```
 
-The service reads `list_enabled(subject_id)` once. It searches each profile
-once with the persisted `JobSearchRequest`, then uses public
+The service reads `list_enabled(subject_id)` and the ACTIVE policy once. If
+ROLE preferences exist, it collapses legacy profiles by typed source and sends
+one server-created `title_any` request per configured company feed; otherwise
+it searches each profile once with the persisted `JobSearchRequest`. Generated
+request IDs, not legacy profile request IDs, bind the returned CandidateSet.
+It then uses public
 `normalized_job_url()` identity to group candidates across profiles. Each
-unique valid URL is read once and converted to one resolved
-`ADD_JOB / MANUAL_LIBRARY_REFRESH` Discovery request. Discovery alone writes
-or revises JobPosting and DiscoveryRun records.
+unique valid URL supplies one observation: a complete, identity-matched
+observation bound by the listing/feed connector is reused directly; otherwise
+the PublicJobReader is called once. The observation is converted to one
+resolved `ADD_JOB / MANUAL_LIBRARY_REFRESH` Discovery request. Discovery alone
+writes or revises JobPosting and DiscoveryRun records.
 
 Failures are retained per profile/candidate and never stop later work. P1d3 is
 called once after candidate processing with the same subject/time and explicit
-bound, including after partial failures. Empty enabled snapshots are `NOOP`
-with no downstream call. Subject/invocation replay reads the immutable,
-hash-validated Private Home Run before every downstream dependency.
+bound, including after partial failures. Created/updated job IDs become an
+explicit P1d3 allowlist; if none changed, the bounded existing STALE/MISSING
+queue is used. The optional observer receives non-persisted SEARCHING,
+per-candidate IMPORTING, and PRIORITIZING snapshots. Observer failure cannot affect the formal
+run. The UI projection separately reports completed queries, valid responses,
+zero-match responses, filtered matches, unique URLs and Discovery changes;
+it does not equate a valid zero-match response with a found job. Typed P1d3
+item failure codes are carried by the live result for safe UI diagnosis.
+Empty enabled snapshots are `NOOP` with no downstream call.
+Subject/invocation replay reads the immutable, hash-validated Private Home Run
+before every downstream dependency.
+
+The Dashboard composition runs this configured-feed service beside an optional
+Lead refresh; neither is a prerequisite for the other. `LeadRefreshSourceResult`
+and the public `source_results` projection preserve, per acquisition family,
+`requests`, `completed`, `search_hits`, `leads_discovered`, `leads_unique`,
+`leads_deduplicated`, `public_reads`, `leads_resolved`,
+`leads_needing_review`, `lead_failures`, and `truncated`. The browser renders
+those inputs/outputs while polling and does not equate search hits, Leads,
+official reads or normalized jobs. Durable formal jobs can therefore appear in
+the table before later Priority work completes.
 
 #### Editable prioritization policy
 
 ```text
 create_policy_draft(CreatePolicyDraftRequest) -> CreatePolicyDraftResult
 approve_policy(ApprovePolicyRequest) -> PrioritizationPolicyResult
+revise_soft_preferences(ReviseSoftPreferencesRequest) -> PrioritizationPolicyResult
 get_active_policy(subject_id) -> PrioritizationPolicy | null
 ```
 
@@ -414,6 +696,12 @@ Approval accepts user-reviewed content, requires every hard constraint to be
 explicitly user-confirmed and rejects unresolved ambiguity, mismatch, expiry or
 already-consumed conflicting state. An approved `PrioritizationPolicy` is an
 immutable Private Home snapshot.
+
+Exact edits to current soft-preference rows do not call the interpreter. The
+request must bind the current policy version and exactly the existing
+preference IDs. Subject, category and hard constraints remain server-owned;
+success activates the next immutable policy version. The authenticated route
+is `POST /api/prioritization-policy/preferences`.
 
 P1a2 adds a typed `PreparationAdmissionPolicy` to every new draft and approved
 snapshot. Its default directly admits P0/P1/P2 to later preparation
@@ -461,8 +749,22 @@ verified and prioritization-safe provenance; the current Slice defines this
 snapshot contract but does not guess a projection from private vault values
 that lack category and stable fact-ID metadata.
 
-The Port has one method and no tool surface. Its typed output is accepted only
-after binding, evidence-reference and qualification-invariant validation.
+The Port has one method and no tool surface. Prompt contract v4 and output
+schema v2 bind evidence IDs and allowed job fields to the current
+`PriorityContext`, require non-empty rationale evidence, and represent
+eligibility as four fixed required keys rather than an order-sensitive array.
+The generated schema uses shared definitions so context evidence IDs are not
+repeated past provider schema budgets. Hard findings have separate approved-
+policy and job/deterministic evidence slots. Eligibility has separate exact-JD
+and category-matched CandidateFact slots; when no verified fact exists for a
+category, the schema does not offer a definitive `SATISFIED` or
+`NOT_SATISFIED` result. Qualification, priority, positive-signal and
+missing-information relationships are constrained before domain parsing.
+The output-contract guide still lists the exact evidence IDs the model may
+cite and the semantic invariants enforced after schema parsing; it does not
+authorize repair, fallback or a second generation. Its typed output is
+accepted only after binding, evidence-reference and
+qualification-invariant validation.
 Adapter-owned agent/prompt/model metadata cannot come from the model payload.
 `PriorityProposal` is AI advice and cannot trigger application work or
 persistence. `PriorityDecision` is the formal result and binds job ID, job
@@ -474,6 +776,9 @@ Both `PriorityProposal` and `PriorityDecision` require one finding for each
 eligibility category: work authorization, citizenship/permanent residency,
 student status and security clearance. Applicable findings cite the JD; a
 definitive satisfied/not-satisfied result also cites a verified CandidateFact.
+That fact's category must equal the eligibility category; an unrelated verified
+fact cannot establish work authorization, citizenship/residency, student status
+or security clearance.
 Student-status mismatch or uncertainty cannot have `NONE` impact: it lowers
 priority or requires the user. Exclusion is valid only through a matched,
 approved `EXCLUDED_STUDENT_ONLY_ROLE` hard constraint. A citizenship/PR
@@ -549,9 +854,13 @@ definition of current inputs.
 Each `CurrentPriorityQueueItem` is exactly one of `CURRENT`, `STALE`, `MISSING`
 or `INCOMPLETE`. Only `CURRENT` exposes the existing Proposal and Decision.
 Stale reasons are direct binding comparisons covering job revision/content,
-policy, CandidateSummary, Agent/prompt/model metadata, evaluation time, Gate
-version and orchestration version. An exact non-completed lifecycle is
-`INCOMPLETE`; corrupted orchestration or Decision data fails the whole read.
+policy, CandidateSummary, Agent/prompt/model metadata, UTC evaluation day, Gate
+version and orchestration version. Exact `evaluated_at` remains in P1d1's
+immutable orchestration identity, but advancing the read clock within the same
+UTC day does not make a completed decision stale: P1d2 returns the validated
+stored binding and its Proposal/Decision. Crossing the UTC-day boundary emits
+`EVALUATION_TIME_CHANGED`. An exact non-completed lifecycle is `INCOMPLETE`;
+corrupted orchestration or Decision data fails the whole read.
 
 The operation has no Agent, Proposal, Gate, claim or repository-write path.
 Current items sort by persisted Decision rank P0→P3, NEEDS_USER, EXCLUDED,
@@ -695,6 +1004,17 @@ record or missing/mismatched artifact fails the full list with
 `INTEGRITY_FAILURE`. Only authenticated-caller summaries marked `VERIFIED` or
 `USER_CONFIRMED` are accepted. P2a2 calls no Agent, JobPosting reader,
 selection, tailoring or execution service.
+
+Production startup includes one bounded compatibility projection for legacy
+Private Home `normalized.resume_variants`. A variant is eligible only when it
+already contains a lowercase SHA-256 artifact attestation, a contained regular
+PDF/DOCX below `documents/master/`, and the existing user-authored
+`role_family` plus `use_when` routing text. The bridge verifies the entire
+eligible batch before registration, copies those two strings without deriving
+claims from resume bytes, and registers through P2a2 as `USER_CONFIRMED`.
+Replay is idempotent; subject, path, type, or hash inconsistency fails closed.
+Startup diagnostics expose only contract version and counts, never paths,
+profile values, artifact bytes, or candidate identifiers.
 
 #### `select_base_resume()`
 
@@ -1489,27 +1809,75 @@ run_automation_cycle(
         max_reprioritizations,
         max_plan_creations,
         max_preparations,
+        max_bundle_assemblies,
         max_executions,
         composition_binding,
+        target_job_ids=(),
     ),
     priority_refresh=P1d3 public callable,
     plan_creation=P2a1b public callable,
     preparation=P2b6 public callable,
+    bundle_assembly=P2c10b public callable,
     execution=P2c9 public callable,
     repository=AutomationCycleRunRepository,
 ) -> RunAutomationCycleResult
 ```
 
-The four public batch calls are strictly serial and receive the same subject
+The five public batch calls are strictly serial and receive the same subject
 and explicit timestamp. Zero-budget stages are typed skips. Every other stage
 is called at most once; batch failure, defer, Human Attention and uncertainty
-are summarized without stopping later stages or triggering retry.
+are summarized without triggering retry. When `target_job_ids` is non-empty,
+its stable order constrains Priority and Plan. The exact `CREATED`/`UNCHANGED`
+Plan IDs returned by that Plan result constrain Preparation and Execution;
+Bundle receives only that Preparation result. P1d3 must echo the exact
+subject/time/target request, and P2b6 must echo the subject/time plus an ordered
+prefix of those successful Plan IDs. Invalid P2b6 lineage prevents both Bundle
+and Execution. Missing or empty Plan lineage fails closed/NOOP and never scans
+unrelated historical Plans.
 
-Cycle identity binds the caller-supplied invocation ID, four budgets,
-composition binding, four batch contract versions and the cycle contract
-version. Time is audit-only. A matching persisted invocation returns
-`UNCHANGED` before all batch calls. Private Home storage is subject-isolated,
-immutable and hash-validated.
+Cycle-v3 identity binds the caller-supplied invocation ID, five budgets,
+composition binding, five batch contract versions, ordered target job IDs and
+the cycle contract version. Time is audit-only. A matching persisted invocation
+returns `UNCHANGED` before all batch calls. Historical five-stage cycle-v2 and
+four-stage cycle-v1 records remain exact readable history and receive no
+synthetic target fields. Private Home storage is subject-isolated, immutable
+and hash-validated.
+
+#### Continuous automatic-application UI supervisor
+
+```text
+POST /api/automation-cycle/run { invocation_id } -> RUNNING
+GET  /api/automation-cycle/status              -> current/last session
+POST /api/automation-cycle/stop { invocation_id } -> STOPPING/current
+```
+
+Start returns without awaiting preflight or a P2c10a child. The background
+session serially enables explicit auto-application intent for enabled
+SearchProfiles, completes S3b refresh, freezes Priority order, and invokes one
+single-target P2c10a child per job up to the server maximum. If more jobs exist,
+the next explicit Start resumes after the last safely completed job rather than
+replaying the same bounded prefix. The production preflight forwards only the
+S3b controller's public-safe progress message plus an elapsed-time heartbeat
+and has an injectable, bounded refresh deadline (300 seconds by default). A
+deadline failure releases the Automation session without cancelling the S3b
+refresh, which may finish safely in the background. Status contains only safe
+`phase`, `message`, `stop_requested`, current/total position, completed-cycle
+count, latest ordered stages and cumulative summary. A done callback persists
+the terminal in-process projection and always clears the active slot even when
+the starting HTTP request disconnects.
+
+Stop is cooperative: it sets the flag for the matching authenticated subject
+and invocation, reports `STOPPING`, waits for the current child to reach its
+persisted result, then reports `STOPPED` without launching another child. It
+also ends preflight at a polling checkpoint without waiting for an already
+started S3b refresh, which may finish in the background. It does not cancel a
+submit boundary or authorize a Gate. Queue reads and child commands require a
+fresh timezone-aware operational timestamp; failure is terminal before the
+affected downstream call. Human Attention,
+defer/failure, and uncertainty surface as terminal attention/failure states and
+never cause an automatic retry. The browser polls Status, restores an active
+session after reload, renders every terminal status, and exposes Stop only
+while `RUNNING`/`STOPPING`.
 
 #### `SemanticMapper.map_controls()`
 
@@ -1547,6 +1915,27 @@ response boundary to canonical `phone`; it is never retained internally.
 The mapper has no CandidateVault, browser, filesystem, tool, state-mutation, permit, or submission capability. Provider choice is hidden behind the Protocol, so Jobops does not depend on a concrete model provider. `FakeSemanticMapper` makes results and failures controllable in tests.
 
 Value-free input is a required boundary, not proof that arbitrary page labels contain no private text. Current projection removes field values and redacts candidate values already known locally. Before any remote production provider is enabled, the caller/service must also reject detected private/secret patterns and retain the residual-risk handoff path.
+
+#### Exact CSV queue episode selection
+
+`jobctl.py queue` and `jobctl.py apply-csv` accept an optional `--job-id` for
+one explicitly operator-targeted CSV episode. Priority and status eligibility
+are applied first. Exact matching then derives the canonical `JobSpec.job_id`
+from each eligible row using the same normalized URL identity shown by
+`queue --list`; `--limit` is applied only after that match.
+
+When `--job-id` is present, it must be non-empty and match exactly one eligible
+row. Zero matches and duplicate canonical-URL matches are `INVALID_INPUT` and
+fail before Keychain access, Engine or ledger construction, Playwright, CSV
+projection, or any external action. `apply-csv --preview` uses the same selector
+as execution. The selector does not alter material policy, Gate A, persisted
+Review, temporally separate Gate B, submission-intent reservation, or evidence
+requirements.
+
+The selector is an explicit single-episode override, not an Automatic
+Applications scheduling input. It must not silently bypass the ordinary
+priority and within-tier CSV order; choosing a later same-tier row requires an
+explicit operator decision naming that target.
 
 #### ATS execution
 
@@ -1681,7 +2070,7 @@ These are sanitized fixture results, not live-site reliability claims.
 
 | Capability | Current status | Test evidence |
 |---|---|---|
-| Greenhouse deterministic path | Fixture-supported | 1 Review-arrival acceptance case plus shared contract cases |
+| Greenhouse deterministic path | Live Review-verified, submission not yet verified | Shared synthetic contracts plus two serial official Greenhouse runs on 2026-08-05 reached hash-bound `REVIEW_READY` with zero unresolved fields, both managed PDFs uploaded and zero model calls. This is two-run evidence, not a production reliability percentage; neither run is submitted until a later human Gate B. |
 | Lever deterministic path | Fixture-supported | 1 Review-arrival acceptance case plus shared contract cases |
 | Ashby deterministic path | Fixture-supported | 1 Review-arrival acceptance case plus shared contract cases |
 | Jobvite deterministic path | Fixture-supported | 1 Review-arrival acceptance case plus shared contract cases |
@@ -1691,30 +2080,43 @@ These are sanitized fixture results, not live-site reliability claims.
 | Typed Job Discovery entry | Implemented Slice 1 | contract, schema-equivalence, upsert, run-persistence and dependency-boundary tests |
 | Provider-neutral Greenhouse public job read | Implemented C1 + C2a/C3a contract coverage | 41 focused fake-HTTP/fixture contract, routing, serialization, failure and boundary cases; no live-network claim |
 | Provider-neutral Lever public job read | Implemented C2 | 37 focused fake-HTTP/fixture mapping, routing, failure and boundary cases; no live-network claim |
-| Generic JSON-LD public job read | Implemented C3 | 45 focused fake-HTTP/fixture parsing, SSRF, redirect, size, failure and boundary cases; no live-network claim |
+| Generic JSON-LD public job read | Implemented C3 | Focused fake-HTTP/fixture parsing, SSRF, DNS-rebinding pinning, redirect, size, failure and boundary cases cover initial/redirect aggregator denial and preserve Workday, SmartRecruiters, iCIMS and SuccessFactors source-family identity without claiming a deterministic ATS adapter; no live-network claim |
 | Conversational URL intake and action resolution | Implemented I1 + I2 + I2b | 45 synthetic reader/store/Discovery/intent-repository cases for extraction, conversion, atomic consumption, durable subject intent, replay, precedence, integrity failures and dependency boundaries; no network claim |
 | Accepted Job Intent Source Provenance | Implemented I2c | 3 focused cases preserve fixed v1 bytes/ID/hash and precedence, validate v2 conversational and ordered multi-SearchProfile provenance through restart reads and identity changes, and cover replay/immutable conflict behavior |
-| Known Greenhouse board candidate search | Implemented S1a | 43 fake-HTTP/fixture contract, allowlist, matching, ordering, failure and dependency-boundary cases; no live-network claim |
-| Production Typed Job Search Ports | Implemented S3b1 | 4 focused cases cover bounded Greenhouse search, deterministic matching/de-duplication/order/identity, explicit unsupported Lever capability, typed timeout/network/HTTP/redirect/size/content/candidate failures, network-free factory construction and direct S3b executor consumption; no live-network claim |
-| SearchProfile Contract | Implemented S3a | 4 focused cases cover typed Greenhouse profile creation, Private Home restart recovery, canonical query replay, immutable query/enabled version history, current/enabled deterministic ordering, subject isolation, invalid source/query/refresh rejection and zero side effects; 3 known-board JobSearchRequest compatibility variants pass |
-| Manual Full Job Library Refresh | Implemented S3b | 4 focused cases cover all-enabled one-call Search, cross-profile canonical-URL de-duplication with complete source lineage, one Public Read/Discovery per URL, explicit ADD_JOB manual trigger, isolated Search/Reader/Discovery failures, one final bounded P1d3 call, empty-profile NOOP, immutable restart replay with zero downstream calls, all-search-failed status and dependency/lifecycle boundaries |
+| Greenhouse board candidate search | Implemented S1a + inline-content optimization | Fake-HTTP/fixture coverage verifies one `content=true` listing GET, deterministic matching/order/failures, complete inline observation mapping and refresh-side elimination of duplicate per-job reads. A company-hosted HTTPS `absolute_url` is accepted only when its single `gh_jid` binds the API job ID; durable source identity is then normalized to the corresponding Greenhouse board URL while the company URL remains the observed application URL. Candidates without content preserve the reader fallback; no live-network claim |
+| Ashby / Lever public feed search | Implemented production search sources | Sanitized provider contracts verify official public response mapping, exact configured tenant/company matching, stable identity, complete inline observations and bounded one-GET execution; no live-network claim |
+| Glassdoor / Jobvite credential-gated search | Implemented but not credential-accepted in this worktree | Sanitized contracts verify disabled-by-configuration behavior, secret-redacted requests/config, Glassdoor exact-employer filtering/attribution surface, and Jobvite Open + External + `distribution=true` filtering. No legal partner/customer credential or live-network validation was used |
+| Production Typed Job Search Ports | Implemented S3b1 factory v2 | Focused construction/dispatch cases cover exact source bindings for all five provider types, a safe empty-provider/empty-tenant default, fixed capability order, old Greenhouse-only config compatibility, typed transport/content failures and direct S3b consumption without probing the network |
+| SearchProfile Contract | Implemented S3a | Focused cases cover all typed source kinds, Private Home restart recovery, canonical query replay, immutable query/enabled history, deterministic current/enabled reads, subject isolation, invalid source/query rejection and v1 Greenhouse-record compatibility |
+| Durable JobLead boundary | Implemented `job-lead-v1` | Synthetic repository cases cover all six acquisition sources, separate source/origin, strict URL and field bounds, credential/tracking/fragment stripping, LinkedIn/Indeed stable IDs, SuccessFactors identity parameters, immutable transitions/ancestry, replay, subject isolation, integrity failure and the prohibition on treating Lead hints as formal jobs |
+| Authorized Web Search adapter | Implemented, optional | Fake bounded-HTTP cases cover request/query/result bounds, fixed Brave endpoint, secret-header redaction, explicit storage-rights configuration, malformed/partial/error mapping and zero result-page reads. No real key or live Search API was used |
+| Multi-source JobLead planner and resolver | Implemented `job-lead-discovery-v1` | Fake-port cases cover twelve index source families, source-fair bounded pagination, independent initial/canonical/public-read budgets, configured-feed resolution without Brave, cross-query URL de-duplication, recognized-ATS automatic reads, unknown-host no-read fencing, exact canonical resolution, ambiguous/missing `NEEDS_USER`, subject-scoped explicit `/resolve` with `source_ref=lead_id`, formal membership provenance and per-resolved-job Priority handoff |
+| Job Alert Inbox | Implemented, optional local IMAP | Sanitized message cases cover credential-account/recipient equality, trusted receiving `authserv-id`, DMARC plus SPF/DKIM admission, recipient/sender/time/count/link/content bounds, explicit `title at company` and `company hiring title` anchors, LinkedIn/Indeed/unknown-web classification, tracking cleanup, message-digest persistence, cross-source duplicate attribution and exclusion of raw email/credentials/auth headers. Gmail OAuth, a real mailbox and daily scheduling are not tested or claimed |
+| JobOps Web Clipper | Implemented current-page handoff | Manifest/background static contracts prove only `activeTab` + `scripting`, no host permissions/fetch/search/pagination, and bounded current-page fields. A real Chromium test against a temporary loopback HTTP Dashboard executes synthesized fragment → review dialog → explicit Save → `NEEDS_USER` → user-supplied official URL → verified formal-job visibility. It does not install the extension or visit a live platform |
+| Dashboard unresolved Leads and combined Refresh counters | Implemented | Synthetic read-model/controller cases keep unresolved Leads out of formal job counts and separately project acquisition plus `JOB_ALERT_INBOX`/`CANONICAL_RESOLUTION` operational counters: requests/completions, search hits, discovered/unique/duplicate Leads, public reads, resolved jobs, review items, failures and truncation. Component totals reconcile with the source rows while newly resolved formal jobs reload progressively; Priority remains a separate stage |
+| Dashboard SearchProfile and conversational Job Finder | Implemented source intake | Synthetic controller/domain cases plus one real Chromium page-JavaScript case with intercepted local APIs verify an inline natural-language input, composed-source-only advanced saves, no subject ID in browser commands, one clarification, candidate selection, explicit ADD_JOB, formal Jobs projection reload, updated job count and one subsequent Refresh POST. No live-provider or real-model claim |
+| Manual Full Job Library Refresh | Implemented S3b | Focused cases cover active-policy ROLE OR queries, one request per configured source, generated request binding, the 1,000-result bound, valid zero-match versus failure counts, per-candidate process-local progress, cross-profile canonical-URL de-duplication, bound-observation reuse versus one Public Read fallback, one formal Discovery per URL, created/updated job-ID Priority allowlisting, typed AI failure propagation, existing-job fallback, empty-profile NOOP and immutable replay |
 | SearchProfile Auto-application Intent Policy | Implemented S3c | 4 focused cases cover default zero-intent behavior, explicit auto intent only after successful Discovery, multi-profile one-write provenance, immutable policy replay/versioning, future-only add-only changes, subject isolation and zero planning/preparation/execution dependencies |
-| Authenticated Subject Session | Implemented S3d0 | 3 focused cases cover Keychain-backed cookie resolution, client subject-override rejection, typed context, missing/expired/hash-drift safe 401 behavior, credential redaction/storage hashing, legacy health-route compatibility and zero Search/Discovery/Automation/Browser/ATS dependencies |
-| Refresh Job Library UI Wiring | Implemented S3d | 3 focused cases cover authenticated subject forwarding, explicit-now/budget/invocation command construction, in-flight duplicate suppression, same-ID S3b replay, COMPLETED/PARTIAL_FAILURE/NOOP safe projections, disabled-running UI state and zero direct Search/Discovery/Priority/Automation/Browser dependencies |
-| Continue Automatic Application UI Wiring | Implemented S3e | 3 focused cases cover authenticated subject forwarding, explicit-now/invocation and versioned server-budget command construction, in-flight duplicate suppression, same-ID P2c10a replay, COMPLETED/PARTIAL_FAILURE/NOOP/UNCHANGED projections, Human Attention/defer/uncertain display, independent S3b/P2c10a requests and zero direct batch/Gate/permit/Browser/Engine dependencies |
+| Authenticated Subject Session and local issuance | Implemented S3d0 + authentication-runtime-v2 | 4 focused cases cover Keychain-backed cookie resolution, loopback/exact-origin issuance for the configured subject, body/query/header subject-override rejection, bounded expiry, missing/expired/hash-drift safe 401 behavior, credential redaction/storage hashing and zero Search/Discovery/Automation/Browser/ATS dependencies; production-composition coverage additionally checks Set-Cookie attributes |
+| Refresh Job Library UI Wiring | Implemented S3d | Focused cases cover authenticated subject forwarding, immediate RUNNING response, per-query/zero-result/unique-URL phase polling, early formal Jobs reload after durable import, unchanged-job reporting, source/import/Priority failure separation, explicit-now/budget/invocation command construction, in-flight duplicate suppression, same-ID S3b replay, terminal safe projections and zero direct Browser/ATS/application dependencies; a synthetic Chromium case executes the exact Priority-only partial-failure rendering path and proves a successful source/library stage is not reported as a search failure |
+| Continue Automatic Application UI Wiring | Implemented S3e continuous supervisor | Focused controller/route/browser cases cover immediate RUNNING, authenticated subject isolation, explicit auto-intent + refresh preflight, pollable safe preflight progress/elapsed heartbeat, bounded refresh-deadline fail closure with session release, authoritative Runnable ordering with SUBMITTED filtering, finite one-job child cycles, cursor cleanup/new-prefix discovery, replay-stable Review/Gate B/not-ready checkpoints, bounded-prefix and Stop resume, fresh operational-time fail closure, cooperative Stop during production preflight/snapshot/current child, per-stage cap one, strict seriality, cumulative progress, message-only browser rerender keys, reload and reconnect polling, start/stop response races, disconnect cleanup, and hard stop/no retry for Human Attention or uncertainty. Enum-only Priority provider/contract failure reasons project as `SYSTEM_ISSUE` / `RETRY_PRIORITY`; only classified side-effect-free Priority failures allow the next runnable job to proceed, while unclassified, persistence, safety and human failures still pause. No live ATS is used |
+| Frontend Gate B review and submission | Implemented | Synthetic controller/read-model/static-browser-contract cases prove Gate-B-only deferrals project as Ready, the frontend loads a current exact review summary, submits only `review_token + confirmed=true`, creates one action-time explicit authorization, rejects stale confirmation before execution, disables duplicate clicks, and projects verified, uncertain and blocked outcomes without retry. No live ATS submission is claimed by these regression tests |
+| Frontend reviewed-CSV compatibility bridge | Implemented | Six synthetic cases prove current CSV/Event Ledger Review projection, token-free list plus exact action-time token, authenticated subject binding, one shared-engine call, stale-token rejection before execution and terminal no-retry uncertainty. The Applications frontend merges these records into Ready/Submitted/Submission uncertain and uses the same explicit confirmation modal. Live browser verification is reported separately |
 | Human Attention Inbox UI Wiring | Implemented S3f | 3 focused cases cover one authenticated P2b5 snapshot with concurrent read sharing, order-preserving USER/OPERATOR projection across multiple Plans, typed kind/action/stage/item-ID display, EMPTY/FAILED safe states, unsafe diagnostic redaction, one initial and one post-S3e refresh, no polling and zero write/Preparation/Automation/Browser dependencies; one P2b5 mapping regression passes |
 | Conversational Application Answer Resolution | Implemented S3g1 | 3 focused cases cover current USER fact persistence and one P2b4 rerun, plan-scoped attestation with ambiguous-input fail-closure, and immutable replay with zero queue/parser/write/rerun side effects; P2b5 and P2b4 focused regressions pass |
 | Conversational Resume / LaTeX Choice Resolution | Implemented S3g2 | 3 focused cases cover deterministic ResumeCandidate selection plus P2a3 override consumption, one-call safe-metadata LaTeX parsing plus P2a6b override consumption and invalid-option rejection, and ambiguous/defer/failure/replay behavior with preserved override/receipt history; 86 focused P2a3/P2a6b/P2b4/P2b5 regressions pass |
+| Dashboard formal Job Library membership | Implemented S4a0 | Focused cases prove an authoritative empty membership produces `DashboardReadStatus.EMPTY` with zero P1d2/P1d4 calls and no PrioritizationPolicy/CandidateSummary prerequisite; formal non-empty membership remains visible as `NOT_EVALUATED` only for the typed `ACTIVE_POLICY_NOT_FOUND` condition, while other failures still fail closed |
 | Conversational named-job search | Implemented S1b application boundary | 13 fake-extractor/search-port tests for URL priority, clues, 0/1/many results, TTL, failures and side-effect boundaries |
 | Candidate selection to pending action | Implemented S2 | 13 fake-reader/store cases for validation, atomic claim, replay/conflict, failure release and dependency boundaries |
-| Conversational/remaining connector Job Discovery | Partial | URL read, named search, candidate selection and add/apply entry exist; Lever search, SearchProfile and product-surface wiring remain |
+| Conversational and cross-platform Job Discovery | Implemented sanitized closure | Production isolated clue extraction, independently optional configured-provider routing and bounded Brave search-index discovery, alert/Clipper/pasted-URL Leads, canonical resolution and formal action resolution exist. Brave is the only current web-search adapter. Authenticated platform crawling, exhaustive coverage, Google/Bing adapters, Gmail OAuth, Saved Jobs bulk import, daily scheduler/digest and live-network or installed-extension reliability remain out of scope or unverified |
 | Editable Prioritization Policy and preparation admission | Implemented P1a + P1a2 | 31 fake-interpreter, draft/admission validation, approval, version/hash, Private Home compatibility and dependency-boundary cases |
+| Dashboard job preferences | Implemented P1a UI closure | Sanitized tests cover one strict-schema no-tool interpreter call, model-input subject omission, authenticated draft/review/approval, forged-subject isolation, mandatory hard-constraint confirmation, active summary projection, editable per-item exact updates with version checks, and one preference surface distinct from provider configuration |
 | AI Priority Proposal | Implemented P1b | 35 synthetic-context/fake-agent binding, deterministic-fact, evidence, invariant, failure and dependency-boundary cases; no real-model claim |
-| Single-call Priority Agent adapter | Implemented P1b2 | fake-provider and mocked-Responses tests prove one tool-free strict-schema call, system/data separation, metadata ownership, sanitized logging and existing P1b validation; optional synthetic smoke script is excluded from routine tests |
-| Provider-neutral production Priority Agent | Implemented P1b3 | 3 focused cases prove one async structured request, exact P1b prompt/schema/context reuse, schema/timeout/size fail-closure without a second generation, Codex subscription and direct-API-shaped factory resolution, stable metadata and no fallback or startup model call |
+| Single-call Priority Agent adapter | Implemented P1b2 / prompt v4 + output schema v2 | fake-provider and mocked-Responses tests prove one tool-free strict-schema call, system/data separation, deduplicated context-bound evidence IDs and fields, named hard/eligibility evidence slots, category-matched eligibility facts, fixed-key eligibility coverage, qualification invariants, provider schema-budget bounds, metadata ownership, sanitized logging and existing P1b fail-closure; an explicit synthetic Codex CLI smoke passed, but remains outside routine tests and is not real-candidate or live-site evidence |
+| Provider-neutral production Priority Agent | Implemented P1b3 | Focused cases prove one async structured request, exact P1b prompt/schema/context reuse, canonical output-schema bytes included in the input budget, schema/timeout/size fail-closure without a second generation, Codex subscription and direct-API-shaped factory resolution, stable metadata and no fallback or startup model call |
 | Priority Validation Gate / formal P0–P3 decision | Implemented P1c | 35 synthetic Gate/repository cases within the 70-case Priority suite; deterministic constraints, reconciliation, binding, schema, immutability and idempotency evidence |
 | Single-job Priority orchestration | Implemented P1d1 | 15 synthetic orchestration/read/provider cases; atomic pre-Agent claim, one-call flow, `CREATED`/`UNCHANGED`, changed bindings, subject isolation and failure boundaries |
-| Current Priority queue read model | Implemented P1d2 | 14 synthetic cases for typed listing, current/stale/missing/incomplete projection, stale reasons, subject isolation, stable sorting, fail-closed data integrity and zero-write/zero-Agent boundaries |
+| Current Priority queue read model | Implemented P1d2 | 16 synthetic cases for typed listing, current/stale/missing/incomplete projection, same-UTC-day clock advancement, next-UTC-day staleness, other stale reasons, subject isolation, stable sorting, fail-closed data integrity and zero-write/zero-Agent boundaries |
 | Selective batch reprioritization | Implemented P1d3 | 16 synthetic and real-service composition cases for bounded selection, caller/P1d2 order, serial execution, exact-time forwarding, typed aggregation, failure isolation, NOOP and repeated-run zero-extra-Agent idempotency |
 | Runnable Application Queue read model | Implemented P1d4 | 17 synthetic cases for direct admission, accepted-intent isolation/integrity, every blocked state, same-snapshot policy use, order preservation and zero-write/zero-execution boundaries |
 | Automation-first ApplicationPlan | Implemented P2a1 | 16 synthetic cases for RUNNABLE-only creation, immutable bindings, exact instructions, stable identity/replay, changed inputs, restart reads, fail-closed persistence and zero-Agent/zero-execution boundaries |
@@ -1725,9 +2127,9 @@ These are sanitized fixture results, not live-site reliability claims.
 | Subject-specific CandidateEvidence Snapshot | Implemented P2a4b | 14 synthetic cases for exact source lineage, conservative trust/scope, binding failures, stable replay/restart, empty evidence, changed Plan/Selection/Projection, subject isolation, immutable conflicts and zero-profile/Agent/QA/execution boundaries |
 | Evidence-bound Cover Letter Draft | Implemented P2b2b | 21 synthetic fake-Agent cases for binding fail-closure, bounded single Agent call, restricted Agent context, unevidenced-claim rejection, JD-requirement-as-fact rejection, placeholder rejection (greeting/closing/paragraph), insufficient-evidence deferral, illegal-output deferral (four variants), Agent unavailability, replay, restart reads, conflicts and zero-FactQA/rendering/manifest/execution boundaries |
 | Evidence-bound Cover Letter Fact QA | Implemented P2b2c | 23 synthetic fake-QA-Agent cases for binding mismatch (plan/job/snapshot/draft, zero Agent calls), deterministic blocking (unknown evidence, unsupported claim, JD-requirement-as-fact — all zero Agent calls), Agent-blocked semantic exaggeration (responsibility-level, fabricated company connection), restricted Agent context, illegal Agent-finding references (three variants) and uncertain/untyped Agent output all deferring without persisting, draft non-mutation, replay, new-Result-on-version-change, restart reads, conflicts and zero-rendering/manifest/execution boundaries |
-| Cover Letter Document Publication | Implemented P2b2d | 31 synthetic/controlled cases for typed publication, deterministic exactly-once rendering, one-pass escaping, template/source capability rejection, blocked/missing/mismatched Fact QA with zero compiler calls, compiler absence/errors, one-page overflow, invalid PDFs, missing/duplicated/placeholder/unknown visible text, replay before compile, changed Draft/QA/template/compiler identities, restart hashes, artifact and record drift, subject isolation, zero-Agent/Manifest/Browser/ApplicationEngine boundaries, and optional real sandboxed-pdflatex text fidelity |
+| Cover Letter Document Publication | Implemented P2b2d | Synthetic/controlled cases cover typed publication, deterministic exactly-once rendering, one-pass escaping, template/source capability rejection, blocked/missing/mismatched Fact QA with zero compiler calls, compiler absence/errors, one-page overflow, invalid PDFs, missing/duplicated/placeholder/unknown visible text, PDF-extractor word-boundary loss while preserving exact non-whitespace content, replay before compile, changed Draft/QA/template/compiler identities, restart hashes, artifact and record drift, subject isolation, zero-Agent/Manifest/Browser/ApplicationEngine boundaries, and optional real sandboxed-pdflatex text fidelity |
 | Plan Manifest Cover Letter Inclusion | Implemented P2b2e | 16 synthetic cases for ordered RESUME+COVER_LETTER assembly, field-for-field Resume preservation, publication/PDF provenance, prior-manifest lineage identity, replay and already-included idempotency, changed-cover-letter history, binding mismatch, missing/corrupt prior manifest, PDF hash/signature/size/page drift, repository conflict without overwrite, restart/current resolution, subject isolation, artifact immutability and zero generation/compilation/Gate/Browser/ATS/ApplicationEngine boundaries |
-| Unified Canonical Application Answer Taxonomy | Implemented P2b3a | 11 synthetic contract cases for complete typed metadata, contact/legal/demographic/attestation distinctions, phone and vault alias normalization, fail-safe UNKNOWN, sensitive mapper review status, typed ApplicationBundle answers, out-of-taxonomy rejection, explicit legacy conversion, stable serialization/hash, shared caller types and zero candidate/execution capability |
+| Unified Canonical Application Answer Taxonomy | Implemented P2b3a | Synthetic contract and migration regressions cover complete typed metadata; distinct employment, education and health sensitivity for `employment_status`, `graduation_date` and `accommodation`; exact typed semantics for province, office attendance, full-time-experience band, company familiarity, job-discovery multi-select and job-scoped work-authorization detail; conservative deterministic label mapping with ambiguous labels left UNKNOWN; exact multi-select option execution and read-back; sensitive mapper review status; migration → CandidateVault → typed ApplicationBundle normalization; producer-side rejection of out-of-taxonomy verified keys and canonical/legacy-alias collisions; stable serialization/hash; shared caller types; and zero candidate/execution capability |
 | Application Answers Preparation | Implemented P2b3b | 21 synthetic Private Home cases for authoritative fact metadata/snapshot identity, alias normalization, unsupported UNKNOWN, strict value types, no high-stakes inference, demographic choice/decline policy, immutable attestation boundaries, skip versus human-required states, Plan restrictions, salary confirmation, expired/job-scoped exclusion, conflicts without safe-answer loss, no-trusted-fact and human deferrals, subject/binding failures, replay, changed-binding history, restart/current reads, corruption, isolation and zero FormIR/SemanticMapper/Browser/ATS/Gate/ApplicationEngine capability |
 | Single-job Automated Application Preparation | Implemented P2b4 | 20 synthetic application-layer cases for exact serial order and common inputs, CREATED/UNCHANGED continuation, Visual-QA pass skip and revision-final-lineage publication, Resume and Cover-Letter defer short-circuiting, preserved completed roles, blocking-answer attention, typed/exception failures without rollback, completed zero-call replay, changed upstream binding history, immutable restart reads, corruption and subject isolation, missing-output contract failure, dependency-source boundary, plus one real P2b3b public-call composition |
 | Async Preparation Stage Invocation | Implemented P2b4f | Focused cases cover mixed synchronous/awaitable canonical stages with exactly-once invocation and maximum concurrency one, async stop/exception short-circuiting, cancellation propagation, zero-call completed replay with unchanged Run/lineage identity, and direct serial P2b6 awaiting without event-loop or thread bridges |
@@ -1759,8 +2161,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Candidate Fact Review and Verification UI | Implemented C1d | 4 focused synthetic cases cover proposal acceptance and edited USER_CONFIRMATION lineage, conflict display, zero-write keep/reject behavior, expected-current CAS under concurrent drift, missing-required typed entry, bounded text/image preview with cross-subject denial, deterministic child-invocation receipt recovery, invocation conflict and authenticated route rejection of client-supplied subject/binding fields |
 | Selective Bundle Assembly and Cycle Handoff | Implemented P2c10b/P2c10b1 | Focused synthetic cases prove fixed P2b6 snapshot consumption, strict Profile→Policy→P2c1d3 ordering, immutable exact context binding, unchanged invocation replay with zero generation calls, exact Profile/Policy/context transfer to P2c1-v2, typed ordered-prefix failure with zero downstream calls, candidate-attempt budgeting, serial failure continuation, same-cycle P2c9 ordering, zero-budget continuation, and historical assembly/cycle compatibility |
 | Recoverable Application Bundle Envelope | Implemented P2c1b | 7 focused synthetic cases covering complete typed material/answer/profile/policy recovery, shared canonical hash equality, subject and AssemblyRecord hash fail-closure, immutable replay and conflict protection, persisted-payload corruption, restart recovery, historical `NOT_FOUND`, and zero Manifest/AnswerSet/factory/Gate/Browser/ATS/Engine dependency |
-| Canonical Resume / Cover Letter Upload Mapping | Implemented P2c2 | 9 focused synthetic cases covering legacy Resume upload, exact two-role selection and non-crossing, absent/required/optional Cover Letter behavior, hash/size/signature/symlink/containment fail-closure, typed Base validation failure, unknown/ambiguous controls, at-most-once shared fill, taxonomy classification and representative Greenhouse/Ashby inheritance; 167 affected execution/Workday compatibility tests pass with 14 environment skips, plus 2 sanitized Chromium adapter cases pass separately |
-| Plan-scoped Gate A and Non-submit Engine Integration | Implemented P2c3/P2c5a provenance extension | 9 focused synthetic cases covering authorized one-shot Review persistence with a typed consumed-Gate-A reference, human Gate A pre-Browser defer, exact recovered materials/answers and hard non-submit arguments, Browser defer without retry, runtime sensitive-input handoff, submission-evidence fail-closure, zero-call immutable replay that reuses the reference, managed-artifact drift plus restart reads, and Workday special-route Bundle carriage |
+| Canonical Resume / Cover Letter Upload Mapping | Implemented P2c2 + legacy execution bridge | Focused synthetic cases cover legacy Resume upload, exact two-role selection and non-crossing, absent/required/optional Cover Letter behavior, hash/size/signature/symlink/containment fail-closure, typed Base validation failure, unknown/ambiguous controls, at-most-once shared fill, taxonomy classification and representative Greenhouse/Ashby inheritance. The compatibility bridge projects manifest-verified Resume bytes into the subject-scoped managed tree, compiles targeted Markdown Cover Letters with the bounded LaTeX compiler, verifies visible-text fidelity, and binds Greenhouse's asynchronous S3 upload receipt after React replaces the original file input. Two serial live Reviews uploaded both PDFs; no live submit is claimed. |
+| Plan-scoped Gate A and Non-submit Engine Integration | Implemented P2c3/P2c5a provenance extension and non-submit policy v3 | Focused synthetic cases cover authorized one-shot Review persistence with a typed consumed-Gate-A reference, human Gate A pre-Browser defer, exact recovered materials/answers and hard non-submit arguments, Browser defer without retry, runtime sensitive-input and value-free validation-error handoff, deterministic adapter contract changes, submission-evidence fail-closure, zero-call immutable replay that reuses the reference, managed-artifact drift plus restart reads, and Workday special-route Bundle carriage |
 | Plan-scoped Gate B Submission Authorization | Implemented P2c4 | 6 focused synthetic cases covering explicit-user authorization, default human defer, formally autonomous authorization, exact attestation/consent/signature handoff, validation/binding/submission-boundary blocking, immutable replay and changed authorization history with zero Browser/Engine/ATS/ledger dependency; 60 focused and Gate-B/review regressions pass |
 | Plan-scoped Submission Permit Contract Migration | Implemented P2c5a | 4 focused cases plus Foundation Permit and P2c3 regressions cover byte-compatible legacy bindings, exact plan/subject/authorization/execution/adapter/action scope validation, ledger-verifiable Gate A consumption references, non-secret signer metadata, subject-isolated opaque token recovery, token drift fail-closure, and zero submission-permit issuance or Browser/Engine/ATS/submit capability |
 | Plan-scoped Submission Permit Issuance | Implemented P2c5b | 4 focused cases cover exact AUTHORIZED issuance with token-only opaque storage, unauthorized/binding/Gate-A/submission-state fail-closure, validator rejection after every plan-scoped binding mutation, zero-issue unexpired replay, v1 expiry requiring reauthorization, issuer/store/record failure isolation, and zero Browser/Engine/ATS/submission-intent/submit capability; 26 focused P2c3–P2c5b and Foundation Permit regressions pass |
@@ -1768,8 +2170,8 @@ These are sanitized fixture results, not live-site reliability claims.
 | Production Browser Runtime and Execution Ports | Implemented P2c7a | 4 focused fake-Playwright cases cover closed application-config projection, controlled profile path/symlink/lock rejection, one persistent-context startup, P2c3/P2c6 Protocol compatibility, LeaseManager exclusivity and TTL, fresh page lifecycle under exception and cancellation, idempotent shutdown and path/credential-safe diagnostics; 40 focused Browser, P2c3, P2c6 and Foundation Lease regressions pass without starting Chromium or accessing ATS |
 | Single-job Automated Application Execution | Implemented P2c7 | 5 focused cases cover exact P2c3→P2c4→P2c5b→P2c6 order with one shared explicit timestamp and maximum concurrency one, Gate A and explicit-user authorization deferrals with zero later calls, failure prefix preservation, immutable restart recovery, terminal uncertainty with no retry, and completed/uncertain zero-call replay |
 | Current Application Execution Queue | Implemented P2c8 | 5 focused cases cover READY without a Run, permanent SUBMITTED across a newer Assembly, terminal uncertainty ahead of later nonterminal history, old deferred isolation from a new current Assembly, deterministic status/priority ordering, stable item/snapshot hashes across changed evaluation time, mtime and reversed repository reads, plus byte/mtime-proven zero writes; 25 Assembly-current and ExecutionRun repository regressions pass |
-| Selective Batch Application Execution | Implemented P2c9 | 4 focused cases cover READY-only snapshot-order execution with maximum concurrency one, deferred/failed/submitted/uncertain typed skips, per-Plan defer/failure/uncertainty isolation with later execution continuation, caller-order allowlist de-duplication, execution-count bounds that exclude skips/not-found, per-Plan Gate A inputs, one queue read per batch and P2c7 `UNCHANGED` replay; 3 focused P2c7/P2c8 terminal regressions pass |
-| End-to-end Automation Cycle | Implemented P2c10a/P2c10b | 4 focused cycle cases cover exact P1d3→P2a1b→P2b6→Bundle→P2c9 serial order, shared subject/time and independent budgets, stage failure/defer/uncertainty continuation, zero-budget typed skips with P2c9 continuation, immutable restart recovery, time-excluded invocation replay with five zero-call public services, and exact historical v1 compatibility |
+| Selective Batch Application Execution | Implemented P2c9 | 5 focused cases cover READY snapshot-order execution with maximum concurrency one, exact-Plan Gate A approval recovery from only `DEFERRED_GATE_A_REQUIRED`, all other deferred/failed/submitted/uncertain typed skips, per-Plan defer/failure/uncertainty isolation with later execution continuation, caller-order allowlist de-duplication, execution-count bounds that exclude skips/not-found, per-Plan Gate A inputs, one queue read per batch and P2c7 `UNCHANGED` replay; 3 focused P2c7/P2c8 terminal regressions pass |
+| End-to-end Automation Cycle | Implemented P2c10a/P2c10b v4 | Focused cycle cases cover exact P1d3→P2a1b→P2b6→Bundle→P2c9 serial order, shared subject/time and independent budgets, ordered job allowlists, invocation-bound P2 Gate A input, P1d3 response lineage, exact successful-Plan handoff, rejection of mismatched P2b6 Plan lineage before Bundle/Execution, no global fallback on empty/invalid Plan lineage, stage failure/defer/uncertainty audit, zero-budget skips, immutable restart/replay, and exact historical v1/v2/v3 compatibility |
 | Cover Letter Evidence Snapshot | Implemented P2b2a | 16 synthetic cases for exact source lineage, `COVER_LETTER`-only scope, evidence-ID disjointness from resume-tailoring evidence, stable replay/restart, binding failures, missing locator, empty evidence, changed Plan/Selection/Projection, contract-version identity, subject isolation, immutable conflicts and zero-JD/Agent/tailoring/execution boundaries |
 | Plan-scoped Material Manifest Assembly | Implemented P2b1 | 19 synthetic cases for typed assembly, exactly one RESUME entry, entry provenance binding, refusal to claim completeness or Gate A, no placeholder entries, plan and subject mismatch, unknown prepared material, PDF drift, removal and page-count drift, artifact immutability, no legacy-directory fallback, replay, changed material, deterministic current-manifest resolution, conflicts, restart reads, subject isolation and separation from the legacy manifest |
 | Prepared Resume Material Publication | Implemented P2a9 | 25 synthetic cases for the direct and revision publication paths, distinct provenance per path, unapproved visual QA, unsuccessful and exhausted revision runs, blocked fact QA, draft and compilation binding mismatch, PDF drift, removal and page-count drift, never copying or regenerating the artifact, subject isolation, replay, changed chains, current-material resolution by publication time rather than mtime, conflicts, restart reads and zero-compiler/renderer/Agent boundaries |
@@ -1800,7 +2202,7 @@ Current release fixture baseline:
 - model calls on those five paths: `[0, 0, 0, 0, 0]` (median `0`);
 - live Review-arrival and submit-success metrics: not yet measured.
 
-### V1a End-to-End Automated Application Acceptance
+### V1a contract/fixture vertical-path acceptance
 
 V1a re-executes the repository's production-boundary and sanitized execution
 evidence as one release gate. The gate covers repository-external bootstrap,
@@ -1810,14 +2212,35 @@ handoff, assembly-v2, the execution safety chain, and the five deterministic
 ATS fixture paths.
 
 The accepted fixture result is `5/5` Review arrival with per-path model calls
-`[0, 0, 0, 0, 0]`, plus `1,826` passing non-live tests under
-`tests/` with `tests/test_real_forms.py` excluded. The release gate also
-verifies closed execution-profile inputs, controller readiness instead of
-legacy `profile.yaml` health, loopback-only serving, canonical HMAC permit
-encoding, duplicate-submit prevention, `SUBMIT_UNKNOWN` no-retry behavior, and
-eligible evidence requirements.
+`[0, 0, 0, 0, 0]`. The current-worktree non-live regression is an equivalent
+`2,053 passed`: the main run excluded `tests/test_real_forms.py` and the
+unrelated nested `.claude` worktree and ran sandbox-external so its local
+Chromium, Seatbelt and loopback cases could execute.
+The ATS/Workday contract subset is `51 passed, 47 skipped`. The focused
+multi-source JobLead, authorized-search, alert, source-intake, read-model,
+Refresh, bootstrap and production-composition subset is `248 passed, 1
+skipped`; two focused Playwright cases covering the Refresh page JavaScript and
+real-loopback Web Clipper handoff are `2 passed`.
+The release
+gate also verifies closed execution-profile inputs, production composition
+construction/installation without legacy `profile.yaml`, loopback-only
+serving, canonical HMAC permit encoding, duplicate-submit prevention,
+`SUBMIT_UNKNOWN` no-retry behavior, eligible evidence requirements, and the
+shared `/api/health`/`run_server()` production-readiness predicate.
 
 This result proves sanitized contract compatibility, not live-site success.
+The conversational source-intake evidence includes real Chromium execution of
+page JavaScript against intercepted local API responses. Separately, the Web
+Clipper E2E starts a temporary loopback Dashboard HTTP server and executes a
+synthesized fragment handoff, explicit review dialog, authenticated capture,
+`NEEDS_USER`, user-supplied official-URL resolution and formal-job visibility
+in real Chromium. It does not install the extension or visit a live platform.
+Neither test
+exercises the initial `GET session 401 → POST local-session → EMPTY` sequence;
+that specific main-Dashboard authentication browser E2E gap remains. No Ashby,
+Lever, Glassdoor, Jobvite, LinkedIn, Indeed, mailbox or Brave live-network
+reliability claim follows from this baseline; no legal Glassdoor partner
+credential or licensed Jobvite customer credential was used.
 No V1a test performs network discovery, uses real candidate data, calls a real
 model, logs into an ATS, or submits an application. Live Review-arrival and
 submission metrics remain separate.
@@ -1826,7 +2249,14 @@ submission metrics remain separate.
 
 - CI and routine local tests use only synthetic identities and sanitized fixtures.
 - `tests/test_real_forms.py` is excluded from routine validation and never submits.
-- Current tests cover Python mapper privacy projection/key-status invariants, exact read-back, approval bindings, duplicate protection, and no-retry states.
+- Current tests cover Python mapper privacy projection/key-status invariants,
+  exact read-back, approval bindings, duplicate protection, no-retry states,
+  local-session controller behavior, production composition, Dashboard
+  JavaScript and the synthetic loopback Web Clipper capture-and-resolution flow
+  in real Chromium.
+  They do not yet cover a real browser executing the first-load session
+  sequence against a bound loopback HTTP server, a real installed extension,
+  a live Search API, a real mailbox or a real platform page.
 - `JobPosting` required-key and enum equivalence is enforced against its JSON Schema. Automated OpenAPI validation, `$ref` resolution, and full generic format validation remain pending for the other machine contracts.
 - Every fixed bug adds a sanitized regression test named for the failed invariant.
 - A regression is complete only when the test fails on the old behavior and passes with the fix.
@@ -1843,6 +2273,16 @@ tests/test_job_discovery.py
 tests/test_job_search.py
 tests/test_conversational_named_search.py
 tests/test_semantic_mapper_contract.py
+tests/test_job_leads.py
+tests/test_authorized_web_search.py
+tests/test_job_lead_discovery.py
+tests/test_job_alerts.py
+tests/test_job_source_intake.py
+tests/test_jobops_web_clipper.py
+tests/test_jobops_web_clipper_browser_e2e.py
+tests/test_dashboard_read_models.py
+tests/test_refresh_job_library_ui.py
+tests/test_production_automation_composition.py
 ```
 
 ### P2b5c Material Correction Target Contract
@@ -1980,13 +2420,19 @@ managed PNG/JPEG images. `IsolatedSubscriptionCLIRunner` executes exactly one
 provider adapter process inside a fresh macOS Seatbelt workspace with an
 explicit environment. The Codex adapter projects only `auth.json`, disables
 Agent tools and optional integrations, uses `--output-schema` and `--image` in
-the same non-interactive invocation, and never requires an API key.
+the same non-interactive invocation, and never requires an API key. Its
+process spec allowlists only the `com.openai.codex` and
+`kCFPreferencesAnyApplication` preference domains and the public
+`/etc/ssl/cert.pem` CA bundle; any other requested preference domain fails
+closed as `CLI_CONTRACT_UNSUPPORTED`.
 
-Five focused cases cover structured image success and cleanup; denial of
+Focused cases cover structured image success and cleanup; denial of
 outside reads, ambient environment and child execution; invalid/oversized
 image input; Codex schema/image/session contract projection; and timeout,
 oversized output, tool events, schema failure, and cleanup failure without
-retry. A no-generation runtime probe gates the M1a2 profile. The optional
+retry. Process stderr is discarded after bounded typed classification; it is
+never retained in a result or log. A no-generation runtime probe now requires
+an actual managed-config load before it gates the M1a2 profile. The optional
 `scripts/smoke_isolated_codex_subscription.py` command requires an explicit
 subscription-usage acknowledgement and supplies synthetic text and a 1x1 PNG
 only.
@@ -2024,35 +2470,58 @@ or falls back to `profile.yaml`. Owner/permission, symlink, Git-worktree,
 document-count, size, YAML tag/alias, section-key, version, path, provider,
 authority, and budget checks all fail before server startup.
 
+The outer document remains config-v1. Its required authentication subsection
+is `production-authentication-runtime-v2`, adding `local_subject_id`, the
+`LOOPBACK_SAME_ORIGIN_AUTO` issuance policy and a 300–86,400 second TTL while
+retaining the existing session-record, HttpOnly/SameSite-Strict and
+loopback-only policies. Authentication-v2 is a section version, not a rename of
+the outer config or bootstrap contract.
+
 Secret references support ENV and the existing Keychain/CredentialStore
 boundary. Resolved values are transient and absent from config serialization,
 bootstrap results, errors, and diagnostics. Selected AI backends retain the
 M1a/M1b credential and isolation checks; missing credentials for an unselected
 backend are irrelevant.
 
+Configured discovery is safe by default: the example declares zero enabled
+providers and zero company tenants, so startup cannot query fictitious boards.
+Configured company feeds, authorized Brave discovery, the generic-IMAP Job
+Alert Inbox and persisted Clipper/pasted Leads are independently optional
+inputs. Enabling one does not synthesize or require another. Alert credentials
+remain repository-external and their account identity must equal the configured
+recipient before the trusted-authentication checks described above can admit a
+message.
+
 `production-application-bootstrap-v1` returns the typed dependencies needed by
 the later P2c10c root: repositories, authenticated session provider, job
 search and Priority factory inputs, the P2b4g dependency bundle, P2c1d2
 execution rules, the unstarted P2c7a runtime, Automation budgets, owned
-resources, and safe diagnostics. It never builds a Preparation recipe or
-controller composition and never runs network, models, compilation, browser
-navigation, ATS logic, or business stages.
+resources, safe diagnostics and the authentication-v2 local-session issuer.
+The resolved master secret is retained only inside that issuer. It never builds
+a Preparation recipe or controller composition and never runs network, models,
+compilation, browser navigation, ATS logic, or business stages.
 
-Four focused tests cover closed external config and legacy isolation; complete
+Five focused tests cover closed external config and legacy isolation; complete
 construction with production Codex adapter types but zero semantic/Browser
-calls; missing-secret and partial-bootstrap cleanup behavior; and the
-`main.py server` ordering that bootstraps before any legacy profile access and
-hands the typed bootstrap directly to the P2c10c composition root.
+calls; missing-secret and partial-bootstrap cleanup behavior; safe propagation
+of the closed model-resolution status under
+`AI_CONFIGURATION_INVALID:<typed-status>`; and the `main.py server` ordering
+that bootstraps before any legacy profile access and hands the typed bootstrap
+directly to the P2c10c composition root. Provider exception text is not an
+allowed status source.
 
 # P2c10c Production Automation Composition and Dashboard Wiring
 
 `build_production_automation_composition(...)` consumes exactly one validated
 `ProductionApplicationBootstrap`. It returns
-`production-automation-composition-v1`, containing the S3b refresh controller,
-the P2c10a Automation controller, all intervening production ports and public
-callables, owned resources, and bounded diagnostics. Construction is
-side-effect free with respect to network, model generation, browser
-navigation, ATS execution, and business records.
+`production-automation-composition-v3`, containing local session issuance, the
+S3b refresh controller, the five-stage P2c10a Automation controller, the four
+authenticated Dashboard read controllers, all intervening production ports
+and public callables, owned resources, and bounded diagnostics. Construction
+is side-effect free with respect to network, model generation, browser
+navigation, ATS execution, and business records. Composition-v3 consumes
+authentication-runtime-v2 inside the unchanged outer config-v1/bootstrap-v1
+contracts; those versions are independent and do not advance in lockstep.
 
 The production graph uses the S3b1 and P1b3 factories, the authoritative
 P2b4g recipe, the P2c1d1/P2c1d2/P2c1d3 public context boundary, the P2c10b1
@@ -2062,7 +2531,141 @@ authentication, or execution infrastructure produce a typed construction
 failure; no partial composition is returned.
 
 Four focused cases prove complete static construction with all 18 canonical
-Preparation stages; atomic controller installation and resource lifecycle;
-authenticated Refresh and Automation routing without missing-controller 503s;
-and mandatory-dependency fail-fast plus redacted diagnostics and static
-legacy/fake/event-loop-bridge exclusions.
+Preparation stages; atomic controller/local-issuer installation and resource
+lifecycle; local session Set-Cookie plus authenticated Refresh and Automation
+routing without missing-controller 503s; and mandatory-dependency fail-fast
+plus redacted diagnostics and static legacy/fake/event-loop-bridge exclusions.
+The tests call controllers/routes in process; they do not bind a random port or
+execute Dashboard JavaScript in Playwright.
+
+## Production readiness closure and remaining local browser E2E
+
+This section preserves the dependency order of the original minimal Slice.
+Item 1 is implemented and verified; Items 2 and 3 remain plans, not capability
+evidence. The remaining work stays inside the existing production bootstrap/
+composition, Dashboard server and test boundaries; it adds no service,
+scheduler, login system or design document.
+
+### 1. One production Dashboard readiness contract — implemented
+
+- **Implemented contract:** one closed required-state predicate covers the
+  installed composition-v3 controller set. `/api/health` must return `ok` if
+  and only if `run_server()` is allowed to call uvicorn. Missing any one of
+  Refresh, Automation, local-session, authenticated-subject, Human Attention,
+  Profile, Jobs, Applications or Overview is `not_ready`, and `run_server()`
+  must stop before binding a socket. Loopback validation remains an additional
+  independent prerequisite. This is a static composition readiness check, not
+  an outbound health probe.
+- **Expected files:** `dashboard/server.py` and
+  `tests/test_production_automation_composition.py`; update this document and
+  `ARCHITECTURE.md` only if the implemented contract differs from this plan.
+- **Regression tests:** parameterize removal of every required state entry and
+  prove health/read-server equivalence; monkeypatch the uvicorn entry to prove
+  it is never called while not ready and is called only for a complete
+  loopback composition. Preserve the health response's safe status-only body.
+- **Done:** there is one source of truth, the complete installed graph reports
+  ready, every partial graph reports not ready, and no half-composed server can
+  start. Existing composition, route and loopback tests remain green.
+- **Risk and fail-closed behavior:** a stale required-state list could reject a
+  valid deployment or admit a partial one. Keeping the list adjacent to the
+  installer and exhaustively testing each member makes rejection the default;
+  no missing dependency is downgraded to a permanent route-level 503.
+
+### 2. Bound local session state to one current slot — pending
+
+The considered storage strategies are:
+
+| Strategy | Benefit | Cost / risk | Decision |
+|---|---|---|---|
+| Deterministic current slot per configured subject/issuer namespace | Point `set()` replaces one record; no listing, scheduler or new permission; a new credential immediately invalidates the old cookie | Concurrent no-cookie tabs may race and only the last cookie remains valid; historical random-ID records are not enumerated | **Choose for this Slice** |
+| Rotating binding with current/previous generations | Can provide a grace window across tabs | Requires a pointer, multi-record atomicity, crash recovery and a wider valid-credential set | Reject for now |
+| Enumerate and clean expired records | Can remove historical records | `CredentialStore` has no list contract; Keychain enumeration, lifecycle scheduling and deletion policy expand capability and failure modes | Reject for now |
+
+- **Goal and contract:** issuer-v2 derives one stable non-secret session slot
+  identity for the configured subject/issuer namespace, rotates only the
+  credential and timestamps, and overwrites that slot through the existing
+  point `set()`/verification contract. At steady state there is at most one
+  local Dashboard session record for that namespace. The subject, TTL,
+  loopback/origin checks and cookie authority do not change. The previously
+  issued cookie becomes 401 immediately after rotation. Existing pre-v2 random
+  records are neither trusted nor automatically deleted.
+- **Expected files:** `core/authenticated_subject.py`, focused issuer tests in
+  `tests/test_authenticated_subject_session.py`, composition-version binding
+  and tests in `core/production_automation_composition.py` and
+  `tests/test_production_automation_composition.py`, plus the two corresponding
+  authoritative documentation sections. No new CredentialStore method is
+  required; the issuer contract and any composition identity that binds it
+  must be versioned explicitly.
+- **Regression tests:** issue repeatedly with `InMemoryCredentialStore` and
+  prove one slot, newest credential authenticated, prior credential rejected,
+  configured subject unchanged, TTL preserved, point-write verification
+  failure returns no issued session, and no `delete()`/enumeration/background
+  cleanup occurs. Retain remote/cross-origin and forged-subject rejection.
+- **Done:** repeated ordinary issuance no longer grows store cardinality,
+  authorization scope is unchanged, every failure is 503/401 as appropriate,
+  and the full authentication/composition regression set passes.
+- **Risk and fail-closed behavior:** cross-tab rotation can invalidate a peer's
+  cookie; the invalid tab receives 401 and may explicitly bootstrap again, but
+  no grace credential or broader subject access is introduced. A failed or
+  ambiguous overwrite returns no cookie. Removing legacy random records,
+  multi-tab grace and a logout/revocation UI remain out of scope.
+
+### 3. Real local-browser acceptance — pending
+
+- **Goal and contract:** add one Playwright acceptance using a temporary
+  Private Home, a synthetic configured subject, `InMemoryCredentialStore`, the
+  existing production controller composition, a pre-bound loopback socket on
+  port `0`, and the real Dashboard HTML/JavaScript. The only real browser is
+  the test browser; application-execution Browser resources are replaced by
+  explicit no-op test lifecycle inputs and no model backend is invoked.
+- **Expected files:** a focused
+  `tests/test_local_dashboard_browser_e2e.py` (or equivalently named single
+  module) plus only the smallest test hooks proven necessary in
+  `dashboard/server.py`. Do not add an app service, browser façade or generic
+  E2E framework.
+- **Acceptance sequence:** capture browser network events and prove initial
+  `GET /api/auth/session` returns 401, same-origin
+  `POST /api/auth/local-session` returns 200 with HttpOnly/Strict cookie, and
+  the page reaches the formal EMPTY Jobs view. Then clear the browser cookie
+  and call the page's existing JSON request path to prove a Dashboard GET
+  receives 401, performs one shared local-session POST, retries exactly once
+  and returns EMPTY. The test must distinguish the initial authentication gate
+  (Dashboard reads begin after the successful POST) from the independent
+  per-request 401 retry contract.
+- **Origin and subject attacks:** load a second random-port loopback origin and
+  prove its POST reaches the target as 403 by observing the network response,
+  even when CORS prevents JavaScript from reading the body. From the legitimate
+  origin, send an attacker subject in JSON body, query and ordinary header;
+  seed only the attacker partition with a sentinel job and prove the issued
+  session still selects the configured subject's EMPTY library. The public
+  session response must not reveal either subject.
+- **Regression and isolation:** assert no requests leave loopback; no real
+  Keychain, model generation, job source, ATS, application Browser runtime,
+  permit, submit or candidate data is touched. Use bounded readiness waits and
+  network/DOM conditions, never sleeps. Always close the browser, both HTTP
+  servers, bootstrap resources and socket in `finally`, and restore any global
+  app state used by the fixture.
+- **Done:** the designated browser acceptance runs without skip in its release
+  environment, proves the complete status/order/cookie/EMPTY/403/forgery
+  matrix, and the targeted plus full non-live suites remain green. Browser
+  installation failure is a test blocker, not a passing skip and not evidence
+  of E2E completion.
+- **Risk and fail-closed behavior:** random-port races are prevented by passing
+  the already-bound port-0 socket to the server; CORS-hidden responses are
+  asserted through Playwright network events; timeout or teardown failure
+  fails the test and triggers bounded cleanup. No retry may disguise a second
+  issuance or more than one Dashboard request replay.
+
+### Explicitly outside this Slice
+
+- Real candidate Private Home/Keychain data, migration or bulk cleanup of
+  historical session records.
+- Remote Dashboard access, reverse proxies, TLS deployment, general login,
+  multiple subjects, logout, refresh tokens, cross-tab grace or account
+  recovery.
+- Deep health probes that call models, browsers, job sources, ATS adapters or
+  external networks.
+- Any PrioritizationPolicy/CandidateSummary behavior change, including changes
+  to `core/prioritization_policy.py`.
+- Real model calls, job discovery, ATS navigation, application execution,
+  permits, submission or `tests/test_real_forms.py`.

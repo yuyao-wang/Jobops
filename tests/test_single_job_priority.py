@@ -708,7 +708,7 @@ async def test_missing_inputs_stop_before_agent_or_writes(
 
 
 @pytest.mark.asyncio
-async def test_proposal_failure_releases_empty_claim_without_auto_retry(
+async def test_proposal_failure_persists_safe_subtype_without_decision(
     tmp_path: Path,
 ) -> None:
     agent = FakePriorityAgent(
@@ -727,14 +727,48 @@ async def test_proposal_failure_releases_empty_claim_without_auto_retry(
     assert first.reason_code is SingleJobPriorityReason.PROPOSAL_FAILED
     assert first.retryable
     assert len(agent.calls) == 1
-    assert not list(
-        services["home"].paths.prioritization.glob(
-            "orchestrations/*.json"
-        )
+    records = services["orchestration_repository"].list_for_subject(
+        SUBJECT
+    )
+    assert len(records) == 1
+    assert records[0].status is OrchestrationRecordStatus.FAILED
+    assert records[0].proposal is None
+    assert records[0].failure_reason == (
+        "PROPOSAL_FAILED:AGENT_UNAVAILABLE"
     )
     assert not list(
         services["home"].paths.priority_decisions.glob("*/*/*.json")
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_agent_output_persists_only_safe_failure_code(
+    tmp_path: Path,
+) -> None:
+    services = _services(
+        tmp_path,
+        agent=FakePriorityAgent(lambda _context: object()),
+    )
+
+    result = await orchestrate_single_job_priority(
+        SingleJobPriorityCommand(SUBJECT, _job().job_id, NOW),
+        **{
+            key: value
+            for key, value in services.items()
+            if key != "home"
+        },
+    )
+
+    records = services["orchestration_repository"].list_for_subject(
+        SUBJECT
+    )
+    assert result.reason_code is SingleJobPriorityReason.PROPOSAL_FAILED
+    assert not result.retryable
+    assert len(records) == 1
+    assert records[0].failure_reason == (
+        "PROPOSAL_FAILED:AGENT_OUTPUT_INVALID"
+    )
+    assert "object" not in records[0].failure_reason.casefold()
 
 
 @pytest.mark.asyncio

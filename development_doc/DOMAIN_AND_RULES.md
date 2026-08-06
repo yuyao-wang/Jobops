@@ -7,7 +7,8 @@ This document is the authority for domain objects, lifecycle states, and busines
 | Object | Meaning | Required identity / binding |
 |---|---|---|
 | `SearchProfile` | 用户批准的岗位搜索条件、hard filters 和 source 配置 | `profile_id`, `version` |
-| `SourceObservation` | connector 返回的一条原始岗位观察；尚不是规范化岗位 | source, external ID/URL, observed time |
+| `JobLead` | 搜索索引、提醒邮件、Web Clipper 或 pasted URL 形成的非权威、subject-scoped 岗位线索 | subject, source, origin, source URL, immutable version/content hash |
+| `SourceJobObservation` | public employer/ATS reader 返回的一条经过结构验证的岗位观察；仍不是规范化岗位 | source, external ID/URL, observed time, provenance |
 | `DiscoveryRun` | 一次 manual/scheduled collection 及各 source 结果 | run ID, profile version, trigger |
 | `JobPosting` | 标准化后的岗位及其可申请目标 | `job_id`, source identity, content hash, revision |
 | `AcceptedJobIntent` | 某个 subject 在成功 Discovery 后明确接受的 add/apply 业务意图；v2 记录 typed source provenance；不是执行许可 | subject ID, job ID, intent, proposal ID, Discovery run ID, v2 source provenance |
@@ -41,13 +42,30 @@ Candidate data is never inferred. `CandidateEvidence` is valid only when its sou
   profile fields and conversation IDs are never identity sources.
 - The cookie contains an opaque session reference plus credential. Keychain
   stores the session context and only the credential hash; neither the cookie
-  credential nor its secret may enter logs, responses or ordinary records.
+  credential nor its secret may enter logs, response bodies or ordinary
+  records. The credential may leave the server only in the Set-Cookie header
+  that establishes that session.
 - Sessions bind exactly one subject, authentication method, issue time, expiry
   and contract version. Explicit `now` determines expiry; future-issued,
   expired, missing, corrupted or hash-mismatched sessions fail closed.
 - FastAPI dependencies translate authentication failure to safe 401 responses
   and cross-subject resource access to 403. Business services continue to
   accept a plain explicit subject ID and do not depend on HTTP/session types.
+- Production local-session issuance is not a user-selectable login. The issuer
+  binds every new session to the one opaque `local_subject_id` in validated
+  server configuration; body, query, ordinary header, profile and conversation
+  values have no subject-selection authority.
+- Issuance is allowed only when the TCP client and request URL host are
+  loopback, `Origin` exactly equals the request scheme/host/port, and
+  `Sec-Fetch-Site` is absent or `same-origin`. A failed check is 403 and creates
+  no session. The production server itself also refuses a non-loopback bind.
+- The response cookie is path `/`, HttpOnly and SameSite=Strict. It is marked
+  Secure when the local endpoint uses HTTPS; loopback HTTP does not falsely
+  claim a Secure transport. JavaScript receives only safe authentication state
+  and expiry, never the subject or credential.
+- The configured TTL is bounded to 300–86,400 seconds. Issuance or credential
+  storage failure is a safe 503; it never falls back to a client identity,
+  unsigned session, another subject or an in-memory production credential.
 
 ### Accepted job intent provenance
 
@@ -60,14 +78,45 @@ Candidate data is never inferred. `CandidateEvidence` is valid only when its sou
   cancel an earlier request or affect the rule that any valid
   `REQUEST_APPLICATION` takes precedence over `ADD_JOB`.
 
+### `JobLead`
+
+- Lead identity is subject-scoped and binds source, origin and canonical source
+  URL. Acquisition orchestration de-duplicates the same canonical URL for one
+  subject even when multiple queries or channels discover it; immutable version
+  ancestry records later resolution state.
+- Before Lead identity or persistence, an external URL must be HTTPS and is
+  canonicalized without userinfo, fragment, credential/session/tracking query
+  state or uncontrolled query values. Only bounded posting-identity keys may
+  remain. LinkedIn and Indeed retain stable job IDs. SuccessFactors retains the
+  ordered `company`, `career_job_req_id`, `career_ns=job_listing` identity
+  fields; locale and campaign state are discarded. A URL rejected by this
+  boundary cannot become durable Lead evidence.
+- `source` records how Jobops received the clue; `origin` records what kind of
+  page the URL identifies. They are never collapsed. Discovering a role through
+  LinkedIn or Indeed does not make that platform the authoritative job source.
+- Title, company, location, snippet, email card text, page title and selected
+  text are hints only. A Lead cannot authorize Priority, intent, preparation,
+  browser execution or submission and cannot be counted as a formal JobPosting.
+- A unique official observation accepted by formal Discovery may resolve the
+  Lead. Ambiguous, unavailable or unverifiable candidates transition to
+  `NEEDS_USER`; they are never silently promoted or automatically submitted.
+
 ### `SearchProfile`
 
 - A SearchProfile is mutable user configuration represented as immutable,
   subject-specific versions. Its logical profile ID is stable; a content
   change appends the next version and never overwrites history.
-- V1 source is only typed `KNOWN_GREENHOUSE_BOARD` with an explicit Greenhouse
-  board token. Company, title and optional location are stored as the same
-  canonical `JobSearchRequest` semantics used by the supported search port.
+- The source is one explicit typed reference:
+  `KNOWN_GREENHOUSE_BOARD`, `KNOWN_ASHBY_BOARD`, `KNOWN_LEVER_SITE`,
+  `GLASSDOOR_PARTNER_SEARCH`, or `KNOWN_JOBVITE_FEED`. Company, title and
+  optional location are stored with the same canonical `JobSearchRequest`
+  semantics used by every production search port. The record contract remains
+  v1 and existing Greenhouse records are not rewritten.
+- A source may be saved from the Dashboard only when production composition
+  configured the exact source. Glassdoor additionally requires valid partner
+  credentials and required attribution; Jobvite additionally requires a
+  licensed enterprise feed and external secret references. Missing credentials
+  disable the source rather than degrading to scraping or browser automation.
 - Refresh mode is fixed to `MANUAL`. Profiles store no cron, interval,
   `next_run_at`, due state, CandidateSet, JobPosting or accepted intent.
 - Identical canonical content returns `UNCHANGED`; audit timestamps do not
@@ -77,18 +126,146 @@ Candidate data is never inferred. `CandidateEvidence` is valid only when its sou
   disabled or cross-subject profile.
 - Saving or reading a profile never performs search, Discovery, Priority,
   application planning or execution.
+- During a manual refresh with an ACTIVE `PrioritizationPolicy`, enabled
+  SearchProfiles select configured provider/company sources, not a six-job
+  shortlist. Multiple legacy profiles for the same source collapse to one
+  source read. Approved ROLE soft-preference rows become normalized title
+  phrases and are OR-matched against returned listings. Stored SearchProfile
+  title/location values are the compatibility fallback only when no active
+  ROLE preference exists.
+
+### Conversational job finding and multi-source JobLead discovery
+
+- The guided Jobs UI accepts one public job URL or natural-language company,
+  title and optional location clues. The model may extract only explicit clues,
+  report missing company/title information and request at most one
+  clarification. It may not browse, choose a candidate, write a job, plan an
+  application or treat an intent hint as authorization.
+- Named search uses only production-composed `JobSearchPort` sources. A company
+  unsupported by those bounded sources fails visibly; this conversational
+  named-job path does not silently invoke the optional refresh-time search-index
+  channel or invent a company/title to make the request executable.
+- A returned candidate must be explicitly selected and reread through the
+  Public Job Reader. The resulting pending intake still requires explicit
+  `ADD_JOB` or `REQUEST_APPLICATION`; only that action may create the existing
+  canonical JobPosting, SubjectJobLibraryMembership and accepted intent.
+- A `JobLead` is an immutable, subject-scoped discovery clue, not a
+  `JobPosting`, `SubjectJobLibraryMembership`, Priority input, application
+  candidate or authority to execute. Its allowed sources are
+  `AUTHORIZED_WEB_SEARCH`, `LINKEDIN_ALERT_EMAIL`, `INDEED_ALERT_EMAIL`,
+  `EMPLOYER_OR_ATS_ALERT_EMAIL`, `WEB_CLIPPER` and `PASTED_URL`.
+  `JOB_ALERT_INBOX` and `CANONICAL_RESOLUTION` are refresh-only accounting
+  channels and are rejected as durable Lead sources.
+- Search-index hits and alert cards may supply only source URL, title/company/
+  location hints, a bounded snippet, discovery time, confidence and source
+  lineage. None of those hints is an authoritative job fact. Raw mailbox
+  messages and full captured pages are not persisted in the JobLead record.
+- `DISCOVERED` may transition only to `RESOLVED`, `NEEDS_USER` or `STALE`.
+  `RESOLVED` requires one canonical employer/ATS URL; `NEEDS_USER` is the safe
+  result for zero, ambiguous or unverifiable official candidates. Neither state
+  grants add/apply/submit authority.
+- LinkedIn, Indeed and Glassdoor platform URLs are never passed to a server-side
+  page reader. Resolution may use a configured public company feed and, when
+  explicitly configured, an authorized search-index API to locate an official
+  employer/ATS posting with matching company and title hints. Exactly one
+  verified observation may cross into formal Discovery; multiple matches fail
+  closed to `NEEDS_USER`. A configured company feed may resolve such a Lead
+  without Brave; Brave is an optional second capability, not a prerequisite.
+- Authorized Web Search requests are deterministically derived from the ACTIVE
+  approved policy's ROLE, LOCATION and freshness values. They are bounded by
+  source, result, page and total-request budgets, preserve per-source outcomes,
+  and search across configured index clauses rather than claiming exhaustive
+  market coverage. Missing API configuration means this channel is disabled.
+  Discovery reads no resume, candidate file or CandidateSummary; candidate
+  evidence first enters only after a verified job reaches Priority.
+- Alert ingestion is read-only, bounded by mailbox, sender domain, age, message
+  count and link count, and uses a repository-external Keychain/CredentialStore
+  credential whose account equals the configured recipient. A sender header is
+  classification evidence only. The receiving IMAP projection must also carry
+  trusted `Authentication-Results` from one configured `authserv-id`, with
+  DMARC PASS plus SPF or DKIM PASS; missing, failed, conflicting or untrusted
+  evidence rejects the message. The resulting URL still requires canonical
+  resolution. No mailbox credential, raw authentication header or raw message
+  enters a JobLead, Dashboard response, model prompt or repository.
+- Alert anchor text produces both title and company hints only for an explicit
+  `title at company` or `company hiring title [in location]` relationship.
+  Other non-generic anchor text may be retained only as a title hint. Generic
+  text such as “View job” supplies neither, and Jobops never guesses a company
+  from the sender, URL or message prose.
+- Current-page Web Clipper capture requires a direct user gesture and a second
+  Dashboard confirmation. It may carry only the current page URL, bounded title
+  and bounded user selection. Background search, pagination, login operation,
+  broad DOM capture and arbitrary-site host permissions are forbidden.
+- LinkedIn and Indeed are not SearchProfile provider ports and are not
+  server-side collectors. Jobops never fetches an authenticated platform URL,
+  handles platform cookies, or calls an unofficial platform search interface.
+- Login, CAPTCHA, MFA, rate limiting, and anti-automation controls always stop
+  at user handling. No retry, bypass, challenge solving, or hidden browser
+  extraction is allowed.
+- Only a final public employer/ATS URL can be read and proposed to
+  subject-aware formal Discovery. The authenticated session subject is
+  authoritative; body, query, or ordinary header values cannot select another
+  subject.
+- Automatic resolution may read only recognized ATS hosts. A `/jobs`,
+  `/careers` or similar path on an unknown host is not employer proof and stays
+  `UNKNOWN_WEB`; it can proceed only through a recognized canonical source or
+  the authenticated user's explicit URL continuation.
+- A generic JSON-LD observation preserves a recognized official source family
+  without claiming a deterministic adapter that does not exist. Workday is
+  `source_platform=WORKDAY, ats_type=WORKDAY`; SmartRecruiters, iCIMS and
+  SuccessFactors retain their source platform with `ats_type=UNKNOWN`; all
+  other generic pages remain `GENERIC_WEB/UNKNOWN`.
+- Generic JSON-LD DNS answers must all be public. The transport may try only
+  that prevalidated address set, under one shared deadline, while the original
+  hostname remains the HTTP Host and TLS SNI; it may not perform an independent
+  second DNS lookup.
+- A current `DISCOVERED` or `NEEDS_USER` Lead may be continued only by that
+  authenticated subject through `POST /api/job-leads/{lead_id}/resolve`. The
+  user supplies one final public employer/ATS URL. A LinkedIn, Indeed or
+  Glassdoor target is not fetched and remains Human Intervention. An accepted
+  official observation enters formal Discovery with `source_ref=lead_id`; only
+  after that write succeeds may the same Lead append a `RESOLVED` version using
+  the verified final URL. This explicit user selection is distinct from the
+  automatic resolver's company/title hint-match rule and grants no application
+  or submission authority.
+- Accepted Lead resolution uses membership source
+  `JOB_LEAD_RESOLUTION`, creates the existing canonical JobPosting and
+  SubjectJobLibraryMembership, and then may request Priority for that resolved
+  job exactly once in the same refresh. It creates no platform-specific durable
+  job model and grants no application or submission authority.
 
 ### Manual full job library refresh
 
 - S3b is invoked explicitly with a subject, timezone-aware timestamp, stable
   invocation ID and positive Priority budget. It is not a scheduled or due-task
   operation.
-- One fixed `list_enabled()` snapshot is authoritative for the invocation.
-  Each profile is searched once using its stored canonical request through a
-  provider-neutral executor.
+- One fixed `list_enabled()` snapshot and one ACTIVE policy snapshot are
+  authoritative for the invocation. With approved ROLE preferences, each
+  distinct configured source is searched once using one server-created request
+  containing all role phrases and a 1,000-result safety bound. Without such
+  preferences, each legacy profile is searched once using its stored canonical
+  request. A `SUCCEEDED` provider result means the bounded
+  request and response contract succeeded; it may contain zero title matches.
+  Product copy and counters must not call that a job match. Per-profile
+  candidate counts are filtered results before cross-profile URL de-duplication.
 - Search candidates are not JobPostings. Canonical URL identity merges the
-  same candidate across profiles before one PublicJobReader and one formal
-  Discovery call; all contributing profile IDs remain in the audit result.
+  same candidate across profiles before one formal Discovery call; all
+  contributing profile IDs remain in the audit result. A structurally bound
+  complete listing/feed observation is used directly. Only a candidate without
+  that observation is reread through PublicJobReader.
+- Provider-feed refresh and JobLead refresh are separate typed subflows under
+  the same Dashboard action. Lead counters report requests, returned hits,
+  unique URLs, duplicates, resolved official jobs, items needing review,
+  failures and truncation independently from configured company-feed counters.
+  A valid zero-result source is never called a successful job match.
+- Initial search-index requests, canonical-resolution searches and official
+  public-page reads use independent explicit budgets and cannot borrow capacity
+  from one another. If the public-read bound is reached before every candidate
+  needed to prove uniqueness is checked, no partially checked observation may
+  be promoted; the Lead remains `NEEDS_USER`, and truncation/partial failure is
+  reported. Per-source projection keeps request/completion, raw search hit,
+  created Lead, duplicate, public read, resolved, review, failure and truncation
+  counts distinct.
 - Formal Discovery receives only resolved `ADD_JOB` proposals under
   `MANUAL_LIBRARY_REFRESH`. It owns normalization, identity, revision and
   persistence.
@@ -102,7 +279,22 @@ Candidate data is never inferred. `CandidateEvidence` is valid only when its sou
   They do not revoke existing request intent or trigger P1d4, planning,
   preparation or execution.
 - Search, read and Discovery failures are isolated. After all candidates, P1d3
-  runs at most once even when partial failures occurred. No operation retries.
+  runs at most once even when partial failures occurred. When this invocation
+  created or revised jobs, its explicit `job_ids` allowlist contains only those
+  jobs, so each new binding is evaluated before unrelated stale library work
+  and cannot be selected twice in the same refresh. When there are no created
+  or revised jobs, the existing bounded P1d3 queue selection may re-evaluate
+  old STALE/MISSING jobs. No operation retries.
+- SEARCHING, IMPORTING and PRIORITIZING progress is process-local UI telemetry,
+  not a second persisted workflow or source of business truth. The Jobs read
+  model may be reloaded after every durable candidate import while Priority remains
+  in progress. A failed or slow Priority call cannot hide already durable
+  Discovery results.
+- A non-empty, integrity-valid formal subject library also remains visible when
+  no ACTIVE PrioritizationPolicy exists. Those exact postings are projected as
+  `NOT_EVALUATED` with no PriorityDecision and are neither high match nor
+  runnable. Membership/integrity failures and all other Priority failures still
+  fail closed rather than degrading to this state.
 - A missing result in one bounded search is not evidence that an existing job
   closed or expired; S3b never mutates lifecycle state from absence.
 - Subject plus invocation ID provides UI replay protection before profile,
@@ -112,6 +304,20 @@ Candidate data is never inferred. `CandidateEvidence` is valid only when its sou
 ## 状态机
 
 不同对象使用不同状态机。Priority 表示业务价值，lifecycle state 表示处理进度，二者不能合并。
+
+### `JobLead`
+
+```text
+DISCOVERED → RESOLVED | NEEDS_USER | STALE
+NEEDS_USER → RESOLVED | STALE
+RESOLVED → STALE
+STALE → terminal
+```
+
+Transitions append immutable versions and bind `previous_content_hash`.
+Resolution cannot move backward to `DISCOVERED`; `STALE` is terminal. A
+`RESOLVED` record requires a canonical official URL, while `NEEDS_USER`
+requires a safe reason and remains outside the formal Job Library.
 
 ### `DiscoveryRun`
 
@@ -133,7 +339,7 @@ NORMALIZED
 Branches: DUPLICATE | EXCLUDED | SKIPPED | EXPIRED
 ```
 
-- A `SourceObservation` becomes `JobPosting.NORMALIZED` only after schema and identity checks pass.
+- A `SourceJobObservation` becomes `JobPosting.NORMALIZED` only after schema and identity checks pass.
 - `DUPLICATE` links to the canonical posting; it does not create a second application.
 - `EXCLUDED` requires a failed hard filter.
 - `EXPIRED` means the target is closed or no longer valid.
@@ -151,6 +357,21 @@ ACTIVE → SUPERSEDED
 A draft is an AI proposal and has no effect on Priority. Approval creates an
 immutable version. Approving changed content supersedes the previous active
 version without rewriting its content or historical decisions.
+
+`SearchProfile` and `PrioritizationPolicy` are deliberately different.
+SearchProfile selects an exact configured provider/company source used to find
+public jobs; when ROLE preferences exist, the approved policy supplies the
+editable title phrases for that source read. The policy also records domains, locations,
+work mode, freshness, effort and explicit constraints used by Priority. Search
+does not require access to resumes or other candidate files. Priority may
+separately consume the repository-external, verified `CandidateSummary`, but
+neither the policy interpreter nor a source connector may inspect candidate
+files. NLP output is review-only, may not infer candidate or legal facts, and
+never confirms hard constraints on the user's behalf.
+Exact edits to existing soft-preference statements/importances are model-free,
+must preserve the server-owned preference IDs/categories, and create a new
+immutable approved policy version. A stale policy version or changed item set
+fails closed.
 
 ### Accepted job intent
 
@@ -834,7 +1055,11 @@ version without rewriting its content or historical decisions.
   from it; they cannot replace the managed Cover Letter PDF.
 - Required runtime attestation, consent, signature, sensitive choice or
   unknown control yields `DEFERRED_RUNTIME_INPUT_REQUIRED`. Optional unknown
-  handling stays within the existing adapter semantics.
+  handling stays within the existing adapter semantics. Non-submit policy v3
+  persists both unresolved field labels and value-free validation errors so a
+  runtime handoff cannot become an empty, unactionable frontend blocker, and
+  binds the current deterministic ATS adapter contract including Ashby's
+  stable application-submit control.
 - A non-submit result may inspect, map, fill, read back, validate and prepare
   Review only. Submit intent, Gate B, click and submission verification are
   forbidden. Any submit status/phase or eligible submission evidence fails
@@ -843,6 +1068,10 @@ version without rewriting its content or historical decisions.
   bundle hash, formal Gate A decision, Engine/Browser/adapter contracts and
   non-submit policy. Matching persisted execution returns `UNCHANGED` before
   Browser. No result grants Gate B or submit authority.
+- A matching deferred orchestration binding is replayed as the same typed
+  defer with zero stage calls. A changed non-submit policy or changed bound
+  answers/materials may safely produce a new non-submit attempt; the final
+  submit boundary is never crossed by this recovery.
 
 ### Production Browser runtime and execution lease
 
@@ -957,7 +1186,10 @@ version without rewriting its content or historical decisions.
   only for `READY` items. Deferred/failed items are skipped, and submitted or
   uncertain items are terminal skips.
 - One Plan's defer, failure or uncertainty never stops later READY Plans in
-  the same bounded serial batch. No item is retried, and the queue is not
+  the same bounded serial batch. No item is retried, except that an explicit
+  exact-Plan Gate A approval may re-enter only a prior
+  `NON_SUBMIT_EXECUTION/DEFERRED_GATE_A_REQUIRED` item. Failed, Gate B,
+  runtime-input and uncertain states remain ineligible, and the queue is not
   refreshed during that batch.
 
 ### End-to-end automation cycle
@@ -965,6 +1197,15 @@ version without rewriting its content or historical decisions.
 - P2c10a calls only the public P1d3, P2a1b, P2b6, selective Bundle Assembly
   and P2c9 batch boundaries, once each and in fixed order. Every enabled stage
   receives the same subject and explicit timezone-aware timestamp.
+- A non-empty `target_job_ids` tuple is an ordered, immutable cycle allowlist.
+  It constrains P1d3 and P2a1b; only the P2a1b items that return
+  `CREATED`/`UNCHANGED` supply Plan IDs to P2b6 and P2c9. Bundle consumes that
+  exact P2b6 result. The cycle validates P1d3 subject/time/target lineage and
+  P2b6 subject/time/ordered Plan lineage at their public boundaries. An invalid
+  P2b6 snapshot cannot reach Bundle or Execution. No-successful-Plan and
+  invalid-snapshot paths are explicit NOOP/failure stages and must never fall
+  back to older global Plan or execution queues. An empty allowlist preserves
+  the historical bounded whole-queue behavior.
 - Selective Bundle Assembly consumes only the fixed public P2b6 result. It
   selects completed/unchanged items with exact Run/Manifest/AnswerSet
   lineage, then serially generates/reuses the Plan-scoped verified profile,
@@ -977,8 +1218,9 @@ version without rewriting its content or historical decisions.
   selection budget. Once a candidate invokes the context binder it consumes
   one slot even if context generation or P2c1 fails. A single failure does
   not stop later candidates within the already bounded selection.
-  P2c9 always runs after this boundary and reads its own then-current P2c8
-  snapshot, including newly created and previously READY Assemblies.
+  P2c9 always reads one then-current P2c8 snapshot. A target-scoped cycle
+  selects only the exact successful Plan IDs from that cycle; an unscoped
+  cycle may include newly created and previously READY Assemblies.
 - Each stage has an independent non-negative budget. Zero records a typed
   skipped stage; at least one budget must be positive.
 - A failed batch stage is audited but does not prevent later stages from using
@@ -988,11 +1230,42 @@ version without rewriting its content or historical decisions.
   It creates a new immutable audit Run even when configuration is unchanged.
   Replaying the same invocation ID and binding returns the existing Run before
   any of the five batch calls. Audit time is not logical identity. Current
-  five-stage v2 identity includes the Bundle budget and public contract;
-  historical four-stage v1 records remain readable without synthetic fields.
+  five-stage v4 identity additionally binds the ordered target job IDs and the
+  explicit Gate A approval input. Exact targeted v3, five-stage v2 and
+  four-stage v1 records remain readable without synthetic newer fields.
 - The cycle never searches for jobs, resolves Human Attention, retries an
   uncertain submission, or calls a single-job service, Agent, compiler,
   Browser, Gate, permit, ATS or submit path directly.
+
+### Continuous automatic-application session
+
+- One explicit authenticated Start is the authority to enable
+  `AUTO_REQUEST_APPLICATION` on the current validated enabled-SearchProfile
+  snapshot. That batch is serial and subject-scoped. The subsequent S3b
+  refresh is the only path that records SearchProfile-refresh provenance for
+  newly requested applications; Start does not synthesize intent for jobs that
+  a source did not return.
+- The same Start may carry an invocation-bound Gate A approval only into the
+  exact P2/LOW Plan IDs created by its child cycle. The non-submit execution
+  boundary rejects this approval for P0/P1 or any non-LOW policy. Start never
+  grants Gate B, a submission permit, or final submit authority; those remain
+  a separate authenticated frontend review and confirmation.
+- At most one session and one P2c10a child cycle may be active for a subject.
+  The supervisor freezes a finite ordered work snapshot and runs one target job
+  per child with every enabled stage capped at one. It does not loop on a
+  changing queue and does not retry a child automatically. Reaching the
+  per-session bound records the last safely completed job in the running
+  process; a later explicit Start resumes at the remaining ordered suffix
+  instead of starving it behind the same prefix.
+- Stop is cooperative. It prevents the next child only after the current child
+  reaches a persisted stable result; it does not cancel or roll back work near
+  a submit boundary. During preflight it is observed between intent and S3b
+  polling checkpoints; an already-started refresh may finish in the background,
+  but no work snapshot or child starts. Operational reads and child commands
+  require a fresh aware timestamp and fail closed rather than reuse stale time.
+  `SUBMISSION_UNCERTAIN`, Review, CAPTCHA, MFA, login,
+  Human Attention, and unsafe/invalid stage results terminate or pause the
+  session and preserve the existing no-retry rules.
 
 ### Cover letter evidence snapshot
 
@@ -1709,13 +1982,16 @@ Only one application episode may run at a time. A job entering `NEEDS_USER`, `MA
 ### Current priority read model
 
 P1d2 is not the eligible application queue above. It is a read-only projection
-of existing priority work for one explicit subject and evaluation time:
+of existing priority work for one explicit subject and evaluation time. The
+immutable P1d1 binding retains the exact `evaluated_at`, while P1d2 freshness
+uses that timestamp's canonical UTC calendar day:
 
-- `CURRENT`: a completed P1d1 binding exactly matches the current job, ACTIVE
-  policy, CandidateSummary, Agent/prompt/model, time, Gate and orchestration
-  versions;
+- `CURRENT`: a completed P1d1 binding matches the current job, ACTIVE policy,
+  CandidateSummary, Agent/prompt/model, UTC evaluation day, Gate and
+  orchestration versions. When only the exact time within that UTC day differs,
+  P1d2 returns the validated stored binding, Proposal and Decision;
 - `STALE`: completed history exists, but one or more of those immutable binding
-  fields differs;
+  fields or the UTC evaluation day differs;
 - `MISSING`: no completed priority orchestration exists for the job;
 - `INCOMPLETE`: the exact current binding exists but is not completed.
 

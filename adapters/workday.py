@@ -13,12 +13,13 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, urlparse, urlsplit, urlunsplit
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit, urlunsplit
 from uuid import uuid4
 
 from adapters.shared import (
@@ -2454,6 +2455,29 @@ def _workday_posting_identity(url: str) -> WorkdayPostingIdentity | None:
         posting_path=posting_path,
         requisition_id=requisition_id,
     )
+
+
+_WORKDAY_EXTERNAL_JOB_ID = re.compile(
+    r"(?:JR|REQ|JOB|R)[_-]?[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*",
+    re.IGNORECASE,
+)
+
+
+def workday_external_job_id(url: str) -> str:
+    """Return only a requisition token explicitly present in a Workday URL."""
+
+    identity = _workday_posting_identity(url)
+    if identity is None:
+        return ""
+    if identity.requisition_id:
+        return identity.requisition_id
+    for segment in reversed(
+        [unquote(item) for item in identity.posting_path.split("/") if item]
+    ):
+        matches = tuple(_WORKDAY_EXTERNAL_JOB_ID.finditer(segment))
+        if matches:
+            return matches[-1].group(0)
+    return ""
 
 
 def _identity_url_status(

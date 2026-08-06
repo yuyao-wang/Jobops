@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Awaitable
 
@@ -13,6 +15,8 @@ from core.authenticated_subject import (
     AuthenticatedSubjectContext,
     AuthenticatedSubjectSessionProvider,
     AuthenticatedSubjectStatus,
+    IssuedAuthenticatedSubjectSession,
+    LocalAuthenticatedSubjectSessionIssuer,
     resolve_authenticated_subject,
 )
 
@@ -20,6 +24,62 @@ from core.authenticated_subject import (
 AuthenticatedSubjectDependency = Callable[
     [Request], Awaitable[AuthenticatedSubjectContext]
 ]
+
+
+def _is_loopback_host(value: str | None) -> bool:
+    if not value:
+        return False
+    if value.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class LocalDashboardSessionController:
+    """Issue a session only to the same-origin loopback Dashboard."""
+
+    issuer: LocalAuthenticatedSubjectSessionIssuer
+    clock: Callable[[], datetime]
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.issuer, LocalAuthenticatedSubjectSessionIssuer
+        ):
+            raise TypeError("issuer must be a local session issuer")
+        if not callable(self.clock):
+            raise TypeError("clock must be callable")
+
+    def issue(self, request: Request) -> IssuedAuthenticatedSubjectSession:
+        client_host = request.client.host if request.client else None
+        if not _is_loopback_host(client_host) or not _is_loopback_host(
+            request.url.hostname
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Local Dashboard authentication is restricted.",
+            )
+        expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+        if request.headers.get("origin") != expected_origin:
+            raise HTTPException(
+                status_code=403,
+                detail="Local Dashboard origin is invalid.",
+            )
+        fetch_site = request.headers.get("sec-fetch-site")
+        if fetch_site not in (None, "same-origin"):
+            raise HTTPException(
+                status_code=403,
+                detail="Local Dashboard origin is invalid.",
+            )
+        try:
+            return self.issuer.issue(now=self.clock())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            raise HTTPException(
+                status_code=503,
+                detail="Authenticated session issuance failed.",
+            ) from None
 
 
 def make_authenticated_subject_dependency(
@@ -68,6 +128,7 @@ def require_subject_access(
 
 __all__ = [
     "AuthenticatedSubjectDependency",
+    "LocalDashboardSessionController",
     "make_authenticated_subject_dependency",
     "require_subject_access",
 ]

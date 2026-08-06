@@ -1011,6 +1011,185 @@ class EventLedger:
             ).fetchone()
         return self._intent_from_row(row)
 
+    def reserve_permitted_submission(
+        self,
+        *,
+        jti: str,
+        gate: str,
+        run_id: str,
+        job_id: str,
+        token_digest: str,
+        bindings_digest: str,
+        claims: Mapping[str, Any],
+        job_url: str,
+        material_hash: str,
+        answer_hash: str,
+        review_hash: str,
+        policy_hash: str,
+        application_key_override: str | None = None,
+    ) -> SubmissionIntent:
+        """Consume one Gate B permit and enter SUBMITTING atomically.
+
+        Signature, expiry, and binding validation remain the permit service's
+        responsibility.  This ledger boundary owns the irreversible ordering:
+        one-time consumption, duplicate protection, durable intent creation,
+        and the SUBMITTING transition are one SQLite transaction.  A caller may
+        click the external Submit control only after this method returns.
+        """
+
+        if gate != "GATE_B":
+            raise ValueError("only a Gate B permit can reserve submission")
+        required = (
+            jti,
+            run_id,
+            job_id,
+            token_digest,
+            bindings_digest,
+            job_url,
+            material_hash,
+            answer_hash,
+            review_hash,
+            policy_hash,
+        )
+        if any(not isinstance(value, str) or not value.strip() for value in required):
+            raise ValueError("submission reservation inputs are required")
+        if not isinstance(claims, Mapping):
+            raise TypeError("permit claims must be a mapping")
+
+        url_hash = hash_job_url(job_url)
+        url_identity_hashes = _job_url_hash_candidates(job_url)
+        if application_key_override is not None and (
+            not isinstance(application_key_override, str)
+            or not application_key_override.strip()
+        ):
+            raise ValueError("application key override is invalid")
+        application_key = application_key_override or url_hash
+        identity_hashes = tuple(
+            sorted({application_key, *url_identity_hashes})
+        )
+        idempotency_key = _hash_parts(
+            application_key,
+            material_hash,
+            answer_hash,
+            review_hash,
+            policy_hash,
+        )
+        timestamp = utc_now()
+        with self.transaction() as connection:
+            run = connection.execute(
+                "SELECT job_id FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise RunNotFoundError(run_id)
+            if run["job_id"] != job_id:
+                raise LedgerError("run job_id does not match submission job_id")
+            if connection.execute(
+                "SELECT 1 FROM permit_consumptions WHERE jti = ?", (jti,)
+            ).fetchone() is not None:
+                raise PermitAlreadyConsumedError(jti)
+
+            identity_placeholders = ", ".join("?" for _ in identity_hashes)
+            existing_row = connection.execute(
+                f"""
+                SELECT * FROM submission_intents
+                WHERE application_key IN ({identity_placeholders})
+                  AND status IN ('PENDING', 'SUBMITTING', 'UNKNOWN', 'VERIFIED')
+                """,
+                identity_hashes,
+            ).fetchone()
+            if existing_row is not None:
+                raise DuplicateSubmissionError(
+                    f"active or verified submission already exists for job {job_id}",
+                    self._intent_from_row(existing_row),
+                )
+
+            connection.execute(
+                """
+                INSERT INTO permit_consumptions(
+                    jti, gate, run_id, job_id, token_digest, bindings_digest,
+                    claims_json, consumed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    jti,
+                    gate,
+                    run_id,
+                    job_id,
+                    token_digest,
+                    bindings_digest,
+                    _canonical_json(dict(claims)),
+                    timestamp,
+                ),
+            )
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                job_id=job_id,
+                event_type="PERMIT_CONSUMED",
+                payload={
+                    "jti": jti,
+                    "gate": gate,
+                    "bindings_digest": bindings_digest,
+                },
+                created_at=timestamp,
+            )
+
+            intent_id = str(uuid.uuid4())
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO submission_intents(
+                        intent_id, run_id, job_id, application_key,
+                        idempotency_key, job_url_hash, material_hash,
+                        answer_hash, review_hash, policy_hash, status,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTING', ?, ?)
+                    """,
+                    (
+                        intent_id,
+                        run_id,
+                        job_id,
+                        application_key,
+                        idempotency_key,
+                        url_hash,
+                        material_hash,
+                        answer_hash,
+                        review_hash,
+                        policy_hash,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise DuplicateSubmissionError(
+                    f"concurrent submission reservation for job {job_id} was rejected"
+                ) from exc
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                job_id=job_id,
+                event_type="SUBMISSION_INTENT_CREATED",
+                payload={
+                    "intent_id": intent_id,
+                    "application_key": application_key,
+                    "idempotency_key": idempotency_key,
+                },
+                created_at=timestamp,
+            )
+            self._insert_event(
+                connection,
+                run_id=run_id,
+                job_id=job_id,
+                event_type="SUBMISSION_SUBMITTING",
+                payload={"intent_id": intent_id, "from": "PENDING"},
+                created_at=timestamp,
+            )
+            row = connection.execute(
+                "SELECT * FROM submission_intents WHERE intent_id = ?",
+                (intent_id,),
+            ).fetchone()
+        return self._intent_from_row(row)
+
     def get_submission_intent(self, intent_id: str) -> SubmissionIntent:
         with self._connect() as connection:
             row = connection.execute(

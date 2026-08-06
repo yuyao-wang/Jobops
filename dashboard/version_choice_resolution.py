@@ -40,15 +40,15 @@ class VersionChoiceResolutionUIResult:
 
 
 _MESSAGES = {
-    "RESOLVED": "选择已安全保存。",
-    "RESOLVED_AND_PREPARATION_COMPLETED": "选择已保存，申请准备已继续完成。",
-    "RESOLVED_AND_PREPARATION_DEFERRED": "选择已保存；申请仍有其他待处理事项。",
-    "UNCHANGED": "该选择已处理，无需重复保存。",
-    "ITEM_NOT_CURRENT": "该待处理事项已不是当前状态。",
-    "DEFERRED_AMBIGUOUS_INPUT": "请明确指定一个简历或 LaTeX 版本。",
-    "OPTION_NOT_SELECTABLE": "指定版本当前不可选择。",
-    "UNSUPPORTED_ITEM": "该事项需要其他处理方式。",
-    "FAILED": "选择暂时无法安全保存。",
+    "RESOLVED": "The choice was saved safely.",
+    "RESOLVED_AND_PREPARATION_COMPLETED": "The choice was saved and application preparation completed.",
+    "RESOLVED_AND_PREPARATION_DEFERRED": "The choice was saved; other application items still need attention.",
+    "UNCHANGED": "This choice was already resolved.",
+    "ITEM_NOT_CURRENT": "This attention item is no longer current.",
+    "DEFERRED_AMBIGUOUS_INPUT": "Select one resume or LaTeX version explicitly.",
+    "OPTION_NOT_SELECTABLE": "The selected version is not currently available.",
+    "UNSUPPORTED_ITEM": "This item requires a different resolution path.",
+    "FAILED": "The choice could not be saved safely.",
 }
 
 

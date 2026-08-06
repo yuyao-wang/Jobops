@@ -756,6 +756,48 @@ async def test_eligibility_coverage_requires_every_category_once() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finding_result", "impact"),
+    [
+        (EligibilityFindingResult.SATISFIED, EligibilityImpact.NONE),
+        (
+            EligibilityFindingResult.NOT_SATISFIED,
+            EligibilityImpact.LOWER_PRIORITY,
+        ),
+    ],
+)
+async def test_work_authorization_requires_category_matched_candidate_fact(
+    finding_result: EligibilityFindingResult,
+    impact: EligibilityImpact,
+) -> None:
+    requirement = "must be authorized to work in Canada"
+    job = _job(
+        description=(
+            "Build geospatial machine-learning systems. "
+            f"Applicants {requirement}."
+        )
+    )
+    agent = FakePriorityAgent(
+        lambda context: replace(
+            _qualified_output(context),
+            eligibility_findings=_eligibility_with(
+                context,
+                category=EligibilityCategory.WORK_AUTHORIZATION,
+                result=finding_result,
+                impact=impact,
+                requirement_excerpt=requirement,
+                candidate_fact_id=context.candidate.facts[0].fact_id,
+            ),
+        )
+    )
+
+    result = await _run(agent, request=_request(job=job))
+
+    assert result.reason_code is PriorityProposalReason.AGENT_OUTPUT_INVALID
+    assert result.proposal is None
+
+
+@pytest.mark.asyncio
 async def test_unknown_student_requirement_cannot_be_ignored() -> None:
     requirement = "must return to full-time studies next term"
     job = _job(
@@ -1112,6 +1154,37 @@ async def test_invalid_evidence_reference_rejects_entire_output(
         return replace(valid, positive_signals=(broken_signal,))
 
     result = await _run(FakePriorityAgent(output))
+    assert result.reason_code is PriorityProposalReason.AGENT_OUTPUT_INVALID
+    assert result.proposal is None
+
+
+@pytest.mark.asyncio
+async def test_hard_constraint_finding_requires_job_or_deterministic_evidence(
+) -> None:
+    def output(context: PriorityContext) -> PriorityAgentOutput:
+        valid = _qualified_output(context)
+        hard = context.policy.hard_constraints[0]
+        fact = context.candidate.facts[0]
+        broken_finding = replace(
+            valid.hard_constraint_findings[0],
+            evidence_refs=(
+                EvidenceRef(
+                    EvidenceSourceType.POLICY_HARD_CONSTRAINT,
+                    hard.constraint_id,
+                ),
+                EvidenceRef(
+                    EvidenceSourceType.CANDIDATE_FACT,
+                    fact.fact_id,
+                ),
+            ),
+        )
+        return replace(
+            valid,
+            hard_constraint_findings=(broken_finding,),
+        )
+
+    result = await _run(FakePriorityAgent(output))
+
     assert result.reason_code is PriorityProposalReason.AGENT_OUTPUT_INVALID
     assert result.proposal is None
 

@@ -53,7 +53,7 @@ from .private_home import PrivateHome, PrivateHomeError
 
 
 COVER_LETTER_FACT_QA_CONTRACT_VERSION = "cover-letter-fact-qa-v1"
-COVER_LETTER_FACT_QA_POLICY_VERSION = "cover-letter-fact-qa-policy-v1"
+COVER_LETTER_FACT_QA_POLICY_VERSION = "cover-letter-fact-qa-policy-v2"
 
 COVER_LETTER_FACT_QA_AGENT_POLICY = """Cover Letter Fact QA Agent policy (static, non-negotiable):
 
@@ -284,22 +284,17 @@ def _casefold_word_set(text: str) -> frozenset[str]:
     return frozenset(word.casefold() for word in _words(text))
 
 
-_GENERIC_CAPITALIZED_STOPWORDS = frozenset({"i"})
-
-
 def _checkable_tokens(text: str) -> tuple[str, ...]:
-    tokens = _words(text)
-    checked: list[str] = []
-    for index, token in enumerate(tokens):
-        if _NUMBER_PATTERN.search(token):
-            checked.append(token)
-        elif (
-            index > 0
-            and any(char.isupper() for char in token)
-            and token.casefold() not in _GENERIC_CAPITALIZED_STOPWORDS
-        ):
-            checked.append(token)
-    return tuple(checked)
+    """Return mechanically verifiable numeric tokens only.
+
+    Capitalized words require semantic context and are reviewed by the
+    independent Agent below; treating capitalization as a fact signal creates
+    false blocking findings for role titles, acronyms and technology names.
+    """
+
+    return tuple(
+        token for token in _words(text) if _NUMBER_PATTERN.search(token)
+    )
 
 
 def _contains_placeholder(text: str) -> bool:
@@ -1281,10 +1276,21 @@ def _deterministic_findings(
                 cited_words |= _casefold_word_set(evidence.evidence_text)
 
         if paragraph.purpose.value in QUALIFICATION_LIKE_PURPOSES:
-            tokens = _words(paragraph.text)
-            if tokens:
-                leading = tokens[0].casefold()
-                if leading in jd_words and leading not in cited_words:
+            if paragraph.purpose == "QUALIFICATION":
+                paragraph_text = paragraph.text.casefold()
+                cited_evidence_text = tuple(
+                    evidence_by_id[evidence_id].evidence_text.casefold()
+                    for evidence_id in paragraph.evidence_ids
+                    if evidence_id in evidence_by_id
+                )
+                if any(
+                    reference.casefold() in paragraph_text
+                    and not any(
+                        reference.casefold() in evidence_text
+                        for evidence_text in cited_evidence_text
+                    )
+                    for reference in paragraph.jd_alignment
+                ):
                     findings.append(
                         _build_finding(
                             paragraph_id=paragraph.paragraph_id,
@@ -1299,8 +1305,8 @@ def _deterministic_findings(
                             evidence_ids=paragraph.evidence_ids,
                             jd_references=(),
                             explanation=(
-                                "the paragraph opens with a JD-derived "
-                                "requirement presented as a candidate fact"
+                                "the paragraph repeats a JD-derived "
+                                "requirement as a candidate fact"
                             ),
                             source=(
                                 CoverLetterFactQAFindingSource.DETERMINISTIC

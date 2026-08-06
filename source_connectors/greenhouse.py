@@ -155,12 +155,13 @@ def _required_text(payload: Mapping[str, Any], field: str, maximum: int) -> str:
     return normalized
 
 
-def _observation_from_payload(
+def greenhouse_observation_from_payload(
     *,
     payload: Any,
     source_url: str,
     expected_job_id: str,
     observed_at: datetime,
+    canonical_company: str | None = None,
 ) -> SourceJobObservation:
     if not isinstance(payload, Mapping):
         raise ValueError("Greenhouse response must be an object")
@@ -176,7 +177,13 @@ def _observation_from_payload(
         raise ValueError("Greenhouse response job id does not match the request")
 
     title = _required_text(payload, "title", 240)
-    company = _required_text(payload, "company_name", 240)
+    company = (
+        _required_text(payload, "company_name", 240)
+        if canonical_company is None
+        else " ".join(canonical_company.split())
+    )
+    if not company or len(company) > 240:
+        raise ValueError("company is outside the source contract")
     description = _plain_text(payload.get("content"))
     if not description or len(description) > 100_000:
         raise ValueError("content is outside the source contract")
@@ -206,7 +213,15 @@ def _observation_from_payload(
         FieldProvenance(
             "application_url", ProvenanceSource.SOURCE_API, "absolute_url"
         ),
-        FieldProvenance("company", ProvenanceSource.SOURCE_API, "company_name"),
+        FieldProvenance(
+            "company",
+            (
+                ProvenanceSource.SOURCE_API
+                if canonical_company is None
+                else ProvenanceSource.REQUEST
+            ),
+            "company_name" if canonical_company is None else "board.company",
+        ),
         FieldProvenance("title", ProvenanceSource.SOURCE_API, "title"),
         FieldProvenance("description", ProvenanceSource.SOURCE_API, "content"),
         FieldProvenance("location", ProvenanceSource.SOURCE_API, "location.name"),
@@ -294,7 +309,7 @@ class GreenhousePublicJobReader:
 
         try:
             payload = response.json()
-            observation = _observation_from_payload(
+            observation = greenhouse_observation_from_payload(
                 payload=payload,
                 source_url=source_url,
                 expected_job_id=expected_job_id,
@@ -305,4 +320,7 @@ class GreenhousePublicJobReader:
         return ReadJobResult.succeeded(observation)
 
 
-__all__ = ["GreenhousePublicJobReader"]
+__all__ = [
+    "GreenhousePublicJobReader",
+    "greenhouse_observation_from_payload",
+]

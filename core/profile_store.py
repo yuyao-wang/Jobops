@@ -13,6 +13,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
+from .application_answer_taxonomy import (
+    normalize_canonical_application_answer_key,
+)
 from .job_prioritization import (
     CandidateFact,
     CandidateSummary,
@@ -59,6 +62,9 @@ _KNOWN_SENSITIVITIES = frozenset(
         "LEGAL",
         "COMPENSATION",
         "VOLUNTARY_SELF_ID",
+        "EMPLOYMENT",
+        "EDUCATION",
+        "HEALTH",
         "APPLICATION_MATERIAL",
         "ATTESTATION",
         "UNSUPPORTED",
@@ -149,13 +155,40 @@ def _answer_report(
     values: dict[str, Any] = {}
     rejected: list[str] = []
     invalid_verified: list[str] = []
-    for key, record in records.items():
-        answer_key = str(key)
+    canonical_sources: dict[str, list[str]] = {}
+    for raw_key, record in records.items():
+        if not isinstance(record, Mapping) or record.get("verified") is not True:
+            continue
+        try:
+            canonical_key = normalize_canonical_application_answer_key(
+                str(raw_key), allow_legacy_alias=True
+            ).value
+        except (TypeError, ValueError):
+            continue
+        canonical_sources.setdefault(canonical_key, []).append(str(raw_key))
+    collisions = {
+        key for key, sources in canonical_sources.items() if len(sources) > 1
+    }
+
+    for raw_key, record in records.items():
+        source_key = str(raw_key)
         if not isinstance(record, Mapping):
-            rejected.append(answer_key)
+            rejected.append(source_key)
             continue
         if record.get("verified") is not True:
-            rejected.append(answer_key)
+            rejected.append(source_key)
+            continue
+        try:
+            answer_key = normalize_canonical_application_answer_key(
+                source_key, allow_legacy_alias=True
+            ).value
+        except (TypeError, ValueError):
+            rejected.append(source_key)
+            invalid_verified.append(source_key)
+            continue
+        if answer_key in collisions:
+            rejected.append(source_key)
+            invalid_verified.append(source_key)
             continue
         source = record.get("source")
         sensitivity = record.get("sensitivity")
@@ -173,19 +206,19 @@ def _answer_report(
             and (expires_raw is None or expires_at is not None)
         )
         if not structurally_valid:
-            rejected.append(answer_key)
-            invalid_verified.append(answer_key)
+            rejected.append(source_key)
+            invalid_verified.append(source_key)
             continue
         if confirmed_at > active_now + timedelta(minutes=5):
-            rejected.append(answer_key)
-            invalid_verified.append(answer_key)
+            rejected.append(source_key)
+            invalid_verified.append(source_key)
             continue
         if expires_at is not None and expires_at <= active_now:
-            rejected.append(answer_key)
-            invalid_verified.append(answer_key)
+            rejected.append(source_key)
+            invalid_verified.append(source_key)
             continue
         if not _scope_matches(scope, job_id=job_id, tenant=tenant):
-            rejected.append(answer_key)
+            rejected.append(source_key)
             continue
         values[answer_key] = record["value"]
     return AnswerTrustReport(

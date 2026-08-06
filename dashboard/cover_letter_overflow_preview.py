@@ -29,16 +29,16 @@ class CoverLetterOverflowPreviewUIResult:
 
 
 _MESSAGES = {
-    CoverLetterOverflowPreviewStatus.AVAILABLE: "当前 Cover Letter 预览已生成。",
-    CoverLetterOverflowPreviewStatus.UNCHANGED: "当前 Cover Letter 预览未变化。",
-    CoverLetterOverflowPreviewStatus.ITEM_NOT_CURRENT: "该待处理事项已不再是当前事项。",
-    CoverLetterOverflowPreviewStatus.TARGET_STALE: "材料或溢出判定已变化，请刷新待处理事项。",
-    CoverLetterOverflowPreviewStatus.SOURCE_UNAVAILABLE: "当前 Cover Letter 来源暂时不可用。",
-    CoverLetterOverflowPreviewStatus.RENDERER_UNAVAILABLE: "预览服务暂时不可用。",
-    CoverLetterOverflowPreviewStatus.PREVIEW_UNSAFE: "当前预览格式无法安全展示。",
-    CoverLetterOverflowPreviewStatus.PREVIEW_INTEGRITY_FAILURE: "当前预览完整性校验失败。",
-    CoverLetterOverflowPreviewStatus.UNSUPPORTED_TARGET: "该修正事项不支持 Cover Letter 预览。",
-    CoverLetterOverflowPreviewStatus.FAILED: "暂时无法安全读取 Cover Letter 预览。",
+    CoverLetterOverflowPreviewStatus.AVAILABLE: "The current cover-letter preview is ready.",
+    CoverLetterOverflowPreviewStatus.UNCHANGED: "The current cover-letter preview is unchanged.",
+    CoverLetterOverflowPreviewStatus.ITEM_NOT_CURRENT: "This attention item is no longer current.",
+    CoverLetterOverflowPreviewStatus.TARGET_STALE: "The material or overflow decision changed. Refresh the attention item.",
+    CoverLetterOverflowPreviewStatus.SOURCE_UNAVAILABLE: "The current cover-letter source is unavailable.",
+    CoverLetterOverflowPreviewStatus.RENDERER_UNAVAILABLE: "The preview renderer is unavailable.",
+    CoverLetterOverflowPreviewStatus.PREVIEW_UNSAFE: "The preview format cannot be displayed safely.",
+    CoverLetterOverflowPreviewStatus.PREVIEW_INTEGRITY_FAILURE: "The preview failed its integrity check.",
+    CoverLetterOverflowPreviewStatus.UNSUPPORTED_TARGET: "This correction item does not support a cover-letter preview.",
+    CoverLetterOverflowPreviewStatus.FAILED: "The cover-letter preview could not be read safely.",
 }
 
 

@@ -618,6 +618,78 @@ async def test_jd_requirement_cannot_be_used_as_candidate_fact_evidence(
 
 
 @pytest.mark.asyncio
+async def test_first_person_pronoun_is_not_treated_as_a_candidate_fact(
+    tmp_path: Path,
+) -> None:
+    parts = _setup(tmp_path)
+    evidence_id = _evidence_for_block_containing(
+        parts["snapshot"], "geospatial pipelines"
+    )
+    qualification = CoverLetterParagraphProposal(
+        purpose=CoverLetterParagraphPurpose.QUALIFICATION,
+        text="Through this work, I built deterministic geospatial pipelines.",
+        evidence_ids=(evidence_id,),
+        jd_alignment=("Streamlined geospatial data pipelines in Python",),
+    )
+    agent = _FakeCoverLetterAgent(
+        _default_output(parts, qualification=qualification)
+    )
+
+    result = await _draft(parts, agent)
+
+    assert result.status is CoverLetterDraftStatus.CREATED
+
+
+@pytest.mark.asyncio
+async def test_motivation_may_reference_capitalized_jd_terms(
+    tmp_path: Path,
+) -> None:
+    parts = _setup(tmp_path)
+    evidence_id = _evidence_for_block_containing(
+        parts["snapshot"], "satellite datasets"
+    )
+    motivation = CoverLetterParagraphProposal(
+        purpose=CoverLetterParagraphPurpose.MOTIVATION,
+        text=(
+            "This experience motivates my interest in the Geospatial Data "
+            "Engineer role."
+        ),
+        evidence_ids=(evidence_id,),
+        jd_alignment=("deliver reproducible satellite imagery processing",),
+    )
+    agent = _FakeCoverLetterAgent(
+        _default_output(parts, motivation=motivation)
+    )
+
+    result = await _draft(parts, agent)
+
+    assert result.status is CoverLetterDraftStatus.CREATED
+
+
+@pytest.mark.asyncio
+async def test_motivation_may_begin_with_a_job_context_term(
+    tmp_path: Path,
+) -> None:
+    parts = _setup(tmp_path)
+    evidence_id = _evidence_for_block_containing(
+        parts["snapshot"], "satellite datasets"
+    )
+    motivation = CoverLetterParagraphProposal(
+        purpose=CoverLetterParagraphPurpose.MOTIVATION,
+        text="Geospatial work is the focus that draws me to this role.",
+        evidence_ids=(evidence_id,),
+        jd_alignment=("deliver reproducible satellite imagery processing",),
+    )
+    agent = _FakeCoverLetterAgent(
+        _default_output(parts, motivation=motivation)
+    )
+
+    result = await _draft(parts, agent)
+
+    assert result.status is CoverLetterDraftStatus.CREATED
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "field",
     ["greeting", "closing", "paragraph"],

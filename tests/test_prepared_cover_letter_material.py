@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import core.prepared_cover_letter_material as material_module
 from core.application_plan import (
     ApplicationPlan,
     PrivateHomeApplicationPlanRepository,
@@ -808,6 +809,34 @@ def test_pdf_text_mismatch_or_placeholder_fails_closed(
     )
     assert not _material_records(parts)
     assert not _pdf_artifacts(parts)
+
+
+def test_pdf_extractor_word_boundary_loss_preserves_content_fidelity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts = _setup(tmp_path)
+    expected = expected_cover_letter_text_projection(parts["draft"])
+    extracted = expected.replace(" the R&D role ", "the R&D role")
+    assert extracted != expected
+    real_inspector = material_module.inspect_cover_letter_pdf
+
+    def extractor_with_lost_word_boundaries(content: bytes):
+        inspected = real_inspector(content)
+        assert inspected is not None
+        return inspected[0], extracted
+
+    monkeypatch.setattr(
+        material_module,
+        "inspect_cover_letter_pdf",
+        extractor_with_lost_word_boundaries,
+    )
+    parts["compiler"] = _FakeCompiler(_pdf(text=expected))
+
+    result = _publish(parts)
+
+    assert result.status is PreparedCoverLetterMaterialStatus.CREATED
+    assert result.material is not None
+    assert result.material.page_count == 1
 
 
 def test_invalid_pdf_signature_fails_closed(tmp_path: Path) -> None:

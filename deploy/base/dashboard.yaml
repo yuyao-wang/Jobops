@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobops-dashboard
+  labels:
+    app.kubernetes.io/name: jobops-dashboard
+    app.kubernetes.io/part-of: jobops
+  annotations:
+    jobops.dev/status: pending-business-entrypoint
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jobops-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jobops-dashboard
+        app.kubernetes.io/part-of: jobops
+    spec:
+      serviceAccountName: jobops-dashboard
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: jobops:demo
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - jobops.dashboard
+          envFrom:
+            - configMapRef:
+                name: jobops-runtime
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

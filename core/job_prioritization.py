@@ -42,7 +42,6 @@ _JOB_FIELD_ALLOWLIST = frozenset(
 _DETERMINISTIC_FACT_ALLOWLIST = frozenset(
     {"job_age_days", "posted_at_state", "evaluated_at"}
 )
-
 # A future real adapter owns these stable rules. Policy and JD remain data
 # fields inside PriorityContext and are never appended to this rule set.
 PRIORITY_AGENT_SYSTEM_RULES = (
@@ -146,6 +145,20 @@ class EligibilityImpact(str, Enum):
     LOWER_PRIORITY = "LOWER_PRIORITY"
     NEEDS_USER = "NEEDS_USER"
     EXCLUDED_BY_APPROVED_POLICY = "EXCLUDED_BY_APPROVED_POLICY"
+
+
+_ELIGIBILITY_CANDIDATE_FACT_CATEGORIES = {
+    EligibilityCategory.WORK_AUTHORIZATION: (
+        CandidateFactCategory.WORK_AUTHORIZATION
+    ),
+    EligibilityCategory.CITIZENSHIP_OR_RESIDENCY: (
+        CandidateFactCategory.CITIZENSHIP_OR_RESIDENCY
+    ),
+    EligibilityCategory.STUDENT_STATUS: CandidateFactCategory.STUDENT_STATUS,
+    EligibilityCategory.SECURITY_CLEARANCE: (
+        CandidateFactCategory.SECURITY_CLEARANCE
+    ),
+}
 
 
 _REQUIRED_ELIGIBILITY_CATEGORIES = frozenset(EligibilityCategory)
@@ -1162,7 +1175,12 @@ def _validate_findings(
         ):
             raise ValueError("finding must cite its approved hard constraint")
         if not any(
-            ref.source_type is not EvidenceSourceType.POLICY_HARD_CONSTRAINT
+            ref.source_type
+            in {
+                EvidenceSourceType.JOB_FIELD,
+                EvidenceSourceType.JOB_DESCRIPTION,
+                EvidenceSourceType.DETERMINISTIC_FACT,
+            }
             for ref in refs
         ):
             raise ValueError("finding must cite a job or deterministic fact")
@@ -1194,6 +1212,9 @@ def _validate_eligibility_findings(
         )
     findings: list[EligibilityFinding] = []
     seen: set[EligibilityCategory] = set()
+    candidate_facts = {
+        item.fact_id: item for item in context.candidate.facts
+    }
     matched_student_policy = any(
         item.result is HardConstraintFindingResult.MATCHED
         and any(
@@ -1243,13 +1264,20 @@ def _validate_eligibility_findings(
             if result in {
                 EligibilityFindingResult.SATISFIED,
                 EligibilityFindingResult.NOT_SATISFIED,
-            } and not any(
-                ref.source_type is EvidenceSourceType.CANDIDATE_FACT
-                for ref in refs
-            ):
-                raise ValueError(
-                    "resolved eligibility requires candidate-fact evidence"
+            }:
+                expected_category = (
+                    _ELIGIBILITY_CANDIDATE_FACT_CATEGORIES[category]
                 )
+                if not any(
+                    ref.source_type is EvidenceSourceType.CANDIDATE_FACT
+                    and candidate_facts[ref.source_id].category
+                    is expected_category
+                    for ref in refs
+                ):
+                    raise ValueError(
+                        "resolved eligibility requires category-matched "
+                        "candidate-fact evidence"
+                    )
 
         if result is EligibilityFindingResult.SATISFIED and (
             impact is not EligibilityImpact.NONE

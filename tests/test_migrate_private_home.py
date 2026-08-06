@@ -6,8 +6,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from core.profile_store import CandidateVault
 from core.private_home import PrivateHome
+from core.policy import PolicyBlocker
+from jobctl import _build_application_bundle
 from scripts import migrate_private_home as migration
+from utils.csv_apply import CSVApplication
 
 
 def _synthetic_workflow(root: Path) -> Path:
@@ -170,3 +174,100 @@ def test_migration_backs_up_every_overwritten_destination(tmp_path: Path) -> Non
     latest = backups[-1]
     assert (latest / "profile" / "facts.json").is_file()
     assert (latest / "documents" / "master" / "synthetic-resume.pdf").is_file()
+
+
+def test_migrated_sensitive_answers_reach_canonical_bundle_without_losing_sensitivity(
+    tmp_path: Path,
+) -> None:
+    workflow = _synthetic_workflow(tmp_path / "source")
+    candidate_path = workflow / "candidate_profile.json"
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate["current_status"]["employment_status_answer"] = (
+        "Synthetic employed status"
+    )
+    candidate["education"] = {
+        "default_application_graduation_answer": "May 2030"
+    }
+    candidate["application_accommodations"] = {
+        "answer_exactly_as": "No accommodation requested"
+    }
+    candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+    home = PrivateHome(tmp_path / "private-home")
+
+    migration.migrate(workflow_dir=workflow, private_home=home)
+    vault = CandidateVault.load(home)
+    records = vault.answers["answers"]
+    application = CSVApplication(
+        row_index=0,
+        row={
+            "company": "Synthetic Company",
+            "job_title": "Synthetic Test Engineer",
+            "job_url": "https://jobs.example.test/openings/answer-taxonomy",
+            "priority": "Low",
+            "status": "Pending",
+            "resume_variant": "synthetic-resume.pdf",
+        },
+        resume_path=home.paths.master_documents / "synthetic-resume.pdf",
+    )
+
+    bundle, profile = _build_application_bundle(
+        application=application,
+        vault=vault,
+        home=home,
+        run_id="run-synthetic-answer-taxonomy",
+    )
+
+    assert set(bundle.profile) == {"personal"}
+    assert bundle.identity_profile.email == (
+        profile["personal"]["email"]
+    )
+    relative_resume = bundle.materials.resume_path.relative_to(home.root)
+    assert relative_resume.parts[:2] == ("state", "preparation")
+    assert profile["personal"]["email"] not in str(relative_resume)
+
+    assert records["employment_status"]["sensitivity"] == "employment"
+    assert records["graduation_date"]["sensitivity"] == "education"
+    assert records["accommodation"]["sensitivity"] == "health"
+    assert {
+        key: bundle.answers[key]
+        for key in (
+            "employment_status",
+            "graduation_date",
+            "accommodation",
+        )
+    } == {
+        "employment_status": "Synthetic employed status",
+        "graduation_date": "May 2030",
+        "accommodation": "No accommodation requested",
+    }
+    assert set(profile["canonical_answers"]) >= {
+        "employment_status",
+        "graduation_date",
+        "accommodation",
+    }
+
+    persisted_answers = json.loads(
+        home.paths.verified_answers.read_text(encoding="utf-8")
+    )
+    persisted_answers["answers"]["future_answer_key"] = {
+        **persisted_answers["answers"]["employment_status"],
+        "value": "must not reach an application bundle",
+    }
+    home.write_text(
+        home.paths.verified_answers,
+        json.dumps(persisted_answers, sort_keys=True),
+    )
+    blocked_vault = CandidateVault.load(home)
+
+    blocked_bundle, _ = _build_application_bundle(
+        application=application,
+        vault=blocked_vault,
+        home=home,
+        run_id="run-synthetic-unknown-answer",
+    )
+
+    assert "future_answer_key" not in blocked_bundle.answers.to_dict()
+    assert blocked_vault.answer_trust_report().invalid_verified_keys == (
+        "future_answer_key",
+    )
+    assert PolicyBlocker.UNVERIFIED_ANSWERS in blocked_bundle.policy.blockers

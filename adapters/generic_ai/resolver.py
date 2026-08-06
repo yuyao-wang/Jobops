@@ -22,9 +22,12 @@ from .models import FormControl, FormIR
 class Sensitivity(StrEnum):
     BASIC = "basic"
     PERSONAL = "personal"
+    EMPLOYMENT = "employment"
+    EDUCATION = "education"
     LEGAL = "legal"
     COMPENSATION = "compensation"
     VOLUNTARY_SELF_ID = "voluntary_self_id"
+    HEALTH = "health"
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,28 @@ class UnresolvedField:
     sensitivity: Sensitivity
 
 
+_EMPLOYMENT_STATUS_PATTERNS = (
+    r"^(?:(?:what is|select|please select)\s+)?(?:your\s+)?"
+    r"(?:current\s+)?employment\s+status$",
+    r"^(?:are\s+you\s+)?currently\s+employed$",
+)
+_GRADUATION_DATE_PATTERNS = (
+    r"^(?:(?:what is|enter|select|please enter|please select)\s+)?"
+    r"(?:your\s+)?(?:actual\s+|expected\s+)?graduation\s+"
+    r"(?:date|month|year)(?:\s+(?:mm|dd|yyyy|month|year))*$",
+    r"^(?:your\s+)?(?:actual\s+|expected\s+)?date\s+of\s+graduation"
+    r"(?:\s+(?:mm|dd|yyyy|month|year))*$",
+)
+_ACCOMMODATION_PATTERNS = (
+    r"^(?:(?:do|will)\s+you\s+)?(?:need|require)(?:\s+(?:any|an?))?\s+"
+    r"(?:(?:reasonable|workplace)\s+)?accommodations?(?:\s+(?:to\s+"
+    r"(?:apply|interview|participate)|(?:during|for)\s+(?:the\s+)?"
+    r"(?:application|interview|hiring)\s+process))?$",
+    r"^(?:reasonable|workplace|interview|application\s+process|"
+    r"hiring\s+process)\s+accommodations?$",
+)
+
+
 _PATTERNS: tuple[
     tuple[CanonicalApplicationAnswerKey, Sensitivity, tuple[str, ...]], ...
 ] = (
@@ -69,7 +94,43 @@ _PATTERNS: tuple[
     (CanonicalApplicationAnswerKey.PORTFOLIO, Sensitivity.BASIC, (r"portfolio", r"personal\s+website", r"website\s+url")),
     (CanonicalApplicationAnswerKey.RESUME, Sensitivity.PERSONAL, (r"\bresume\b", r"\bcv\b")),
     (CanonicalApplicationAnswerKey.COVER_LETTER, Sensitivity.PERSONAL, (r"cover\s+letter",)),
+    (
+        CanonicalApplicationAnswerKey.FULL_TIME_EXPERIENCE,
+        Sensitivity.EMPLOYMENT,
+        (r"how\s+many\s+years.*full[-\s]+time\s+experience",),
+    ),
+    (
+        CanonicalApplicationAnswerKey.OFFICE_ATTENDANCE,
+        Sensitivity.PERSONAL,
+        (r"(?:commit|able).*in[-\s]+office", r"in[-\s]+office.*days\s+per\s+week"),
+    ),
+    (
+        CanonicalApplicationAnswerKey.COMPANY_FAMILIARITY,
+        Sensitivity.BASIC,
+        (r"(?=.*how\s+familiar)(?=.*(?:company|job\s+posting))",),
+    ),
+    (
+        CanonicalApplicationAnswerKey.JOB_DISCOVERY_SOURCE,
+        Sensitivity.BASIC,
+        (r"how\s+did\s+you\s+hear\s+about",),
+    ),
+    (
+        CanonicalApplicationAnswerKey.EMPLOYMENT_STATUS,
+        Sensitivity.EMPLOYMENT,
+        _EMPLOYMENT_STATUS_PATTERNS,
+    ),
+    (
+        CanonicalApplicationAnswerKey.GRADUATION_DATE,
+        Sensitivity.EDUCATION,
+        _GRADUATION_DATE_PATTERNS,
+    ),
+    (CanonicalApplicationAnswerKey.ACCOMMODATION, Sensitivity.HEALTH, _ACCOMMODATION_PATTERNS),
     (CanonicalApplicationAnswerKey.WORK_AUTHORIZATION, Sensitivity.LEGAL, (r"authori[sz]ed\s+to\s+work", r"legally\s+eligible")),
+    (
+        CanonicalApplicationAnswerKey.WORK_AUTHORIZATION_DETAIL,
+        Sensitivity.LEGAL,
+        (r"best\s+describes.*work\s+authorization",),
+    ),
     (CanonicalApplicationAnswerKey.SPONSORSHIP, Sensitivity.LEGAL, (r"sponsorship", r"visa\s+sponsor")),
     (CanonicalApplicationAnswerKey.RELOCATION, Sensitivity.PERSONAL, (r"relocat",)),
     (CanonicalApplicationAnswerKey.SALARY, Sensitivity.COMPENSATION, (r"(?:salary|compensation|pay)\s+expect", r"(?:expected|desired)\s+(?:salary|compensation|pay)")),
@@ -119,12 +180,49 @@ def _looks_like_third_party_identity(text: str) -> bool:
     )
 
 
+def _explicit_sensitive_classification(
+    control: FormControl,
+) -> tuple[CanonicalApplicationAnswerKey, Sensitivity] | None:
+    descriptors = tuple(
+        dict.fromkeys(
+            normalized
+            for normalized in (
+                re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+                for value in (
+                    control.label,
+                    control.aria_label,
+                    control.name,
+                    control.placeholder,
+                )
+            )
+            if normalized
+        )
+    )
+    for key, sensitivity, patterns in _PATTERNS:
+        if key not in {
+            CanonicalApplicationAnswerKey.EMPLOYMENT_STATUS,
+            CanonicalApplicationAnswerKey.GRADUATION_DATE,
+            CanonicalApplicationAnswerKey.ACCOMMODATION,
+        }:
+            continue
+        if any(
+            re.fullmatch(pattern, descriptor, re.IGNORECASE)
+            for descriptor in descriptors
+            for pattern in patterns
+        ):
+            return key, sensitivity
+    return None
+
+
 def classify_control(
     control: FormControl,
 ) -> tuple[CanonicalApplicationAnswerKey, Sensitivity] | None:
     text = control.semantic_text.casefold()
     if _looks_like_third_party_identity(text):
         return None
+    explicit_sensitive = _explicit_sensitive_classification(control)
+    if explicit_sensitive is not None:
+        return explicit_sensitive
     autocomplete = control.autocomplete.replace("-", "_")
     autocomplete_map = {
         "given_name": CanonicalApplicationAnswerKey.FIRST_NAME,
@@ -292,9 +390,12 @@ class AnswerResolver:
                     sensitivity = candidate_sensitivity
                     break
             if normalized_mapped_key and sensitivity in {
+                Sensitivity.EMPLOYMENT,
+                Sensitivity.EDUCATION,
                 Sensitivity.LEGAL,
                 Sensitivity.COMPENSATION,
                 Sensitivity.VOLUNTARY_SELF_ID,
+                Sensitivity.HEALTH,
             }:
                 return UnresolvedField(
                     control,

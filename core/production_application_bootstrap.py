@@ -2,7 +2,8 @@
 
 This module deliberately stops before the P2c10c automation composition root.
 It validates and constructs infrastructure dependencies without running search,
-model generation, preparation, browser navigation, or execution.
+model generation, preparation, browser navigation, or execution.  Startup also
+performs the bounded, idempotent legacy ResumeCandidate compatibility projection.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -34,12 +36,20 @@ from core.application_answers import (
 from core.authenticated_subject import (
     AUTHENTICATED_SUBJECT_SESSION_CONTRACT_VERSION,
     KeychainAuthenticatedSubjectSessionProvider,
+    LocalAuthenticatedSubjectSessionIssuer,
+    MAX_LOCAL_SESSION_TTL_SECONDS,
+    MIN_LOCAL_SESSION_TTL_SECONDS,
 )
 from core.event_ledger import EventLedger
 from core.latex_compiler import SandboxedPdfLatexCompiler
+from core.legacy_resume_candidate_migration import (
+    LegacyResumeCandidateMigrationError,
+    migrate_hash_attested_legacy_resume_candidates,
+)
 from core.leases import LeaseManager
 from core.managed_resume_template import DefaultManagedResumeTemplateProvider
 from core.model_provider_capabilities import (
+    ModelBackendResolutionError,
     PREPARATION_MODEL_COMPONENT_IDS,
     PRIORITY_MODEL_COMPONENT_ID,
 )
@@ -74,6 +84,12 @@ from source_connectors.greenhouse_board import (
     GreenhouseBoardConfig,
     JobSearchExecutionPolicy,
 )
+from source_connectors.provider_job_search import (
+    AshbyBoardConfig,
+    GlassdoorPartnerConfig,
+    JobviteFeedConfig,
+    LeverSiteConfig,
+)
 
 
 PRODUCTION_APPLICATION_CONFIG_CONTRACT_VERSION = (
@@ -95,7 +111,7 @@ PRODUCTION_INFRASTRUCTURE_CONTRACT_VERSION = (
     "production-infrastructure-v1"
 )
 PRODUCTION_AUTHENTICATION_CONFIG_VERSION = (
-    "production-authentication-runtime-v1"
+    "production-authentication-runtime-v2"
 )
 PRODUCTION_EXECUTION_POLICY_RUNTIME_VERSION = (
     "production-execution-policy-runtime-v1"
@@ -225,7 +241,10 @@ class AuthenticationRuntimeConfig:
     session_contract_version: str
     session_secret_ref: SecretReference
     cookie_policy: str
+    local_subject_id: str
     local_subject_binding_policy: str
+    local_session_issuance_policy: str
+    session_ttl_seconds: int
     trusted_proxy_policy: str
     contract_version: str = PRODUCTION_AUTHENTICATION_CONFIG_VERSION
 
@@ -243,26 +262,226 @@ class AuthenticationRuntimeConfig:
             raise TypeError("session_secret_ref must be typed")
         if self.cookie_policy != "HTTP_ONLY_SAME_SITE_STRICT":
             raise ValueError("cookie policy is unsupported")
+        if (
+            not isinstance(self.local_subject_id, str)
+            or not self.local_subject_id.strip()
+            or len(self.local_subject_id.strip()) > 160
+        ):
+            raise ValueError("local subject ID is invalid")
         if self.local_subject_binding_policy != "SESSION_RECORD":
             raise ValueError("subject binding policy is unsupported")
+        if self.local_session_issuance_policy != (
+            "LOOPBACK_SAME_ORIGIN_AUTO"
+        ):
+            raise ValueError("local session issuance policy is unsupported")
+        if (
+            type(self.session_ttl_seconds) is not int
+            or not MIN_LOCAL_SESSION_TTL_SECONDS
+            <= self.session_ttl_seconds
+            <= MAX_LOCAL_SESSION_TTL_SECONDS
+        ):
+            raise ValueError("session TTL is outside policy")
         if self.trusted_proxy_policy != "LOOPBACK_ONLY":
             raise ValueError("trusted proxy policy is unsupported")
+        object.__setattr__(
+            self, "local_subject_id", self.local_subject_id.strip()
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GlassdoorPartnerRuntimeConfig:
+    source_id: str
+    partner_id_ref: SecretReference
+    partner_key_ref: SecretReference
+    user_ip: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.partner_id_ref, SecretReference) or not isinstance(
+            self.partner_key_ref, SecretReference
+        ):
+            raise TypeError("Glassdoor secret references must be typed")
+        if not self.source_id.strip() or not self.user_ip.strip():
+            raise ValueError("Glassdoor runtime config is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class JobviteFeedRuntimeConfig:
+    canonical_company: str
+    career_site: str
+    aliases: tuple[str, ...]
+    api_key_ref: SecretReference
+    api_secret_ref: SecretReference
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.api_key_ref, SecretReference) or not isinstance(
+            self.api_secret_ref, SecretReference
+        ):
+            raise TypeError("Jobvite secret references must be typed")
+        if not self.canonical_company.strip() or not self.career_site.strip():
+            raise ValueError("Jobvite feed config is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedWebSearchRuntimeConfig:
+    """Optional, explicitly licensed search-index discovery configuration."""
+
+    provider_id: str
+    api_key_ref: SecretReference
+    storage_rights_confirmed: bool
+    country: str = "CA"
+    search_language: str = "en"
+    lookback_days: int = 14
+    max_search_requests: int = 20
+    results_per_request: int = 20
+    max_resolution_searches: int = 20
+
+    def __post_init__(self) -> None:
+        if self.provider_id != "BRAVE":
+            raise ValueError("authorized web search provider is unsupported")
+        if not isinstance(self.api_key_ref, SecretReference):
+            raise TypeError("web search secret reference must be typed")
+        if self.storage_rights_confirmed is not True:
+            raise ValueError("web search storage rights must be confirmed")
+        if (
+            not isinstance(self.country, str)
+            or len(self.country) != 2
+            or self.country.upper() != self.country
+            or not self.country.isalpha()
+        ):
+            raise ValueError("web search country is invalid")
+        if (
+            not isinstance(self.search_language, str)
+            or not 2 <= len(self.search_language) <= 5
+            or self.search_language.casefold() != self.search_language
+            or not self.search_language.isalpha()
+        ):
+            raise ValueError("web search language is invalid")
+        for name, value, minimum, maximum in (
+            ("lookback_days", self.lookback_days, 1, 90),
+            ("max_search_requests", self.max_search_requests, 1, 200),
+            ("results_per_request", self.results_per_request, 1, 20),
+            ("max_resolution_searches", self.max_resolution_searches, 0, 200),
+        ):
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise ValueError(f"{name} is outside the web search policy")
+
+
+@dataclass(frozen=True, slots=True)
+class JobAlertInboxRuntimeConfig:
+    """Optional local, read-only mailbox scope for job-alert ingestion."""
+
+    host: str
+    recipient: str = field(repr=False)
+    credential_ref: SecretReference = field(repr=False)
+    mailbox: str = "JobOps Alerts"
+    port: int = 993
+    allowed_sender_domains: tuple[str, ...] = (
+        "linkedin.com",
+        "indeed.com",
+    )
+    trusted_authserv_ids: tuple[str, ...] = ()
+    max_age_hours: int = 24
+    max_messages: int = 25
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.credential_ref, SecretReference):
+            raise TypeError("job-alert credential reference must be typed")
+        if self.credential_ref.source is SecretReferenceSource.ENV:
+            raise ValueError("job-alert mailbox credentials must use Keychain")
+        if not self.host.strip() or not self.recipient.strip():
+            raise ValueError("job-alert mailbox identity is invalid")
+        if (
+            not isinstance(self.credential_ref.account, str)
+            or self.credential_ref.account.casefold()
+            != self.recipient.casefold()
+        ):
+            raise ValueError("job-alert credential account must match recipient")
+        if not self.mailbox.strip() or len(self.mailbox) > 128:
+            raise ValueError("job-alert mailbox name is invalid")
+        if type(self.port) is not int or not 1 <= self.port <= 65_535:
+            raise ValueError("job-alert mailbox port is invalid")
+        if not self.allowed_sender_domains or any(
+            not isinstance(value, str)
+            or not value
+            or value != value.casefold()
+            or len(value) > 253
+            for value in self.allowed_sender_domains
+        ):
+            raise ValueError("job-alert sender allowlist is invalid")
+        if not self.trusted_authserv_ids or any(
+            not isinstance(value, str)
+            or value != value.casefold()
+            or len(value) > 253
+            or len(value.split(".")) < 2
+            or any(
+                not label
+                or len(label) > 63
+                or not label[0].isalnum()
+                or not label[-1].isalnum()
+                or any(
+                    not character.isascii()
+                    or not (character.isalnum() or character == "-")
+                    for character in label
+                )
+                for label in value.split(".")
+            )
+            for value in self.trusted_authserv_ids
+        ):
+            raise ValueError("job-alert trusted authentication service is invalid")
+        if (
+            type(self.max_age_hours) is not int
+            or not 1 <= self.max_age_hours <= 24
+            or type(self.max_messages) is not int
+            or not 1 <= self.max_messages <= 25
+        ):
+            raise ValueError("job-alert mailbox bounds are invalid")
 
 
 @dataclass(frozen=True, slots=True)
 class ProductionSearchConfig:
     enabled_providers: tuple[str, ...]
     boards: tuple[GreenhouseBoardConfig, ...]
+    ashby_boards: tuple[AshbyBoardConfig, ...]
+    lever_sites: tuple[LeverSiteConfig, ...]
+    glassdoor: GlassdoorPartnerRuntimeConfig | None
+    jobvite_feeds: tuple[JobviteFeedRuntimeConfig, ...]
+    authorized_web_search: AuthorizedWebSearchRuntimeConfig | None
+    job_alert_inbox: JobAlertInboxRuntimeConfig | None
     policy: JobSearchExecutionPolicy
     contract_version: str = PRODUCTION_SEARCH_BOOTSTRAP_CONTRACT_VERSION
 
     def __post_init__(self) -> None:
         if self.contract_version != PRODUCTION_SEARCH_BOOTSTRAP_CONTRACT_VERSION:
             raise ValueError("search bootstrap version is unsupported")
-        if self.enabled_providers != ("GREENHOUSE",):
-            raise ValueError("V1 supports the Greenhouse provider only")
-        if not self.boards:
-            raise ValueError("at least one allowlisted board is required")
+        provider_order = (
+            "GREENHOUSE",
+            "ASHBY",
+            "LEVER",
+            "GLASSDOOR",
+            "JOBVITE",
+        )
+        if (
+            tuple(
+                provider
+                for provider in provider_order
+                if provider in self.enabled_providers
+            )
+            != self.enabled_providers
+            or len(set(self.enabled_providers)) != len(self.enabled_providers)
+        ):
+            raise ValueError("search providers are invalid or out of order")
+        configured = {
+            "GREENHOUSE": bool(self.boards),
+            "ASHBY": bool(self.ashby_boards),
+            "LEVER": bool(self.lever_sites),
+            "GLASSDOOR": self.glassdoor is not None,
+            "JOBVITE": bool(self.jobvite_feeds),
+        }
+        if any(
+            (provider in self.enabled_providers) is not enabled
+            for provider, enabled in configured.items()
+        ):
+            raise ValueError("enabled providers and configured sources differ")
         if self.policy.allowed_providers != self.enabled_providers:
             raise ValueError("search provider policy is inconsistent")
 
@@ -439,6 +658,16 @@ class ProductionApplicationConfig:
                 "config_contract_version": self.config_contract_version,
                 "auth_provider_id": self.authentication.provider_id,
                 "search_provider_ids": self.search.enabled_providers,
+                "authorized_web_search": (
+                    self.search.authorized_web_search.provider_id
+                    if self.search.authorized_web_search is not None
+                    else "DISABLED"
+                ),
+                "job_alert_inbox": (
+                    "ENABLED"
+                    if self.search.job_alert_inbox is not None
+                    else "DISABLED"
+                ),
                 "ai_default_backend": self.ai.value["default_backend"],
                 "browser_engine": self.browser.browser_engine,
                 "automation_budgets": {
@@ -476,10 +705,27 @@ class ProductionRepositoryBundle:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductionAuthorizedWebSearchFactoryInputs:
+    api_key: str = field(repr=False)
+    storage_rights_confirmed: bool
+    country: str
+    search_language: str
+    lookback_days: int
+    max_search_requests: int
+    results_per_request: int
+    max_resolution_searches: int
+
+
+@dataclass(frozen=True, slots=True)
 class ProductionJobSearchFactoryInputs:
     boards: tuple[GreenhouseBoardConfig, ...]
+    ashby_boards: tuple[AshbyBoardConfig, ...]
+    lever_sites: tuple[LeverSiteConfig, ...]
+    glassdoor: GlassdoorPartnerConfig | None
+    jobvite_feeds: tuple[JobviteFeedConfig, ...]
     policy: JobSearchExecutionPolicy
     http_client_id: str
+    authorized_web_search: ProductionAuthorizedWebSearchFactoryInputs | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,6 +742,7 @@ class ProductionApplicationBootstrap:
     credential_store: CredentialStore
     repository_bundle: ProductionRepositoryBundle
     authentication_session_provider: KeychainAuthenticatedSubjectSessionProvider
+    local_session_issuer: LocalAuthenticatedSubjectSessionIssuer
     job_search_factory_inputs: ProductionJobSearchFactoryInputs
     priority_agent_factory_inputs: ProductionPriorityAgentFactoryInputs
     preparation_stage_dependencies: ProductionPreparationStageDependencies
@@ -543,6 +790,10 @@ _REPOSITORY_SPECS: Mapping[str, tuple[str, str]] = MappingProxyType(
         "job_library_refresh_runs": (
             "core.job_library_refresh",
             "PrivateHomeJobLibraryRefreshRunRepository",
+        ),
+        "job_leads": (
+            "core.job_leads",
+            "PrivateHomeJobLeadRepository",
         ),
         "subject_job_library_memberships": (
             "core.subject_job_library",
@@ -834,7 +1085,10 @@ def production_application_config_from_mapping(
                 "session_contract_version",
                 "session_secret_ref",
                 "cookie_policy",
+                "local_subject_id",
                 "local_subject_binding_policy",
+                "local_session_issuance_policy",
+                "session_ttl_seconds",
                 "trusted_proxy_policy",
                 "contract_version",
             },
@@ -849,16 +1103,30 @@ def production_application_config_from_mapping(
                 if key != "session_secret_ref"
             },
         )
-        search_raw = _closed_mapping(
+        search_raw = _closed_mapping_with_optional(
             root["search"],
-            {
+            required={
                 "enabled_providers",
                 "boards",
                 "request_limits",
                 "timeout_policy",
                 "search_contract_version",
             },
+            optional={
+                "ashby_boards",
+                "lever_sites",
+                "glassdoor",
+                "jobvite_feeds",
+                "authorized_web_search",
+                "job_alert_inbox",
+            },
         )
+        search_raw.setdefault("ashby_boards", [])
+        search_raw.setdefault("lever_sites", [])
+        search_raw.setdefault("glassdoor", None)
+        search_raw.setdefault("jobvite_feeds", [])
+        search_raw.setdefault("authorized_web_search", None)
+        search_raw.setdefault("job_alert_inbox", None)
         limits = _closed_mapping(
             search_raw["request_limits"],
             {
@@ -874,6 +1142,89 @@ def production_application_config_from_mapping(
             {"connect_timeout_seconds", "read_timeout_seconds"},
         )
         providers = tuple(search_raw["enabled_providers"])
+        glassdoor_raw = search_raw["glassdoor"]
+        glassdoor = None
+        if glassdoor_raw is not None:
+            glassdoor_values = _closed_mapping(
+                glassdoor_raw,
+                {
+                    "source_id",
+                    "partner_id_ref",
+                    "partner_key_ref",
+                    "user_ip",
+                },
+            )
+            glassdoor = GlassdoorPartnerRuntimeConfig(
+                source_id=glassdoor_values["source_id"],
+                partner_id_ref=_secret_reference(
+                    glassdoor_values["partner_id_ref"]
+                ),
+                partner_key_ref=_secret_reference(
+                    glassdoor_values["partner_key_ref"]
+                ),
+                user_ip=glassdoor_values["user_ip"],
+            )
+        web_search_raw = search_raw["authorized_web_search"]
+        authorized_web_search = None
+        if web_search_raw is not None:
+            web_search_values = _closed_mapping(
+                web_search_raw,
+                {
+                    "provider_id",
+                    "api_key_ref",
+                    "storage_rights_confirmed",
+                    "country",
+                    "search_language",
+                    "lookback_days",
+                    "max_search_requests",
+                    "results_per_request",
+                    "max_resolution_searches",
+                },
+            )
+            authorized_web_search = AuthorizedWebSearchRuntimeConfig(
+                api_key_ref=_secret_reference(
+                    web_search_values["api_key_ref"]
+                ),
+                **{
+                    key: value
+                    for key, value in web_search_values.items()
+                    if key != "api_key_ref"
+                },
+            )
+        job_alert_raw = search_raw["job_alert_inbox"]
+        job_alert_inbox = None
+        if job_alert_raw is not None:
+            job_alert_values = _closed_mapping(
+                job_alert_raw,
+                {
+                    "host",
+                    "recipient",
+                    "credential_ref",
+                    "mailbox",
+                    "port",
+                    "allowed_sender_domains",
+                    "trusted_authserv_ids",
+                    "max_age_hours",
+                    "max_messages",
+                },
+            )
+            job_alert_inbox = JobAlertInboxRuntimeConfig(
+                host=job_alert_values["host"],
+                recipient=job_alert_values["recipient"],
+                credential_ref=_secret_reference(
+                    job_alert_values["credential_ref"]
+                ),
+                mailbox=job_alert_values["mailbox"],
+                port=job_alert_values["port"],
+                allowed_sender_domains=tuple(
+                    job_alert_values["allowed_sender_domains"]
+                ),
+                trusted_authserv_ids=tuple(
+                    job_alert_values["trusted_authserv_ids"]
+                ),
+                max_age_hours=job_alert_values["max_age_hours"],
+                max_messages=job_alert_values["max_messages"],
+            )
         search = ProductionSearchConfig(
             enabled_providers=providers,
             boards=tuple(
@@ -884,6 +1235,55 @@ def production_application_config_from_mapping(
                 )
                 for board in _closed_board_list(search_raw["boards"])
             ),
+            ashby_boards=tuple(
+                AshbyBoardConfig(
+                    canonical_company=board["canonical_company"],
+                    board_name=board["board_name"],
+                    aliases=tuple(board.get("aliases", ())),
+                )
+                for board in _closed_provider_list(
+                    search_raw["ashby_boards"],
+                    required={"canonical_company", "board_name"},
+                    optional={"aliases"},
+                )
+            ),
+            lever_sites=tuple(
+                LeverSiteConfig(
+                    canonical_company=site["canonical_company"],
+                    site_name=site["site_name"],
+                    aliases=tuple(site.get("aliases", ())),
+                    region=site.get("region", "GLOBAL"),
+                )
+                for site in _closed_provider_list(
+                    search_raw["lever_sites"],
+                    required={"canonical_company", "site_name"},
+                    optional={"aliases", "region"},
+                )
+            ),
+            glassdoor=glassdoor,
+            jobvite_feeds=tuple(
+                JobviteFeedRuntimeConfig(
+                    canonical_company=feed["canonical_company"],
+                    career_site=feed["career_site"],
+                    aliases=tuple(feed.get("aliases", ())),
+                    api_key_ref=_secret_reference(feed["api_key_ref"]),
+                    api_secret_ref=_secret_reference(
+                        feed["api_secret_ref"]
+                    ),
+                )
+                for feed in _closed_provider_list(
+                    search_raw["jobvite_feeds"],
+                    required={
+                        "canonical_company",
+                        "career_site",
+                        "api_key_ref",
+                        "api_secret_ref",
+                    },
+                    optional={"aliases"},
+                )
+            ),
+            authorized_web_search=authorized_web_search,
+            job_alert_inbox=job_alert_inbox,
             policy=JobSearchExecutionPolicy(
                 contract_version=search_raw["search_contract_version"],
                 allowed_providers=providers,
@@ -1165,12 +1565,71 @@ async def build_production_application_bootstrap(
         private_home = PrivateHome(root)
         if config.private_home.create_if_missing:
             private_home.ensure()
-        # Availability check only. The value is deliberately discarded.
-        config.authentication.session_secret_ref.resolve(
-            environ=active_environ,
-            credential_store=store,
+        session_master_secret = (
+            config.authentication.session_secret_ref.resolve(
+                environ=active_environ,
+                credential_store=store,
+            )
         )
+        glassdoor_config = None
+        if config.search.glassdoor is not None:
+            glassdoor_config = GlassdoorPartnerConfig(
+                source_id=config.search.glassdoor.source_id,
+                partner_id=config.search.glassdoor.partner_id_ref.resolve(
+                    environ=active_environ,
+                    credential_store=store,
+                ),
+                partner_key=config.search.glassdoor.partner_key_ref.resolve(
+                    environ=active_environ,
+                    credential_store=store,
+                ),
+                user_ip=config.search.glassdoor.user_ip,
+            )
+        jobvite_configs = tuple(
+            JobviteFeedConfig(
+                canonical_company=feed.canonical_company,
+                career_site=feed.career_site,
+                aliases=feed.aliases,
+                api_key=feed.api_key_ref.resolve(
+                    environ=active_environ,
+                    credential_store=store,
+                ),
+                api_secret=feed.api_secret_ref.resolve(
+                    environ=active_environ,
+                    credential_store=store,
+                ),
+            )
+            for feed in config.search.jobvite_feeds
+        )
+        authorized_web_search_inputs = None
+        if config.search.authorized_web_search is not None:
+            web_search = config.search.authorized_web_search
+            authorized_web_search_inputs = (
+                ProductionAuthorizedWebSearchFactoryInputs(
+                    api_key=web_search.api_key_ref.resolve(
+                        environ=active_environ,
+                        credential_store=store,
+                    ),
+                    storage_rights_confirmed=(
+                        web_search.storage_rights_confirmed
+                    ),
+                    country=web_search.country,
+                    search_language=web_search.search_language,
+                    lookback_days=web_search.lookback_days,
+                    max_search_requests=web_search.max_search_requests,
+                    results_per_request=web_search.results_per_request,
+                    max_resolution_searches=(
+                        web_search.max_resolution_searches
+                    ),
+                )
+            )
         authentication = KeychainAuthenticatedSubjectSessionProvider(store)
+        local_session_issuer = LocalAuthenticatedSubjectSessionIssuer(
+            session_writer=authentication,
+            subject_id=config.authentication.local_subject_id,
+            master_secret=session_master_secret,
+            ttl_seconds=config.authentication.session_ttl_seconds,
+        )
         repositories = build_production_repository_bundle(private_home)
         try:
             agents = build_production_preparation_agent_adapters(
@@ -1185,6 +1644,11 @@ async def build_production_application_bootstrap(
                 backend_registry=backend_registry,
                 isolation_profile_registry=isolation_profile_registry,
             )
+        except ModelBackendResolutionError as exc:
+            raise ProductionApplicationBootstrapError(
+                ProductionBootstrapFailure.AI_CONFIGURATION_INVALID,
+                section=exc.status.value,
+            ) from None
         except Exception:
             raise ProductionApplicationBootstrapError(
                 ProductionBootstrapFailure.AI_CONFIGURATION_INVALID
@@ -1236,6 +1700,23 @@ async def build_production_application_bootstrap(
             playwright_factory=playwright_factory,
         )
         owned.append(browser)
+        try:
+            legacy_resume_candidate_migration = (
+                migrate_hash_attested_legacy_resume_candidates(
+                    home=private_home,
+                    subject_id=config.authentication.local_subject_id,
+                    now=datetime.now(timezone.utc),
+                    repository=repositories.require("resume_candidates"),
+                )
+            )
+        except LegacyResumeCandidateMigrationError as exc:
+            raise ProductionApplicationBootstrapError(
+                ProductionBootstrapFailure.PREPARATION_DEPENDENCY_MISSING,
+                section=(
+                    "LEGACY_RESUME_CANDIDATE_MIGRATION_"
+                    f"{exc.failure.value}"
+                ),
+            ) from None
         diagnostics = dict(config.safe_diagnostics())
         diagnostics.update(
             {
@@ -1249,6 +1730,9 @@ async def build_production_application_bootstrap(
                 "preparation_dependency_hash": (
                     preparation_dependencies.dependency_configuration_hash
                 ),
+                "legacy_resume_candidate_migration": (
+                    legacy_resume_candidate_migration.safe_dict()
+                ),
             }
         )
         return ProductionApplicationBootstrap(
@@ -1257,10 +1741,16 @@ async def build_production_application_bootstrap(
             credential_store=store,
             repository_bundle=repositories,
             authentication_session_provider=authentication,
+            local_session_issuer=local_session_issuer,
             job_search_factory_inputs=ProductionJobSearchFactoryInputs(
                 boards=config.search.boards,
+                ashby_boards=config.search.ashby_boards,
+                lever_sites=config.search.lever_sites,
+                glassdoor=glassdoor_config,
+                jobvite_feeds=jobvite_configs,
                 policy=config.search.policy,
                 http_client_id=config.infrastructure.http_client_id,
+                authorized_web_search=authorized_web_search_inputs,
             ),
             priority_agent_factory_inputs=(
                 ProductionPriorityAgentFactoryInputs(
@@ -1310,22 +1800,49 @@ def _closed_mapping(value: Any, keys: set[str]) -> dict[str, Any]:
     return dict(value)
 
 
+def _closed_mapping_with_optional(
+    value: Any,
+    *,
+    required: set[str],
+    optional: set[str],
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or not required.issubset(value)
+        or set(value) - required - optional
+    ):
+        raise ProductionApplicationBootstrapError(
+            ProductionBootstrapFailure.CONFIG_SCHEMA_INVALID
+        )
+    return dict(value)
+
+
 def _closed_board_list(value: Any) -> tuple[dict[str, Any], ...]:
-    if not isinstance(value, list) or not value:
-        raise ValueError("board allowlist must be non-empty")
-    boards = []
+    return _closed_provider_list(
+        value,
+        required={"canonical_company", "board_token"},
+        optional={"aliases"},
+    )
+
+
+def _closed_provider_list(
+    value: Any,
+    *,
+    required: set[str],
+    optional: set[str],
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list):
+        raise ValueError("provider source list must be a list")
+    sources = []
     for item in value:
-        if not isinstance(item, Mapping) or not {
-            "canonical_company",
-            "board_token",
-        }.issubset(item) or set(item) - {
-            "canonical_company",
-            "board_token",
-            "aliases",
-        }:
-            raise ValueError("board configuration is invalid")
-        boards.append(dict(item))
-    return tuple(boards)
+        if (
+            not isinstance(item, Mapping)
+            or not required.issubset(item)
+            or set(item) - required - optional
+        ):
+            raise ValueError("provider source configuration is invalid")
+        sources.append(dict(item))
+    return tuple(sources)
 
 
 def _secret_reference(value: Any) -> SecretReference:
@@ -1386,17 +1903,20 @@ def _walk_mapping_keys(value: Any) -> tuple[str, ...]:
 
 __all__ = [
     "AIBackendRuntimeConfig",
+    "AuthorizedWebSearchRuntimeConfig",
     "AuthenticationRuntimeConfig",
     "AutomationRuntimeConfig",
     "DiagnosticsRuntimeConfig",
     "ExecutionPolicyRuntimeConfig",
     "InfrastructureRuntimeConfig",
+    "JobAlertInboxRuntimeConfig",
     "JOBOPS_CONFIG_FILE_ENV",
     "PreparationRuntimeConfig",
     "PrivateHomeConfig",
     "ProductionApplicationBootstrap",
     "ProductionApplicationBootstrapError",
     "ProductionApplicationConfig",
+    "ProductionAuthorizedWebSearchFactoryInputs",
     "ProductionBootstrapFailure",
     "ProductionJobSearchFactoryInputs",
     "ProductionPriorityAgentFactoryInputs",

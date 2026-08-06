@@ -8,7 +8,7 @@ from enum import Enum
 import unicodedata
 from typing import Protocol, runtime_checkable
 
-from source_connectors.contract import SourcePlatform
+from source_connectors.contract import SourceJobObservation, SourcePlatform
 
 
 class JobSearchStatus(str, Enum):
@@ -108,6 +108,22 @@ def _valid_request(request: "JobSearchRequest") -> bool:
         not request.location.strip() or len(request.location.strip()) > 320
     ):
         return False
+    if (
+        not isinstance(request.title_any, tuple)
+        or len(request.title_any) > 100
+        or any(
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.strip()) > 240
+            for value in request.title_any
+        )
+    ):
+        return False
+    if request.result_limit is not None and (
+        type(request.result_limit) is not int
+        or not 1 <= request.result_limit <= 1000
+    ):
+        return False
     return True
 
 
@@ -117,6 +133,8 @@ class JobSearchRequest:
     company: str
     title: str
     location: str | None = None
+    title_any: tuple[str, ...] = ()
+    result_limit: int | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -128,6 +146,12 @@ class JobSearchRequest:
                 raise TypeError(f"{name} must be a string")
         if self.location is not None and not isinstance(self.location, str):
             raise TypeError("location must be a string or None")
+        if not isinstance(self.title_any, tuple) or any(
+            not isinstance(value, str) for value in self.title_any
+        ):
+            raise TypeError("title_any must be a tuple of strings")
+        if self.result_limit is not None and type(self.result_limit) is not int:
+            raise TypeError("result_limit must be an integer or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +163,7 @@ class SearchCandidate:
     source_platform: SourcePlatform
     source_url: str
     source_job_id: str | None = None
+    observation: SourceJobObservation | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -170,6 +195,21 @@ class SearchCandidate:
             or len(self.source_job_id) > 240
         ):
             raise ValueError("source_job_id is outside the search contract")
+        if self.observation is not None:
+            if not isinstance(self.observation, SourceJobObservation):
+                raise TypeError("observation must be typed")
+            observed_location = self.observation.location or None
+            if (
+                self.observation.source_platform is not self.source_platform
+                or self.observation.source_job_id != self.source_job_id
+                or self.observation.source_url != self.source_url
+                or self.observation.company != self.company
+                or self.observation.title != self.title
+                or observed_location != self.location
+            ):
+                raise ValueError(
+                    "candidate observation does not match search identity"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,8 +236,8 @@ class CandidateSet:
             for candidate in self.candidates
         ):
             raise TypeError("candidates must be a tuple of SearchCandidate")
-        if len(self.candidates) > 10:
-            raise ValueError("CandidateSet cannot contain more than 10 candidates")
+        if len(self.candidates) > 1000:
+            raise ValueError("CandidateSet cannot contain more than 1000 candidates")
         candidate_ids = [candidate.candidate_id for candidate in self.candidates]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("candidate IDs must be unique")

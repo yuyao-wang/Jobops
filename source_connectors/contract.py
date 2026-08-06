@@ -9,15 +9,45 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 
+WORKDAY_PUBLIC_JOB_HOST_SUFFIXES = (
+    "myworkdayjobs.com",
+    "myworkdaysite.com",
+    "workdayjobs.com",
+    "workday.com",
+)
+
+PUBLIC_ATS_JOB_HOST_SUFFIXES = (
+    "ashbyhq.com",
+    "greenhouse.io",
+    "icims.com",
+    "jobvite.com",
+    "lever.co",
+    *WORKDAY_PUBLIC_JOB_HOST_SUFFIXES,
+    "smartrecruiters.com",
+    "successfactors.com",
+    "successfactors.eu",
+)
+
+
 class SourcePlatform(str, Enum):
     GREENHOUSE = "GREENHOUSE"
     LEVER = "LEVER"
+    ASHBY = "ASHBY"
+    JOBVITE = "JOBVITE"
+    GLASSDOOR = "GLASSDOOR"
+    WORKDAY = "WORKDAY"
+    SMARTRECRUITERS = "SMARTRECRUITERS"
+    ICIMS = "ICIMS"
+    SUCCESSFACTORS = "SUCCESSFACTORS"
     GENERIC_WEB = "GENERIC_WEB"
 
 
 class AtsType(str, Enum):
     GREENHOUSE = "GREENHOUSE"
     LEVER = "LEVER"
+    ASHBY = "ASHBY"
+    JOBVITE = "JOBVITE"
+    WORKDAY = "WORKDAY"
     UNKNOWN = "UNKNOWN"
 
 
@@ -261,6 +291,7 @@ class SourceJobReader(Protocol):
 __all__ = [
     "AtsType",
     "FieldProvenance",
+    "PUBLIC_ATS_JOB_HOST_SUFFIXES",
     "ProvenanceSource",
     "ReadJobReason",
     "ReadJobRequest",
@@ -269,5 +300,6 @@ __all__ = [
     "SourceJobObservation",
     "SourceJobReader",
     "SourcePlatform",
+    "WORKDAY_PUBLIC_JOB_HOST_SUFFIXES",
     "WorkMode",
 ]

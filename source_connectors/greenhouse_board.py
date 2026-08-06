@@ -6,11 +6,12 @@ import hashlib
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import parse_qs, quote, urljoin, urlsplit
 
 import httpx
 
@@ -24,6 +25,7 @@ from core.job_search import (
     canonicalize_search_match_text,
 )
 from source_connectors.contract import SourcePlatform
+from source_connectors.greenhouse import greenhouse_observation_from_payload
 
 
 _BOARD_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -51,14 +53,14 @@ class JobSearchExecutionPolicy:
     max_redirects: int = 2
     max_concurrent_requests: int = 1
     allowed_providers: tuple[str, ...] = ("GREENHOUSE",)
-    user_agent_version: str = "Jobops/2 GreenhouseBoardJobSearch"
+    user_agent_version: str = "Jobops/3 ProductionJobSearch"
 
     def __post_init__(self) -> None:
         if self.contract_version != JOB_SEARCH_EXECUTION_POLICY_VERSION:
             raise ValueError("unsupported job search policy version")
         for name, value, maximum in (
             ("max_queries_per_refresh", self.max_queries_per_refresh, 100),
-            ("max_results_per_query", self.max_results_per_query, 10),
+            ("max_results_per_query", self.max_results_per_query, 1000),
             ("max_response_bytes", self.max_response_bytes, 25_000_000),
             ("max_redirects", self.max_redirects, 5),
             ("max_concurrent_requests", self.max_concurrent_requests, 8),
@@ -73,9 +75,15 @@ class JobSearchExecutionPolicy:
                 raise ValueError(f"{name} is outside the server policy")
         if (
             not isinstance(self.allowed_providers, tuple)
-            or not self.allowed_providers
             or any(
-                provider not in {"GREENHOUSE", "LEVER"}
+                provider
+                not in {
+                    "GREENHOUSE",
+                    "ASHBY",
+                    "LEVER",
+                    "GLASSDOOR",
+                    "JOBVITE",
+                }
                 for provider in self.allowed_providers
             )
             or len(set(self.allowed_providers)) != len(self.allowed_providers)
@@ -106,6 +114,61 @@ class BoundedHttpRequest:
     read_timeout_seconds: float
     max_redirects: int
     max_response_bytes: int
+    query: Mapping[str, str] = field(default_factory=dict)
+    secret_query: Mapping[str, str] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    secret_headers: Mapping[str, str] = field(
+        default_factory=dict,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        query = dict(self.query)
+        secret_query = dict(self.secret_query)
+        headers = dict(self.headers)
+        secret_headers = dict(self.secret_headers)
+        if set(query).intersection(secret_query):
+            raise ValueError("public and secret query keys overlap")
+        if any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            or len(value) > 4096
+            for values in (query, secret_query)
+            for key, value in values.items()
+        ):
+            raise ValueError("HTTP query parameters are invalid")
+        if any(
+            not isinstance(key, str)
+            or not key
+            or len(key) > 256
+            or any(character in key for character in "\r\n:")
+            or not isinstance(value, str)
+            or not value
+            or len(value) > 4096
+            or any(character in value for character in "\r\n")
+            for values in (headers, secret_headers)
+            for key, value in values.items()
+        ):
+            raise ValueError("HTTP headers are invalid")
+        public_header_names = {key.casefold() for key in headers}
+        secret_header_names = {key.casefold() for key in secret_headers}
+        if public_header_names.intersection(secret_header_names):
+            raise ValueError("public and secret header keys overlap")
+        object.__setattr__(self, "headers", MappingProxyType(headers))
+        object.__setattr__(self, "query", MappingProxyType(query))
+        object.__setattr__(
+            self,
+            "secret_query",
+            MappingProxyType(secret_query),
+        )
+        object.__setattr__(
+            self,
+            "secret_headers",
+            MappingProxyType(secret_headers),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +197,7 @@ class BoundedHttpResult:
 @runtime_checkable
 class BoundedJobSearchHttpPort(Protocol):
     async def get(self, request: BoundedHttpRequest) -> BoundedHttpResult:
-        """Perform one bounded credential-free HTTP GET."""
+        """Perform one bounded HTTP GET with first-hop-only secrets."""
 
 
 class HttpxBoundedJobSearchHttpClient:
@@ -177,7 +240,23 @@ class HttpxBoundedJobSearchHttpClient:
                         client.build_request(
                             "GET",
                             current_url,
-                            headers=dict(request.headers),
+                            headers={
+                                **request.headers,
+                                **(
+                                    request.secret_headers
+                                    if redirect_count == 0
+                                    else {}
+                                ),
+                            },
+                            params=(
+                                {
+                                    **request.query,
+                                    **request.secret_query,
+                                }
+                                if redirect_count == 0
+                                and (request.query or request.secret_query)
+                                else None
+                            ),
                         ),
                         stream=True,
                     )
@@ -264,6 +343,15 @@ def _candidate_set_id(
                 name="title",
                 maximum=240,
             ),
+            "title_any": [
+                canonicalize_search_match_text(
+                    item,
+                    name="title_any",
+                    maximum=240,
+                )
+                for item in request.title_any
+            ],
+            "result_limit": request.result_limit,
         },
         "board_token": board.board_token,
         "candidate_ids": [
@@ -356,9 +444,19 @@ def _greenhouse_source_url(
         or parsed.username is not None
         or parsed.password is not None
         or port is not None
-        or _GREENHOUSE_HOST_PATTERN.fullmatch(parsed.hostname) is None
     ):
-        raise ValueError("absolute_url is not a supported Greenhouse job URL")
+        raise ValueError("absolute_url is not a supported HTTPS job URL")
+    if _GREENHOUSE_HOST_PATTERN.fullmatch(parsed.hostname) is None:
+        query_job_ids = parse_qs(parsed.query).get("gh_jid", ())
+        if tuple(query_job_ids) != (source_job_id,):
+            raise ValueError(
+                "custom absolute_url does not bind the Greenhouse job ID"
+            )
+        return (
+            "https://job-boards.greenhouse.io/"
+            f"{quote(board_token, safe='')}/jobs/"
+            f"{quote(source_job_id, safe='')}"
+        )
     expected_path = f"/{board_token}/jobs/{source_job_id}"
     if parsed.path.rstrip("/") != expected_path:
         raise ValueError("absolute_url does not match the board job")
@@ -451,7 +549,7 @@ class GreenhouseBoardJobSearch:
 
         api_url = (
             "https://boards-api.greenhouse.io/v1/boards/"
-            f"{quote(board.board_token, safe='')}/jobs"
+            f"{quote(board.board_token, safe='')}/jobs?content=true"
         )
         response = await self._http_port.get(
             BoundedHttpRequest(
@@ -518,10 +616,12 @@ class GreenhouseBoardJobSearch:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return JobSearchResult.failed(JobSearchReason.MALFORMED_RESPONSE)
         try:
+            observed_at = self._clock()
             candidates = self._candidates_from_payload(
                 payload=payload,
                 board=board,
                 request=request,
+                observed_at=observed_at,
             )
         except _CandidateValidationError:
             return JobSearchResult.failed(
@@ -531,9 +631,12 @@ class GreenhouseBoardJobSearch:
             return JobSearchResult.failed(JobSearchReason.MALFORMED_RESPONSE)
         try:
             bounded_candidates = tuple(
-                candidates[: self._policy.max_results_per_query]
+                candidates[
+                    : request.result_limit
+                    or self._policy.max_results_per_query
+                ]
             )
-            created_at = self._clock()
+            created_at = observed_at
             candidate_set = CandidateSet(
                 candidate_set_id=(
                     self._candidate_set_id_factory()
@@ -560,6 +663,7 @@ class GreenhouseBoardJobSearch:
         payload: Any,
         board: GreenhouseBoardConfig,
         request: JobSearchRequest,
+        observed_at: datetime,
     ) -> list[SearchCandidate]:
         if not isinstance(payload, Mapping):
             raise ValueError("Greenhouse board response must be an object")
@@ -567,7 +671,12 @@ class GreenhouseBoardJobSearch:
         if not isinstance(jobs, list):
             raise ValueError("Greenhouse board response must contain jobs")
 
-        query_title = _normalize_match_text(request.title)
+        query_titles = tuple(
+            dict.fromkeys(
+                _normalize_match_text(value)
+                for value in (request.title_any or (request.title,))
+            )
+        )
         query_location = (
             _normalize_match_text(request.location)
             if request.location is not None
@@ -599,10 +708,10 @@ class GreenhouseBoardJobSearch:
                 ) from exc
 
             normalized_title = _normalize_match_text(title)
-            exact = normalized_title == query_title
-            if not exact and not _contains_phrase(
-                normalized_title,
-                query_title,
+            exact = normalized_title in query_titles
+            if not exact and not any(
+                _contains_phrase(normalized_title, query_title)
+                for query_title in query_titles
             ):
                 continue
             if query_location is not None:
@@ -615,6 +724,15 @@ class GreenhouseBoardJobSearch:
                 ):
                     continue
 
+            observation = None
+            if item.get("content") not in {None, ""}:
+                observation = greenhouse_observation_from_payload(
+                    payload=item,
+                    source_url=source_url,
+                    expected_job_id=source_job_id,
+                    observed_at=observed_at,
+                    canonical_company=board.canonical_company.strip(),
+                )
             candidate = SearchCandidate(
                 candidate_id=(
                     f"greenhouse:{board.board_token}:{source_job_id}"
@@ -625,6 +743,7 @@ class GreenhouseBoardJobSearch:
                 source_platform=SourcePlatform.GREENHOUSE,
                 source_url=source_url,
                 source_job_id=source_job_id,
+                observation=observation,
             )
             existing = candidates_by_source_id.get(source_job_id)
             if existing is not None:

@@ -33,10 +33,18 @@ class CanonicalApplicationAnswerKey(StrEnum):
     GITHUB = "github"
     PORTFOLIO = "portfolio"
     CURRENT_COMPANY = "current_company"
+    EMPLOYMENT_STATUS = "employment_status"
+    FULL_TIME_EXPERIENCE = "full_time_experience"
+    OFFICE_ATTENDANCE = "office_attendance"
+    COMPANY_FAMILIARITY = "company_familiarity"
+    JOB_DISCOVERY_SOURCE = "job_discovery_source"
+    GRADUATION_DATE = "graduation_date"
+    ACCOMMODATION = "accommodation"
     RESUME = "resume"
     COVER_LETTER = "cover_letter"
     COVER_LETTER_FILE = "cover_letter_file"
     WORK_AUTHORIZATION = "work_authorization"
+    WORK_AUTHORIZATION_DETAIL = "work_authorization_detail"
     SPONSORSHIP = "sponsorship"
     RELOCATION = "relocation"
     SALARY = "salary"
@@ -64,9 +72,12 @@ class CanonicalAnswerValueType(StrEnum):
 class CanonicalAnswerSensitivity(StrEnum):
     BASIC = "BASIC"
     PERSONAL = "PERSONAL"
+    EMPLOYMENT = "EMPLOYMENT"
+    EDUCATION = "EDUCATION"
     LEGAL = "LEGAL"
     COMPENSATION = "COMPENSATION"
     VOLUNTARY_SELF_ID = "VOLUNTARY_SELF_ID"
+    HEALTH = "HEALTH"
     APPLICATION_MATERIAL = "APPLICATION_MATERIAL"
     ATTESTATION = "ATTESTATION"
     UNSUPPORTED = "UNSUPPORTED"
@@ -211,6 +222,48 @@ _DEFINITIONS = (
         CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
     ),
     _definition(
+        CanonicalApplicationAnswerKey.EMPLOYMENT_STATUS,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.EMPLOYMENT,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.FULL_TIME_EXPERIENCE,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.EMPLOYMENT,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.OFFICE_ATTENDANCE,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.PERSONAL,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.COMPANY_FAMILIARITY,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.BASIC,
+        CanonicalAnswerAutomationCategory.ORDINARY_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.JOB_DISCOVERY_SOURCE,
+        CanonicalAnswerValueType.MULTI_SELECT,
+        CanonicalAnswerSensitivity.BASIC,
+        CanonicalAnswerAutomationCategory.ORDINARY_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.GRADUATION_DATE,
+        CanonicalAnswerValueType.TEXT,
+        CanonicalAnswerSensitivity.EDUCATION,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.ACCOMMODATION,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.HEALTH,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
+    ),
+    _definition(
         CanonicalApplicationAnswerKey.RESUME,
         CanonicalAnswerValueType.FILE_REFERENCE,
         CanonicalAnswerSensitivity.APPLICATION_MATERIAL,
@@ -234,6 +287,12 @@ _DEFINITIONS = (
         CanonicalAnswerSensitivity.LEGAL,
         CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
         "authorized_to_work",
+    ),
+    _definition(
+        CanonicalApplicationAnswerKey.WORK_AUTHORIZATION_DETAIL,
+        CanonicalAnswerValueType.ENUM,
+        CanonicalAnswerSensitivity.LEGAL,
+        CanonicalAnswerAutomationCategory.SENSITIVE_FACT,
     ),
     _definition(
         CanonicalApplicationAnswerKey.SPONSORSHIP,

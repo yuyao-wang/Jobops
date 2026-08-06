@@ -202,6 +202,17 @@ class ApplicationPreparationStage(StrEnum):
 
 
 APPLICATION_PREPARATION_STAGE_ORDER = tuple(ApplicationPreparationStage)
+P2_APPROVED_RESUME_REUSE_SKIPPED_STAGES = frozenset(
+    {
+        ApplicationPreparationStage.RESUME_TAILORING,
+        ApplicationPreparationStage.RESUME_FACT_QA,
+        ApplicationPreparationStage.BASE_LATEX_SELECTION,
+        ApplicationPreparationStage.LATEX_CONSTRUCTION,
+        ApplicationPreparationStage.RESUME_COMPILATION,
+        ApplicationPreparationStage.RESUME_VISUAL_QA,
+        ApplicationPreparationStage.RESUME_LAYOUT_REVISION,
+    }
+)
 PREPARATION_ASSEMBLY_LINEAGE_CONTRACT_VERSION = (
     "preparation-assembly-lineage-v1"
 )
@@ -2481,11 +2492,13 @@ class ApplicationPreparationStageResult:
         )
 
     @classmethod
-    def skipped_layout(
+    def skipped(
         cls,
         *,
+        stage: ApplicationPreparationStage,
         preparation_invocation_ref: PreparationInvocationBindingRef,
     ) -> "ApplicationPreparationStageResult":
+        stage = ApplicationPreparationStage(stage)
         content = {
             "compilation_source_lineage": None,
             "execution_status": PreparationStageExecutionStatus.SKIPPED.value,
@@ -2501,12 +2514,12 @@ class ApplicationPreparationStageResult:
             "result_id": None,
             "retryable": False,
             "schema_version": PREPARATION_STAGE_RESULT_SCHEMA_VERSION,
-            "stage": ApplicationPreparationStage.RESUME_LAYOUT_REVISION.value,
+            "stage": stage.value,
             "stop_reason": None,
             "stopped_source_ref": None,
         }
         return cls(
-            stage=ApplicationPreparationStage.RESUME_LAYOUT_REVISION,
+            stage=stage,
             execution_status=PreparationStageExecutionStatus.SKIPPED,
             result_id=None,
             result_content_hash=None,
@@ -2516,6 +2529,17 @@ class ApplicationPreparationStageResult:
             stage_content_hash=_canonical_hash(content),
             schema_version=PREPARATION_STAGE_RESULT_SCHEMA_VERSION,
             outcome=PreparationStageOutcome.SKIPPED,
+            preparation_invocation_ref=preparation_invocation_ref,
+        )
+
+    @classmethod
+    def skipped_layout(
+        cls,
+        *,
+        preparation_invocation_ref: PreparationInvocationBindingRef,
+    ) -> "ApplicationPreparationStageResult":
+        return cls.skipped(
+            stage=ApplicationPreparationStage.RESUME_LAYOUT_REVISION,
             preparation_invocation_ref=preparation_invocation_ref,
         )
 
@@ -3554,6 +3578,7 @@ class RunApplicationPreparationCommand:
     invocation_id: str = field(
         default_factory=lambda: f"preparation-call-{uuid4().hex}"
     )
+    input_snapshot_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3660,10 +3685,11 @@ class RunApplicationPreparationResult:
 
 
 def _preparation_binding(
-    plan: ApplicationPlan, recipe: ApplicationPreparationRecipe
+    plan: ApplicationPlan,
+    recipe: ApplicationPreparationRecipe,
+    input_snapshot_hash: str | None = None,
 ) -> str:
-    return _canonical_hash(
-        {
+    payload = {
             "application_plan_id": plan.plan_id,
             "contract_version": (
                 APPLICATION_PREPARATION_ORCHESTRATION_CONTRACT_VERSION
@@ -3677,7 +3703,11 @@ def _preparation_binding(
             ),
             "subject_id": plan.subject_id,
         }
-    )
+    if input_snapshot_hash is not None:
+        payload["input_snapshot_hash"] = _require_hash(
+            "input_snapshot_hash", input_snapshot_hash
+        )
+    return _canonical_hash(payload)
 
 
 def _run_result_failure(
@@ -3911,6 +3941,11 @@ async def run_application_preparation(
         invocation_id = _clean_text(
             "invocation_id", command.invocation_id, 200
         )
+        input_snapshot_hash = command.input_snapshot_hash
+        if input_snapshot_hash is not None:
+            input_snapshot_hash = _require_hash(
+                "input_snapshot_hash", input_snapshot_hash
+            )
         now = _require_aware("now", command.now)
         if not isinstance(recipe, ApplicationPreparationRecipe):
             raise TypeError("recipe must be typed")
@@ -3957,7 +3992,9 @@ async def run_application_preparation(
         return _run_result_failure(
             ApplicationPreparationFailureReason.INVALID_REQUEST
         )
-    binding = _preparation_binding(plan, recipe)
+    binding = _preparation_binding(
+        plan, recipe, input_snapshot_hash=input_snapshot_hash
+    )
     try:
         current = run_repository.find_current_for_plan(
             subject_id=subject, application_plan_id=plan.plan_id
@@ -3976,10 +4013,26 @@ async def run_application_preparation(
     if (
         current.status is ApplicationPreparationRunReadStatus.FOUND
         and current.run is not None
-        and current.run.overall_status
-        is ApplicationPreparationRunStatus.COMPLETED
         and current.run.preparation_binding == binding
     ):
+        if (
+            current.run.overall_status
+            is not ApplicationPreparationRunStatus.COMPLETED
+        ):
+            status = ApplicationPreparationStatus(
+                current.run.overall_status.value
+            )
+            return RunApplicationPreparationResult(
+                status=status,
+                run=current.run,
+                reason_code=None,
+                retryable=False,
+                message=(
+                    "Terminal application preparation is unchanged; "
+                    "automatic retry is blocked."
+                ),
+                assembly_lineage=None,
+            )
         try:
             assembly_lineage = PreparationAssemblyLineage.from_run(
                 current.run
@@ -4057,6 +4110,17 @@ async def run_application_preparation(
 
     for definition in recipe.stages:
         stage = definition.stage
+        if (
+            plan.priority_level.value == "P2"
+            and stage in P2_APPROVED_RESUME_REUSE_SKIPPED_STAGES
+        ):
+            stage_results.append(
+                ApplicationPreparationStageResult.skipped(
+                    stage=stage,
+                    preparation_invocation_ref=invocation_binding.reference,
+                )
+            )
+            continue
         if stage is ApplicationPreparationStage.RESUME_LAYOUT_REVISION:
             if visual_directive is PublicStageDirective.PASSED:
                 stage_results.append(

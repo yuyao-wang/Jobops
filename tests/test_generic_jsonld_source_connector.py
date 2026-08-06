@@ -69,6 +69,11 @@ def _reader(
     )
 
 
+def _pinned_url(url: str, address: str = PUBLIC_IP) -> str:
+    parsed = httpx.URL(url)
+    return str(parsed.copy_with(host=address))
+
+
 @pytest.mark.asyncio
 async def test_provider_neutral_entry_reads_one_generic_jsonld_job(
     monkeypatch: pytest.MonkeyPatch,
@@ -180,6 +185,51 @@ async def test_optional_jsonld_fields_are_not_guessed() -> None:
         "observed_at",
         "provenance",
     }
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_platform", "expected_ats"),
+    (
+        (
+            "https://example.wd5.myworkdayjobs.com/en-US/careers/job/R-123",
+            SourcePlatform.WORKDAY,
+            AtsType.WORKDAY,
+        ),
+        (
+            "https://jobs.smartrecruiters.com/Example/123-platform-engineer",
+            SourcePlatform.SMARTRECRUITERS,
+            AtsType.UNKNOWN,
+        ),
+        (
+            "https://example.icims.com/jobs/123/platform-engineer/job",
+            SourcePlatform.ICIMS,
+            AtsType.UNKNOWN,
+        ),
+        (
+            "https://career5.successfactors.eu/career?company=example&career_job_req_id=R-123&career_ns=job_listing",
+            SourcePlatform.SUCCESSFACTORS,
+            AtsType.UNKNOWN,
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_generic_jsonld_preserves_known_ats_source_family(
+    url: str,
+    expected_platform: SourcePlatform,
+    expected_ats: AtsType,
+) -> None:
+    result = await _reader(
+        lambda request: httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=_html(_minimal_posting()),
+        )
+    ).read_job(ReadJobRequest(url=url))
+
+    assert result.status is ReadJobStatus.SUCCEEDED
+    assert result.observation is not None
+    assert result.observation.source_platform is expected_platform
+    assert result.observation.ats_type is expected_ats
 
 
 @pytest.mark.asyncio
@@ -381,6 +431,37 @@ async def test_unsafe_initial_url_is_rejected_before_http(url: str) -> None:
     assert called is False
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://www.linkedin.com./jobs/view/123456",
+        "https://jobs.indeed.com/viewjob?jk=synthetic",
+        "https://www.glassdoor.com/job-listing/synthetic",
+        "https://jobs.glassdoor.ca./job-listing/synthetic",
+    ),
+)
+@pytest.mark.asyncio
+async def test_aggregator_initial_url_is_rejected_before_http(url: str) -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        raise AssertionError("aggregator URL must not perform HTTP")
+
+    result = await _reader(
+        handler,
+        resolver=lambda hostname: (_ for _ in ()).throw(
+            AssertionError("aggregator URL must not resolve")
+        ),
+    ).read_job(ReadJobRequest(url=url))
+
+    assert result.status is ReadJobStatus.FAILED
+    assert result.reason_code is ReadJobReason.UNSAFE_URL
+    assert result.retryable is False
+    assert called is False
+
+
 @pytest.mark.asyncio
 async def test_hostname_resolving_private_is_rejected_before_http() -> None:
     called = False
@@ -402,6 +483,98 @@ async def test_hostname_resolving_private_is_rejected_before_http() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dns_rebinding_cannot_change_validated_connection_target() -> None:
+    resolver_calls: list[str] = []
+    requests: list[httpx.Request] = []
+
+    def resolver(hostname: str) -> tuple[str, ...]:
+        resolver_calls.append(hostname)
+        if len(resolver_calls) == 1:
+            return (PUBLIC_IP,)
+        return ("127.0.0.1",)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=_html(_minimal_posting()),
+        )
+
+    result = await _reader(handler, resolver=resolver).read_job(
+        ReadJobRequest(url=SOURCE_URL)
+    )
+
+    assert result.status is ReadJobStatus.SUCCEEDED
+    assert resolver_calls == ["careers.example.com"]
+    assert len(requests) == 1
+    assert str(requests[0].url) == _pinned_url(SOURCE_URL)
+    assert requests[0].headers["host"] == "careers.example.com"
+    assert requests[0].extensions["sni_hostname"] == "careers.example.com"
+    assert result.observation is not None
+    assert result.observation.source_url == SOURCE_URL
+
+
+@pytest.mark.asyncio
+async def test_prevalidated_addresses_fail_over_without_second_dns_lookup() -> None:
+    second_public_ip = "93.184.216.35"
+    resolver_calls: list[str] = []
+    requests: list[httpx.Request] = []
+
+    def resolver(hostname: str) -> tuple[str, ...]:
+        resolver_calls.append(hostname)
+        return (PUBLIC_IP, second_public_ip)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.ConnectError(
+                "synthetic first address unavailable",
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text=_html(_minimal_posting()),
+        )
+
+    result = await _reader(handler, resolver=resolver).read_job(
+        ReadJobRequest(url=SOURCE_URL)
+    )
+
+    assert result.status is ReadJobStatus.SUCCEEDED
+    assert resolver_calls == ["careers.example.com"]
+    assert [str(request.url) for request in requests] == [
+        _pinned_url(SOURCE_URL),
+        _pinned_url(SOURCE_URL, second_public_ip),
+    ]
+    assert all(
+        request.headers["host"] == "careers.example.com"
+        and request.extensions["sni_hostname"] == "careers.example.com"
+        for request in requests
+    )
+
+
+@pytest.mark.asyncio
+async def test_mixed_public_private_dns_set_is_rejected_before_failover() -> None:
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        raise AssertionError("mixed DNS result must not perform HTTP")
+
+    result = await _reader(
+        handler,
+        resolver=lambda hostname: (PUBLIC_IP, "127.0.0.1"),
+    ).read_job(ReadJobRequest(url=SOURCE_URL))
+
+    assert result.status is ReadJobStatus.FAILED
+    assert result.reason_code is ReadJobReason.UNSAFE_URL
+    assert called is False
+
+
+@pytest.mark.asyncio
 async def test_redirect_to_private_address_is_rejected_before_second_get() -> None:
     requests: list[str] = []
 
@@ -414,10 +587,80 @@ async def test_redirect_to_private_address_is_rejected_before_second_get() -> No
 
     result = await _reader(handler).read_job(ReadJobRequest(url=SOURCE_URL))
 
-    assert requests == [SOURCE_URL]
+    assert requests == [_pinned_url(SOURCE_URL)]
     assert result.status is ReadJobStatus.FAILED
     assert result.reason_code is ReadJobReason.UNSAFE_URL
     assert result.retryable is False
+
+
+@pytest.mark.parametrize(
+    "blocked_target",
+    (
+        "https://www.linkedin.com./jobs/view/123456",
+        "https://jobs.indeed.com/viewjob?jk=synthetic",
+        "https://www.glassdoor.com/job-listing/synthetic",
+        "https://jobs.glassdoor.ca./job-listing/synthetic",
+    ),
+)
+@pytest.mark.asyncio
+async def test_redirect_to_aggregator_is_rejected_before_second_get(
+    blocked_target: str,
+) -> None:
+    requests: list[str] = []
+
+    def resolver(hostname: str) -> tuple[str, ...]:
+        normalized = hostname.casefold().rstrip(".")
+        if normalized.endswith(
+            ("linkedin.com", "indeed.com", "glassdoor.com", "glassdoor.ca")
+        ):
+            raise AssertionError("blocked aggregator host must not resolve")
+        return (PUBLIC_IP,)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if len(requests) > 1:
+            raise AssertionError("aggregator redirect target must not be fetched")
+        return httpx.Response(302, headers={"location": blocked_target})
+
+    result = await _reader(
+        handler,
+        resolver=resolver,
+    ).read_job(ReadJobRequest(url=SOURCE_URL))
+
+    assert requests == [_pinned_url(SOURCE_URL)]
+    assert result.status is ReadJobStatus.FAILED
+    assert result.reason_code is ReadJobReason.UNSAFE_URL
+    assert result.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_later_redirect_hop_to_aggregator_is_never_requested() -> None:
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        if len(requests) == 1:
+            return httpx.Response(
+                302,
+                headers={"location": "https://jobs.example.org/intermediate"},
+            )
+        if len(requests) == 2:
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://www.linkedin.com./jobs/view/123456"
+                },
+            )
+        raise AssertionError("aggregator redirect target must not be fetched")
+
+    result = await _reader(handler).read_job(ReadJobRequest(url=SOURCE_URL))
+
+    assert requests == [
+        _pinned_url(SOURCE_URL),
+        _pinned_url("https://jobs.example.org/intermediate"),
+    ]
+    assert result.status is ReadJobStatus.FAILED
+    assert result.reason_code is ReadJobReason.UNSAFE_URL
 
 
 @pytest.mark.asyncio
@@ -462,7 +705,10 @@ async def test_safe_redirect_sets_final_source_url() -> None:
 
     result = await _reader(handler).read_job(ReadJobRequest(url=SOURCE_URL))
 
-    assert requests == [SOURCE_URL, "https://jobs.example.org/final"]
+    assert requests == [
+        _pinned_url(SOURCE_URL),
+        _pinned_url("https://jobs.example.org/final"),
+    ]
     assert result.status is ReadJobStatus.SUCCEEDED
     assert result.observation is not None
     assert result.observation.source_url == "https://jobs.example.org/final"

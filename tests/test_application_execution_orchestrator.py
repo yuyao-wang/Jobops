@@ -264,6 +264,12 @@ async def test_p2c3_defer_stops_all_later_stages(tmp_path):
     assert stages.calls.order == ["P2C3"]
     assert result.run.deferred_stage is APPLICATION_EXECUTION_STAGE_ORDER[0]
 
+    replay_stages = _Stages()
+    replay = await _run(parts, repository, command, replay_stages)
+    assert replay.status is ApplicationExecutionStatus.DEFERRED
+    assert replay.run == result.run
+    assert replay_stages.calls.order == []
+
 
 @pytest.mark.asyncio
 async def test_gate_b_user_authorization_required_stops_before_permit(tmp_path):

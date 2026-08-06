@@ -127,8 +127,22 @@ class IsolatedStructuredModelRequest:
             separators=(",", ":"),
         ).encode()
 
+    def output_schema_bytes(self) -> bytes:
+        """Return the exact canonical schema bytes sent to the provider."""
+
+        return json.dumps(
+            self.output_schema,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
     def total_input_byte_count(self) -> int:
-        return len(self.input_bytes()) + len(self.system_prompt.encode("utf-8"))
+        return (
+            len(self.input_bytes())
+            + len(self.system_prompt.encode("utf-8"))
+            + len(self.output_schema_bytes())
+        )
 
     def execution_identity(
         self,
@@ -178,6 +192,7 @@ class SubscriptionCLIProcessSpec:
     result_file_name: str
     executable_read_roots: tuple[str, ...]
     allowed_process_executables: tuple[str, ...]
+    allowed_preference_domains: tuple[str, ...] = ()
 
 
 class SubscriptionCLIInvocationAdapter(Protocol):

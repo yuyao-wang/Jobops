@@ -13,6 +13,8 @@ from .credentials import (
 )
 from .mailbox import (
     CorrelatedMailboxVerifier,
+    MailAuthenticationEvidence,
+    MailAuthenticationResult,
     MailboxMessage,
     MailboxProvider,
     MailboxVerifier,
@@ -40,6 +42,8 @@ __all__ = [
     "IMAPProviderDisabled",
     "IMAPProviderError",
     "MacOSSecurityCredentialStore",
+    "MailAuthenticationEvidence",
+    "MailAuthenticationResult",
     "MailboxMessage",
     "MailboxProvider",
     "MailboxVerifier",

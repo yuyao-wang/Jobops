@@ -71,7 +71,13 @@ PREPARED_COVER_LETTER_MATERIAL_CONTRACT_VERSION = (
     "prepared-cover-letter-material-v1"
 )
 COVER_LETTER_PUBLICATION_POLICY_VERSION = (
-    "cover-letter-publication-one-page-v1"
+    "cover-letter-publication-one-page-v2"
+)
+SUPPORTED_COVER_LETTER_PUBLICATION_POLICY_VERSIONS = frozenset(
+    {
+        "cover-letter-publication-one-page-v1",
+        COVER_LETTER_PUBLICATION_POLICY_VERSION,
+    }
 )
 MANAGED_COVER_LETTER_TEMPLATE_ID = "managed-cover-letter-one-page-v1"
 MANAGED_COVER_LETTER_TEMPLATE_VERSION = "1"
@@ -690,9 +696,18 @@ def cover_letter_pdf_text_is_faithful(
     expected = expected_cover_letter_text_projection(draft)
     return (
         bool(projection)
-        and projection == expected
+        and _projection_content_identity(projection)
+        == _projection_content_identity(expected)
         and _PLACEHOLDER_PATTERN.search(projection) is None
     )
+
+
+def _projection_content_identity(text: str) -> str:
+    """Compare PDF text content without trusting extractor word boundaries."""
+
+    if not isinstance(text, str):
+        raise TypeError("text projection must be a string")
+    return re.sub(r"\s+", "", text)
 
 
 def _publication_identity(
@@ -810,7 +825,7 @@ class PreparedCoverLetterMaterial:
             self.publication_policy_version,
             maximum=80,
         )
-        if policy != COVER_LETTER_PUBLICATION_POLICY_VERSION:
+        if policy not in SUPPORTED_COVER_LETTER_PUBLICATION_POLICY_VERSIONS:
             raise ValueError("publication policy is unsupported")
         subject = _clean_text("subject_id", self.subject_id, maximum=160)
         plan_id = _clean_text(
@@ -2174,7 +2189,8 @@ def publish_prepared_cover_letter(
     expected_projection = expected_cover_letter_text_projection(draft)
     if (
         not projection
-        or projection != expected_projection
+        or _projection_content_identity(projection)
+        != _projection_content_identity(expected_projection)
         or _PLACEHOLDER_PATTERN.search(projection) is not None
     ):
         return _failure(
@@ -2405,6 +2421,7 @@ def prepared_cover_letter_publication_public_result(
 
 __all__ = [
     "COVER_LETTER_PUBLICATION_POLICY_VERSION",
+    "SUPPORTED_COVER_LETTER_PUBLICATION_POLICY_VERSIONS",
     "CoverLetterOverflowCorrectionConstraint",
     "CoverLetterOverflowCorrectionConstraintReadResult",
     "CoverLetterOverflowCorrectionConstraintStatus",

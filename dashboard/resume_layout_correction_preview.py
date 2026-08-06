@@ -29,16 +29,16 @@ class ResumeLayoutCorrectionPreviewUIResult:
 
 
 _MESSAGES = {
-    ResumeLayoutCorrectionPreviewStatus.AVAILABLE: "当前 Resume 预览已生成。",
-    ResumeLayoutCorrectionPreviewStatus.UNCHANGED: "当前 Resume 预览未变化。",
-    ResumeLayoutCorrectionPreviewStatus.ITEM_NOT_CURRENT: "该待处理事项已不再是当前事项。",
-    ResumeLayoutCorrectionPreviewStatus.TARGET_STALE: "材料版本已变化，请刷新待处理事项。",
-    ResumeLayoutCorrectionPreviewStatus.SOURCE_ARTIFACT_MISSING: "当前 Resume 文件暂时不可用。",
-    ResumeLayoutCorrectionPreviewStatus.RENDERER_UNAVAILABLE: "预览服务暂时不可用。",
-    ResumeLayoutCorrectionPreviewStatus.PREVIEW_UNSAFE: "当前预览格式无法安全展示。",
-    ResumeLayoutCorrectionPreviewStatus.PREVIEW_INTEGRITY_FAILURE: "当前预览完整性校验失败。",
-    ResumeLayoutCorrectionPreviewStatus.UNSUPPORTED_TARGET: "该修正事项不支持 Resume 预览。",
-    ResumeLayoutCorrectionPreviewStatus.FAILED: "暂时无法安全读取 Resume 预览。",
+    ResumeLayoutCorrectionPreviewStatus.AVAILABLE: "The current resume preview is ready.",
+    ResumeLayoutCorrectionPreviewStatus.UNCHANGED: "The current resume preview is unchanged.",
+    ResumeLayoutCorrectionPreviewStatus.ITEM_NOT_CURRENT: "This attention item is no longer current.",
+    ResumeLayoutCorrectionPreviewStatus.TARGET_STALE: "The material changed. Refresh the attention item.",
+    ResumeLayoutCorrectionPreviewStatus.SOURCE_ARTIFACT_MISSING: "The current resume file is unavailable.",
+    ResumeLayoutCorrectionPreviewStatus.RENDERER_UNAVAILABLE: "The preview renderer is unavailable.",
+    ResumeLayoutCorrectionPreviewStatus.PREVIEW_UNSAFE: "The preview format cannot be displayed safely.",
+    ResumeLayoutCorrectionPreviewStatus.PREVIEW_INTEGRITY_FAILURE: "The preview failed its integrity check.",
+    ResumeLayoutCorrectionPreviewStatus.UNSUPPORTED_TARGET: "This correction item does not support a resume preview.",
+    ResumeLayoutCorrectionPreviewStatus.FAILED: "The resume preview could not be read safely.",
 }
 
 

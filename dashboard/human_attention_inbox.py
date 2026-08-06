@@ -84,51 +84,51 @@ HumanAttentionQueueCallable = Callable[
 
 
 _KIND_LABELS = {
-    HumanAttentionKind.USER_FACT_REQUIRED: "需要补充事实",
-    HumanAttentionKind.USER_CHOICE_REQUIRED: "需要作出选择",
-    HumanAttentionKind.USER_ATTESTATION_REQUIRED: "需要本人确认",
-    HumanAttentionKind.MANUAL_REVIEW_REQUIRED: "需要人工检查结果",
-    HumanAttentionKind.MATERIAL_CORRECTION_REQUIRED: "材料需要修正",
-    HumanAttentionKind.INPUT_REPLACEMENT_REQUIRED: "输入需要替换",
-    HumanAttentionKind.SYSTEM_OPERATOR_REQUIRED: "系统需要处理",
-    HumanAttentionKind.UNCLASSIFIED_SYSTEM_BLOCKER: "未分类的系统阻断",
+    HumanAttentionKind.USER_FACT_REQUIRED: "Fact required",
+    HumanAttentionKind.USER_CHOICE_REQUIRED: "Choice required",
+    HumanAttentionKind.USER_ATTESTATION_REQUIRED: "Attestation required",
+    HumanAttentionKind.MANUAL_REVIEW_REQUIRED: "Manual review required",
+    HumanAttentionKind.MATERIAL_CORRECTION_REQUIRED: "Material correction required",
+    HumanAttentionKind.INPUT_REPLACEMENT_REQUIRED: "Input replacement required",
+    HumanAttentionKind.SYSTEM_OPERATOR_REQUIRED: "Operator action required",
+    HumanAttentionKind.UNCLASSIFIED_SYSTEM_BLOCKER: "Unclassified system blocker",
 }
 
 _SAFE_FAILURE_MESSAGES = {
-    "INVALID_REQUEST": "待处理事项请求无效。",
-    "RUN_LIST_INTEGRITY_FAILURE": "暂时无法读取准备记录。",
-    "CURRENT_RUN_INTEGRITY_FAILURE": "暂时无法确定当前准备状态。",
-    "APPLICATION_PLAN_NOT_FOUND": "相关申请计划暂时不可用。",
-    "APPLICATION_PLAN_INTEGRITY_FAILURE": "相关申请计划无法安全读取。",
-    "APPLICATION_PLAN_BINDING_MISMATCH": "相关申请计划绑定不一致。",
-    "ANSWER_SET_NOT_FOUND": "相关申请答案暂时不可用。",
-    "ANSWER_SET_INTEGRITY_FAILURE": "相关申请答案无法安全读取。",
-    "ANSWER_SET_BINDING_MISMATCH": "相关申请答案绑定不一致。",
-    "ATTENTION_MAPPING_FAILURE": "待处理事项暂时无法分类。",
+    "INVALID_REQUEST": "The attention request is invalid.",
+    "RUN_LIST_INTEGRITY_FAILURE": "Preparation records could not be read safely.",
+    "CURRENT_RUN_INTEGRITY_FAILURE": "The current preparation state could not be determined safely.",
+    "APPLICATION_PLAN_NOT_FOUND": "The related application plan is unavailable.",
+    "APPLICATION_PLAN_INTEGRITY_FAILURE": "The related application plan could not be read safely.",
+    "APPLICATION_PLAN_BINDING_MISMATCH": "The related application plan bindings do not match.",
+    "ANSWER_SET_NOT_FOUND": "The related application answers are unavailable.",
+    "ANSWER_SET_INTEGRITY_FAILURE": "The related application answers could not be read safely.",
+    "ANSWER_SET_BINDING_MISMATCH": "The related application-answer bindings do not match.",
+    "ATTENTION_MAPPING_FAILURE": "The attention item could not be classified safely.",
 }
 
 _GENERIC_ACTIONS = {
     HumanAttentionKind.USER_FACT_REQUIRED: (
-        "请补充或核实缺失的申请事实。"
+        "Provide or verify the missing application fact."
     ),
-    HumanAttentionKind.USER_CHOICE_REQUIRED: "请确认有效选项。",
+    HumanAttentionKind.USER_CHOICE_REQUIRED: "Choose one valid option.",
     HumanAttentionKind.USER_ATTESTATION_REQUIRED: (
-        "请本人审阅并确认相关声明。"
+        "Review and personally confirm the statement."
     ),
     HumanAttentionKind.MANUAL_REVIEW_REQUIRED: (
-        "请人工检查准备结果并作出决定。"
+        "Review the preparation result and make a decision."
     ),
     HumanAttentionKind.MATERIAL_CORRECTION_REQUIRED: (
-        "当前材料需要修正后才能继续。"
+        "Correct the material before continuing."
     ),
     HumanAttentionKind.INPUT_REPLACEMENT_REQUIRED: (
-        "请提供受支持且可读取的替代输入。"
+        "Provide a supported, readable replacement input."
     ),
     HumanAttentionKind.SYSTEM_OPERATOR_REQUIRED: (
-        "请由系统运维人员检查相关依赖或完整性状态。"
+        "An operator must inspect the dependency or integrity state."
     ),
     HumanAttentionKind.UNCLASSIFIED_SYSTEM_BLOCKER: (
-        "当前阻断尚无安全的处理路径。"
+        "No safe resolution path is available for this blocker."
     ),
 }
 
@@ -204,14 +204,14 @@ def map_human_attention_queue(
         or result.evaluated_at != now
     ):
         return _failed(
-            now=now, message="待处理事项服务返回了无效结果。"
+            now=now, message="The attention service returned an invalid result."
         )
     if result.status is HumanAttentionQueueStatus.FAILED:
         reason = getattr(result.reason_code, "value", "")
         return _failed(
             now=now,
             message=_SAFE_FAILURE_MESSAGES.get(
-                reason, "暂时无法读取待处理事项。"
+                reason, "Attention items could not be read safely."
             ),
         )
 
@@ -279,9 +279,9 @@ def map_human_attention_queue(
         else HumanAttentionInboxUIStatus.READY
     )
     message = (
-        "目前没有需要你处理的事项。"
+        "There are no items that need your attention."
         if status is HumanAttentionInboxUIStatus.EMPTY
-        else "待处理事项已刷新。"
+        else "Attention items were refreshed."
     )
     return HumanAttentionInboxUIResult(
         status=status,
@@ -347,7 +347,7 @@ class HumanAttentionInboxUIController:
             result = await value if inspect.isawaitable(value) else value
         except (OSError, RuntimeError, TypeError, ValueError):
             return _failed(
-                now=now, message="待处理事项服务暂时不可用。"
+                now=now, message="The attention service is currently unavailable."
             )
         return map_human_attention_queue(
             result, subject_id=subject_id, now=now

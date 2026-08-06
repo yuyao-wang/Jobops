@@ -75,31 +75,48 @@ def _candidate_vault(tmp_path: Path, *, mailbox_enabled: bool = False) -> Candid
     return CandidateVault.load(home)
 
 
-def _queue(path: Path) -> None:
-    fields = [
-        "company",
-        "job_title",
-        "job_url",
-        "priority",
-        "status",
-        "resume_variant",
-        "blocker",
-        "next_action",
-        "notes",
-    ]
+QUEUE_FIELDS = [
+    "company",
+    "job_title",
+    "job_url",
+    "priority",
+    "status",
+    "resume_variant",
+    "blocker",
+    "next_action",
+    "notes",
+]
+
+
+def _write_queue_rows(path: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=QUEUE_FIELDS)
         writer.writeheader()
-        writer.writerow(
-            {
-                "company": "Synthetic Co",
-                "job_title": "Test Engineer",
-                "job_url": "https://example.test/jobs/1",
-                "priority": "Medium",
-                "status": "Pending",
-                "resume_variant": "resume.pdf",
-            }
-        )
+        writer.writerows(rows)
+
+
+def _queue_row(
+    company: str,
+    url: str,
+    *,
+    status: str = "Pending",
+    title: str = "Test Engineer",
+) -> dict[str, str]:
+    return {
+        "company": company,
+        "job_title": title,
+        "job_url": url,
+        "priority": "Medium",
+        "status": status,
+        "resume_variant": "resume.pdf",
+    }
+
+
+def _queue(path: Path) -> None:
+    _write_queue_rows(
+        path,
+        [_queue_row("Synthetic Co", "https://example.test/jobs/1")],
+    )
 
 
 def test_cli_defaults_to_review_not_submit() -> None:
@@ -107,6 +124,236 @@ def test_cli_defaults_to_review_not_submit() -> None:
     assert args.submit is False
     assert args.approve_gate_a is False
     assert args.semantic_mapper is False
+
+
+@pytest.mark.parametrize("command", ["queue", "apply-csv"])
+def test_csv_cli_accepts_an_exact_job_id(command: str) -> None:
+    args = build_parser().parse_args([command, "--job-id", "job-" + "a" * 24])
+
+    assert args.job_id == "job-" + "a" * 24
+
+
+def test_exact_job_selection_runs_after_eligibility_and_before_limit(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "queue.csv"
+    resume_dir = tmp_path / "resumes"
+    resume_dir.mkdir()
+    _write_queue_rows(
+        csv_path,
+        [
+            _queue_row("First Synthetic", "https://example.test/jobs/first"),
+            _queue_row(
+                "Target Synthetic",
+                "https://example.test/jobs/target",
+                title="Target Engineer",
+            ),
+            _queue_row(
+                "Ineligible Synthetic",
+                "https://example.test/jobs/ineligible",
+                status="Submitted",
+            ),
+        ],
+    )
+    target_job_id = jobctl.JobSpec(
+        url="https://example.test/jobs/target",
+        company="Target Synthetic",
+        title="Target Engineer",
+        tier=jobctl.priority_to_tier("Medium"),
+    ).job_id
+
+    selected = jobctl._load_cli_queue(
+        csv_path,
+        resume_dir,
+        priorities="Medium",
+        statuses="Pending",
+        limit=1,
+        exact_job_id=target_job_id,
+    )
+
+    assert [application.company for application in selected] == [
+        "Target Synthetic"
+    ]
+
+
+def test_exact_job_selection_rejects_zero_or_duplicate_eligible_matches(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "queue.csv"
+    resume_dir = tmp_path / "resumes"
+    resume_dir.mkdir()
+    duplicate_url = "https://example.test/jobs/duplicate"
+    _write_queue_rows(
+        csv_path,
+        [
+            _queue_row(
+                "Duplicate One", f"{duplicate_url}#one", title="Engineer One"
+            ),
+            _queue_row(
+                "Duplicate Two", f"{duplicate_url}#two", title="Engineer Two"
+            ),
+        ],
+    )
+    duplicate_job_id = jobctl.JobSpec(
+        url=duplicate_url,
+        company="Duplicate One",
+        title="Engineer One",
+        tier=jobctl.priority_to_tier("Medium"),
+    ).job_id
+
+    with pytest.raises(ValueError, match="--job-id must be non-empty"):
+        jobctl._load_cli_queue(
+            csv_path,
+            resume_dir,
+            priorities="Medium",
+            statuses="Pending",
+            limit=1,
+            exact_job_id=" ",
+        )
+
+    for exact_job_id in ("job-" + "f" * 24, duplicate_job_id):
+        with pytest.raises(ValueError, match="exactly one.*eligible CSV row"):
+            jobctl._load_cli_queue(
+                csv_path,
+                resume_dir,
+                priorities="Medium",
+                statuses="Pending",
+                limit=1,
+                exact_job_id=exact_job_id,
+            )
+
+
+def test_apply_csv_preview_uses_the_same_exact_selector(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    csv_path = tmp_path / "queue.csv"
+    resume_dir = tmp_path / "resumes"
+    generated_dir = tmp_path / "generated"
+    resume_dir.mkdir()
+    generated_dir.mkdir()
+    _write_queue_rows(
+        csv_path,
+        [
+            _queue_row("First Synthetic", "https://example.test/jobs/first"),
+            _queue_row(
+                "Preview Target",
+                "https://example.test/jobs/preview-target",
+                title="Target Engineer",
+            ),
+        ],
+    )
+    vault = SimpleNamespace(
+        paths=SimpleNamespace(
+            job_queue=csv_path,
+            master_documents=resume_dir,
+            generated_documents=generated_dir,
+        )
+    )
+    monkeypatch.setattr(jobctl.CandidateVault, "load", lambda *args, **kwargs: vault)
+    monkeypatch.setattr(
+        jobctl,
+        "MacOSSecurityCredentialStore",
+        lambda: pytest.fail("preview must not access Keychain"),
+    )
+    target_job_id = jobctl.JobSpec(
+        url="https://example.test/jobs/preview-target",
+        company="Preview Target",
+        title="Target Engineer",
+        tier=jobctl.priority_to_tier("Medium"),
+    ).job_id
+    args = build_parser().parse_args(
+        [
+            "--home",
+            str(tmp_path),
+            "apply-csv",
+            "--preview",
+            "--priorities",
+            "Medium",
+            "--statuses",
+            "Pending",
+            "--limit",
+            "1",
+            "--job-id",
+            target_job_id,
+        ]
+    )
+
+    assert asyncio.run(jobctl.cmd_apply_csv(args)) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["selected"] == 1
+    assert [job["company"] for job in result["jobs"]] == ["Preview Target"]
+
+
+@pytest.mark.parametrize("selection_case", ["missing", "duplicate"])
+def test_apply_csv_exact_selection_fails_before_runtime_side_effects(
+    monkeypatch, tmp_path: Path, selection_case: str
+) -> None:
+    csv_path = tmp_path / "queue.csv"
+    resume_dir = tmp_path / "resumes"
+    resume_dir.mkdir()
+    duplicate_url = "https://example.test/jobs/duplicate-runtime"
+    rows = [
+        _queue_row(
+            "Synthetic One",
+            "https://example.test/jobs/one",
+            title="Engineer One",
+        )
+    ]
+    if selection_case == "duplicate":
+        rows = [
+            _queue_row(
+                "Synthetic One", f"{duplicate_url}#one", title="Engineer One"
+            ),
+            _queue_row(
+                "Synthetic Two", f"{duplicate_url}#two", title="Engineer Two"
+            ),
+        ]
+    _write_queue_rows(csv_path, rows)
+    before = csv_path.read_bytes()
+    vault = SimpleNamespace(
+        paths=SimpleNamespace(
+            job_queue=csv_path,
+            master_documents=resume_dir,
+        )
+    )
+    monkeypatch.setattr(jobctl.CandidateVault, "load", lambda *args, **kwargs: vault)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("exact selection failure must precede runtime side effects")
+
+    monkeypatch.setattr(jobctl, "MacOSSecurityCredentialStore", forbidden)
+    monkeypatch.setattr(jobctl.JobApplicationEngine, "from_private_home", forbidden)
+    monkeypatch.setattr(jobctl, "async_playwright", forbidden)
+    monkeypatch.setattr(jobctl, "_project_csv_outcome", forbidden)
+    exact_job_id = "job-" + "f" * 24
+    if selection_case == "duplicate":
+        exact_job_id = jobctl.JobSpec(
+            url=duplicate_url,
+            company="Synthetic One",
+            title="Engineer One",
+            tier=jobctl.priority_to_tier("Medium"),
+        ).job_id
+    args = build_parser().parse_args(
+        [
+            "--home",
+            str(tmp_path),
+            "apply-csv",
+            "--priorities",
+            "Medium",
+            "--statuses",
+            "Pending",
+            "--limit",
+            "1",
+            "--job-id",
+            exact_job_id,
+        ]
+    )
+
+    with pytest.raises(ValueError, match="exactly one.*eligible CSV row"):
+        asyncio.run(jobctl.cmd_apply_csv(args))
+
+    assert csv_path.read_bytes() == before
 
 
 def test_invalidate_review_appends_correction_and_requeues(

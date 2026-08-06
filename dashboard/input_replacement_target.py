@@ -35,14 +35,14 @@ class InputReplacementTargetUIResult:
 
 
 _MESSAGES = {
-    InputReplacementTargetStatus.AVAILABLE: "需要替换的当前输入已加载。",
-    InputReplacementTargetStatus.ITEM_NOT_CURRENT: "该待处理事项已不再是当前事项。",
-    InputReplacementTargetStatus.NOT_REPLACEABLE: "该事项不支持输入替换。",
-    InputReplacementTargetStatus.TARGET_STALE: "当前输入已变化，请刷新待处理事项。",
+    InputReplacementTargetStatus.AVAILABLE: "The current input is ready for replacement.",
+    InputReplacementTargetStatus.ITEM_NOT_CURRENT: "This attention item is no longer current.",
+    InputReplacementTargetStatus.NOT_REPLACEABLE: "This item does not support input replacement.",
+    InputReplacementTargetStatus.TARGET_STALE: "The input changed. Refresh the attention item.",
     InputReplacementTargetStatus.TARGET_INCOMPLETE: (
-        "当前阻断缺少安全替换所需的正式输入标识。"
+        "The blocker is missing the input identity required for a safe replacement."
     ),
-    InputReplacementTargetStatus.FAILED: "暂时无法安全读取替换目标。",
+    InputReplacementTargetStatus.FAILED: "The replacement target could not be read safely.",
 }
 
 

@@ -17,13 +17,16 @@ from typing import Any, Protocol
 from .private_home import PrivateHome, PrivateHomeError
 from .selective_batch_execution import (
     SELECTIVE_BATCH_EXECUTION_CONTRACT_VERSION,
+    BatchExecutionPlanInput,
     SelectiveBatchExecutionCommand,
     SelectiveBatchExecutionResult,
     SelectiveBatchExecutionStatus,
 )
 from .selective_batch_plan_creation import (
     SELECTIVE_BATCH_PLAN_CREATION_CONTRACT_VERSION,
+    BatchPlanCreationStatus,
     SelectiveBatchPlanCreationCommand,
+    SelectiveBatchPlanCreationItem,
     SelectiveBatchPlanCreationResult,
     SelectiveBatchPlanCreationStatus,
 )
@@ -49,7 +52,13 @@ from .selective_reprioritization import (
 LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION = (
     "end-to-end-automation-cycle-v1"
 )
-AUTOMATION_CYCLE_CONTRACT_VERSION = "end-to-end-automation-cycle-v2"
+PREVIOUS_AUTOMATION_CYCLE_CONTRACT_VERSION = (
+    "end-to-end-automation-cycle-v2"
+)
+TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION = (
+    "end-to-end-automation-cycle-v3"
+)
+AUTOMATION_CYCLE_CONTRACT_VERSION = "end-to-end-automation-cycle-v4"
 PRIORITY_REFRESH_PUBLIC_CONTRACT = "selective-batch-reprioritization-v1"
 _ID_RE = re.compile(r"automation-cycle-[0-9a-f]{64}")
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
@@ -158,6 +167,8 @@ class RunAutomationCycleCommand:
     max_executions: int
     max_bundle_assemblies: int = 0
     composition_binding: str = "jobops-default-composition-v1"
+    target_job_ids: tuple[str, ...] = ()
+    approve_gate_a: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -171,6 +182,17 @@ class RunAutomationCycleCommand:
             "composition_binding",
             _clean("composition_binding", self.composition_binding),
         )
+        if not isinstance(self.target_job_ids, tuple):
+            raise TypeError("target_job_ids must be a tuple")
+        targets = tuple(
+            _clean("target_job_id", value, 160)
+            for value in self.target_job_ids
+        )
+        if len(set(targets)) != len(targets):
+            raise ValueError("target_job_ids must contain unique jobs")
+        object.__setattr__(self, "target_job_ids", targets)
+        if type(self.approve_gate_a) is not bool:
+            raise TypeError("approve_gate_a must be a boolean")
         _aware("now", self.now)
         budgets = (
             self.max_reprioritizations,
@@ -338,7 +360,11 @@ def _service_contracts(contract_version: str) -> dict[str, str]:
         ),
         "priority_refresh": PRIORITY_REFRESH_PUBLIC_CONTRACT,
     }
-    if contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION:
+    if contract_version in {
+        PREVIOUS_AUTOMATION_CYCLE_CONTRACT_VERSION,
+        TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+        AUTOMATION_CYCLE_CONTRACT_VERSION,
+    }:
         contracts["bundle_assembly"] = (
             SELECTIVE_BUNDLE_ASSEMBLY_CONTRACT_VERSION
         )
@@ -355,6 +381,8 @@ def _cycle_binding(command: RunAutomationCycleCommand) -> dict[str, Any]:
             AUTOMATION_CYCLE_CONTRACT_VERSION
         ),
         "subject_id": command.subject_id,
+        "target_job_ids": list(command.target_job_ids),
+        "approve_gate_a": command.approve_gate_a,
     }
 
 
@@ -373,12 +401,16 @@ class AutomationCycleRun:
     run_hash: str
     started_at: datetime
     completed_at: datetime
+    target_job_ids: tuple[str, ...] = ()
+    approve_gate_a: bool = False
 
     def __post_init__(self) -> None:
         if _ID_RE.fullmatch(self.cycle_id) is None:
             raise ValueError("cycle_id is invalid")
         if self.contract_version not in {
             LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            PREVIOUS_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
             AUTOMATION_CYCLE_CONTRACT_VERSION,
         }:
             raise ValueError("cycle contract version is unsupported")
@@ -389,6 +421,27 @@ class AutomationCycleRun:
         _clean("invocation_id", self.invocation_id)
         _clean("composition_binding", self.composition_binding)
         _clean("subject_id", self.subject_id, 160)
+        if not isinstance(self.target_job_ids, tuple):
+            raise TypeError("cycle target_job_ids must be a tuple")
+        targets = tuple(
+            _clean("cycle target_job_id", value, 160)
+            for value in self.target_job_ids
+        )
+        if len(set(targets)) != len(targets):
+            raise ValueError("cycle target_job_ids must contain unique jobs")
+        if self.contract_version not in {
+            TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            AUTOMATION_CYCLE_CONTRACT_VERSION,
+        } and targets:
+            raise ValueError("historical cycles cannot contain job targets")
+        object.__setattr__(self, "target_job_ids", targets)
+        if type(self.approve_gate_a) is not bool:
+            raise TypeError("cycle approve_gate_a must be a boolean")
+        if (
+            self.contract_version != AUTOMATION_CYCLE_CONTRACT_VERSION
+            and self.approve_gate_a
+        ):
+            raise ValueError("historical cycles cannot approve Gate A")
         expected_budget_count = (
             4
             if self.contract_version
@@ -402,18 +455,22 @@ class AutomationCycleRun:
             or not any(self.budgets)
         ):
             raise ValueError("cycle budgets are invalid")
-        expected_binding = _hash(
-            {
-                "budgets": list(self.budgets),
-                "composition_binding": self.composition_binding,
-                "contract_version": self.contract_version,
-                "invocation_id": self.invocation_id,
-                "service_contracts": _service_contracts(
-                    self.contract_version
-                ),
-                "subject_id": self.subject_id,
-            }
-        )
+        binding = {
+            "budgets": list(self.budgets),
+            "composition_binding": self.composition_binding,
+            "contract_version": self.contract_version,
+            "invocation_id": self.invocation_id,
+            "service_contracts": _service_contracts(self.contract_version),
+            "subject_id": self.subject_id,
+        }
+        if self.contract_version in {
+            TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            AUTOMATION_CYCLE_CONTRACT_VERSION,
+        }:
+            binding["target_job_ids"] = list(self.target_job_ids)
+        if self.contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION:
+            binding["approve_gate_a"] = self.approve_gate_a
+        expected_binding = _hash(binding)
         if self.cycle_binding_hash != expected_binding:
             raise ValueError("cycle binding hash is inconsistent")
         expected_stages = (
@@ -450,7 +507,7 @@ class AutomationCycleRun:
             raise ValueError("run_hash does not match cycle content")
 
     def identity_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "budgets": list(self.budgets),
             "composition_binding": self.composition_binding,
             "contract_version": self.contract_version,
@@ -459,6 +516,14 @@ class AutomationCycleRun:
             "invocation_id": self.invocation_id,
             "subject_id": self.subject_id,
         }
+        if self.contract_version in {
+            TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+            AUTOMATION_CYCLE_CONTRACT_VERSION,
+        }:
+            value["target_job_ids"] = list(self.target_job_ids)
+        if self.contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION:
+            value["approve_gate_a"] = self.approve_gate_a
+        return value
 
     def content_dict(self, *, include_hash: bool = True) -> dict[str, Any]:
         value = {
@@ -507,6 +572,8 @@ class AutomationCycleRun:
             "overall_status": overall_status,
             "started_at": command.now,
             "completed_at": command.now,
+            "target_job_ids": command.target_job_ids,
+            "approve_gate_a": command.approve_gate_a,
         }
         content = {
             "budgets": list(command.budgets),
@@ -523,6 +590,8 @@ class AutomationCycleRun:
             ],
             "started_at": _time(command.now),
             "subject_id": command.subject_id,
+            "target_job_ids": list(command.target_job_ids),
+            "approve_gate_a": command.approve_gate_a,
             "summary": {
                 "actual_processed": summary.actual_processed,
                 "completed": summary.completed,
@@ -622,6 +691,7 @@ def _stage_from_dict(value: Any) -> AutomationCycleStageResult:
 def _run_from_dict(value: Any) -> AutomationCycleRun:
     if not isinstance(value, Mapping):
         raise TypeError("persisted cycle run must be an object")
+    contract_version = value.get("contract_version")
     expected = {
         "budgets",
         "completed_at",
@@ -637,6 +707,13 @@ def _run_from_dict(value: Any) -> AutomationCycleRun:
         "subject_id",
         "summary",
     }
+    if contract_version in {
+        TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+        AUTOMATION_CYCLE_CONTRACT_VERSION,
+    }:
+        expected.add("target_job_ids")
+    if contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION:
+        expected.add("approve_gate_a")
     if set(value) != expected:
         raise ValueError("persisted cycle run fields are invalid")
     summary = value["summary"]
@@ -651,9 +728,18 @@ def _run_from_dict(value: Any) -> AutomationCycleRun:
         "uncertain",
     }:
         raise ValueError("persisted cycle summary fields are invalid")
+    target_job_ids: tuple[str, ...] = ()
+    if contract_version in {
+        TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION,
+        AUTOMATION_CYCLE_CONTRACT_VERSION,
+    }:
+        raw_targets = value["target_job_ids"]
+        if not isinstance(raw_targets, list):
+            raise TypeError("persisted cycle target_job_ids must be an array")
+        target_job_ids = tuple(raw_targets)
     return AutomationCycleRun(
         cycle_id=value["cycle_id"],
-        contract_version=value["contract_version"],
+        contract_version=contract_version,
         cycle_binding_hash=value["cycle_binding_hash"],
         invocation_id=value["invocation_id"],
         composition_binding=value["composition_binding"],
@@ -667,6 +753,12 @@ def _run_from_dict(value: Any) -> AutomationCycleRun:
         run_hash=value["run_hash"],
         started_at=_parse_time(value["started_at"]),
         completed_at=_parse_time(value["completed_at"]),
+        target_job_ids=target_job_ids,
+        approve_gate_a=(
+            value["approve_gate_a"]
+            if contract_version == AUTOMATION_CYCLE_CONTRACT_VERSION
+            else False
+        ),
     )
 
 
@@ -837,6 +929,24 @@ def _skipped(
     )
 
 
+def _noop_stage(
+    stage: AutomationCycleStage, budget: int, public_status: str
+) -> AutomationCycleStageResult:
+    return AutomationCycleStageResult.create(
+        stage=stage,
+        budget=budget,
+        status=AutomationCycleStageStatus.NOOP,
+        public_status=public_status,
+        actual_processed=0,
+        completed=0,
+        deferred=0,
+        failed=0,
+        uncertain=0,
+        safely_skipped=0,
+        summary={},
+    )
+
+
 def _failed_stage(
     stage: AutomationCycleStage, budget: int, public_status: str
 ) -> AutomationCycleStageResult:
@@ -880,6 +990,9 @@ def _priority_stage(
     if not isinstance(result, SelectiveBatchReprioritizationResult):
         raise TypeError("P1d3 returned an invalid result")
     summary = _counts(result.summary)
+    summary["continuable_system_failures"] = (
+        result.continuable_system_failure_count
+    )
     public = SelectiveBatchOverallStatus(result.overall_status).value
     return AutomationCycleStageResult.create(
         stage=AutomationCycleStage.PRIORITY_REFRESH,
@@ -920,6 +1033,85 @@ def _plan_stage(budget: int, result: Any) -> AutomationCycleStageResult:
         ),
         summary=summary,
     )
+
+
+def _successful_plan_ids(
+    result: SelectiveBatchPlanCreationResult,
+) -> tuple[str, ...]:
+    if not isinstance(result, SelectiveBatchPlanCreationResult):
+        raise TypeError("P2a1b returned an invalid result")
+    plan_ids: list[str] = []
+    seen: set[str] = set()
+    for item in result.items:
+        if not isinstance(item, SelectiveBatchPlanCreationItem):
+            raise TypeError("P2a1b returned an invalid item")
+        if item.creation_status not in {
+            BatchPlanCreationStatus.CREATED,
+            BatchPlanCreationStatus.UNCHANGED,
+        }:
+            continue
+        plan_id = _clean(
+            "application_plan_id", item.application_plan_id, 180
+        )
+        if plan_id in seen:
+            raise ValueError("P2a1b returned duplicate application plans")
+        seen.add(plan_id)
+        plan_ids.append(plan_id)
+    if len(plan_ids) != result.summary.created + result.summary.unchanged:
+        raise ValueError("P2a1b successful plan lineage is inconsistent")
+    return tuple(plan_ids)
+
+
+def _priority_result_has_command_lineage(
+    *,
+    command: RunAutomationCycleCommand,
+    result: object,
+) -> bool:
+    if not isinstance(result, SelectiveBatchReprioritizationResult):
+        return False
+    try:
+        if (
+            result.subject_id != command.subject_id
+            or result.now != command.now
+            or result.requested_job_ids != command.target_job_ids
+        ):
+            return False
+        if command.target_job_ids and tuple(
+            item.job_id for item in result.items
+        ) != command.target_job_ids[: len(result.items)]:
+            return False
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _preparation_result_has_plan_lineage(
+    *,
+    command: RunAutomationCycleCommand,
+    result: object,
+    successful_plan_ids: tuple[str, ...] | None,
+) -> bool:
+    if not isinstance(result, SelectiveBatchPreparationResult):
+        return False
+    try:
+        if (
+            result.subject_id != command.subject_id
+            or result.evaluated_at != command.now
+        ):
+            return False
+        if successful_plan_ids is not None:
+            returned_ids = tuple(
+                item.application_plan_id for item in result.items
+            )
+            if (
+                result.summary.requested != len(successful_plan_ids)
+                or returned_ids
+                != successful_plan_ids[: len(returned_ids)]
+            ):
+                return False
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _preparation_stage(
@@ -1090,66 +1282,194 @@ async def run_automation_cycle(
 
     stages: list[AutomationCycleStageResult] = []
     preparation_result: SelectiveBatchPreparationResult | None = None
-    pre_bundle_calls = (
-        (
-            AutomationCycleStage.PRIORITY_REFRESH,
-            command.max_reprioritizations,
-            priority_refresh,
-            SelectiveBatchReprioritizationCommand(
-                subject_id=command.subject_id,
-                now=command.now,
-                max_jobs=command.max_reprioritizations or None,
-            ),
-            _priority_stage,
-        ),
-        (
-            AutomationCycleStage.APPLICATION_PLAN_CREATION,
-            command.max_plan_creations,
-            plan_creation,
-            SelectiveBatchPlanCreationCommand(
-                subject_id=command.subject_id,
-                now=command.now,
-                max_jobs=command.max_plan_creations or None,
-                job_ids=() if command.max_plan_creations == 0 else None,
+    successful_plan_ids: tuple[str, ...] | None = None
+    preparation_has_no_targets = False
+    preparation_result_invalid = False
+
+    if command.max_reprioritizations == 0:
+        stages.append(
+            _skipped(
+                AutomationCycleStage.PRIORITY_REFRESH,
+                command.max_reprioritizations,
             )
-            if command.max_plan_creations
-            else None,
-            _plan_stage,
-        ),
-        (
-            AutomationCycleStage.APPLICATION_PREPARATION,
-            command.max_preparations,
-            preparation,
-            SelectiveBatchPreparationCommand(
-                subject_id=command.subject_id,
-                now=command.now,
-                max_plans=command.max_preparations or None,
-                application_plan_ids=()
-                if command.max_preparations == 0
-                else None,
-            )
-            if command.max_preparations
-            else None,
-            _preparation_stage,
-        ),
-    )
-    for stage, budget, callable_, stage_command, projector in pre_bundle_calls:
-        if budget == 0:
-            stages.append(_skipped(stage, budget))
-            continue
+        )
+    else:
         try:
-            public_result = await _resolve(callable_(stage_command))
-            stages.append(projector(budget, public_result))
-            if stage is AutomationCycleStage.APPLICATION_PREPARATION:
-                preparation_result = public_result
+            priority_result = await _resolve(
+                priority_refresh(
+                    SelectiveBatchReprioritizationCommand(
+                        subject_id=command.subject_id,
+                        now=command.now,
+                        job_ids=command.target_job_ids or None,
+                        max_jobs=command.max_reprioritizations,
+                    )
+                )
+            )
+            if not _priority_result_has_command_lineage(
+                command=command,
+                result=priority_result,
+            ):
+                stages.append(
+                    _failed_stage(
+                        AutomationCycleStage.PRIORITY_REFRESH,
+                        command.max_reprioritizations,
+                        "PRIORITY_RESULT_INVALID",
+                    )
+                )
+            else:
+                stages.append(
+                    _priority_stage(
+                        command.max_reprioritizations, priority_result
+                    )
+                )
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-            stages.append(_failed_stage(stage, budget, "PUBLIC_BATCH_FAILED"))
+            stages.append(
+                _failed_stage(
+                    AutomationCycleStage.PRIORITY_REFRESH,
+                    command.max_reprioritizations,
+                    "PUBLIC_BATCH_FAILED",
+                )
+            )
+
+    if command.max_plan_creations == 0:
+        stages.append(
+            _skipped(
+                AutomationCycleStage.APPLICATION_PLAN_CREATION,
+                command.max_plan_creations,
+            )
+        )
+    else:
+        try:
+            plan_result = await _resolve(
+                plan_creation(
+                    SelectiveBatchPlanCreationCommand(
+                        subject_id=command.subject_id,
+                        now=command.now,
+                        job_ids=command.target_job_ids or None,
+                        max_jobs=command.max_plan_creations,
+                    )
+                )
+            )
+            if (
+                not isinstance(plan_result, SelectiveBatchPlanCreationResult)
+                or plan_result.subject_id != command.subject_id
+                or plan_result.evaluated_at != command.now
+                or (
+                    command.target_job_ids
+                    and tuple(item.job_id for item in plan_result.items)
+                    != command.target_job_ids[: len(plan_result.items)]
+                )
+            ):
+                raise ValueError("P2a1b target lineage is invalid")
+            plan_stage = _plan_stage(command.max_plan_creations, plan_result)
+            successful_plan_ids = _successful_plan_ids(plan_result)
+            stages.append(plan_stage)
+        except (
+            AttributeError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            stages.append(
+                _failed_stage(
+                    AutomationCycleStage.APPLICATION_PLAN_CREATION,
+                    command.max_plan_creations,
+                    "PUBLIC_BATCH_FAILED",
+                )
+            )
+
+    if command.max_preparations == 0:
+        stages.append(
+            _skipped(
+                AutomationCycleStage.APPLICATION_PREPARATION,
+                command.max_preparations,
+            )
+        )
+    elif command.target_job_ids and command.max_plan_creations == 0:
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.APPLICATION_PREPARATION,
+                command.max_preparations,
+                "PLAN_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    elif command.max_plan_creations and successful_plan_ids is None:
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.APPLICATION_PREPARATION,
+                command.max_preparations,
+                "PLAN_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    elif command.max_plan_creations and not successful_plan_ids:
+        preparation_has_no_targets = True
+        stages.append(
+            _noop_stage(
+                AutomationCycleStage.APPLICATION_PREPARATION,
+                command.max_preparations,
+                "NO_SUCCESSFUL_PLANS",
+            )
+        )
+    else:
+        try:
+            preparation_result = await _resolve(
+                preparation(
+                    SelectiveBatchPreparationCommand(
+                        subject_id=command.subject_id,
+                        now=command.now,
+                        application_plan_ids=(
+                            successful_plan_ids
+                            if command.max_plan_creations
+                            else None
+                        ),
+                        max_plans=command.max_preparations,
+                    )
+                )
+            )
+            if not _preparation_result_has_plan_lineage(
+                command=command,
+                result=preparation_result,
+                successful_plan_ids=successful_plan_ids,
+            ):
+                preparation_result = None
+                preparation_result_invalid = True
+                stages.append(
+                    _failed_stage(
+                        AutomationCycleStage.APPLICATION_PREPARATION,
+                        command.max_preparations,
+                        "PREPARATION_RESULT_INVALID",
+                    )
+                )
+            else:
+                stages.append(
+                    _preparation_stage(
+                        command.max_preparations, preparation_result
+                    )
+                )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            stages.append(
+                _failed_stage(
+                    AutomationCycleStage.APPLICATION_PREPARATION,
+                    command.max_preparations,
+                    "PUBLIC_BATCH_FAILED",
+                )
+            )
 
     if command.max_bundle_assemblies == 0:
         stages.append(
             _skipped(
                 AutomationCycleStage.BUNDLE_ASSEMBLY,
                 command.max_bundle_assemblies,
+            )
+        )
+    elif preparation_has_no_targets:
+        stages.append(
+            _noop_stage(
+                AutomationCycleStage.BUNDLE_ASSEMBLY,
+                command.max_bundle_assemblies,
+                "NO_PREPARED_PLANS",
             )
         )
     elif not isinstance(
@@ -1198,6 +1518,38 @@ async def run_automation_cycle(
                 command.max_executions,
             )
         )
+    elif preparation_result_invalid:
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.APPLICATION_EXECUTION,
+                command.max_executions,
+                "PREPARATION_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    elif command.target_job_ids and command.max_plan_creations == 0:
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.APPLICATION_EXECUTION,
+                command.max_executions,
+                "PLAN_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    elif command.max_plan_creations and successful_plan_ids is None:
+        stages.append(
+            _failed_stage(
+                AutomationCycleStage.APPLICATION_EXECUTION,
+                command.max_executions,
+                "PLAN_SNAPSHOT_UNAVAILABLE",
+            )
+        )
+    elif command.max_plan_creations and not successful_plan_ids:
+        stages.append(
+            _noop_stage(
+                AutomationCycleStage.APPLICATION_EXECUTION,
+                command.max_executions,
+                "NO_SUCCESSFUL_PLANS",
+            )
+        )
     else:
         try:
             execution_result = await _resolve(
@@ -1205,7 +1557,23 @@ async def run_automation_cycle(
                     SelectiveBatchExecutionCommand(
                         subject_id=command.subject_id,
                         now=command.now,
+                        application_plan_ids=(
+                            successful_plan_ids
+                            if command.max_plan_creations
+                            else None
+                        ),
                         max_plans=command.max_executions,
+                        plan_inputs=(
+                            tuple(
+                                BatchExecutionPlanInput(
+                                    application_plan_id=plan_id,
+                                    approve_gate_a=True,
+                                )
+                                for plan_id in (successful_plan_ids or ())
+                            )
+                            if command.approve_gate_a
+                            else ()
+                        ),
                     )
                 )
             )
@@ -1261,6 +1629,8 @@ async def run_automation_cycle(
 __all__ = [
     "AUTOMATION_CYCLE_CONTRACT_VERSION",
     "LEGACY_AUTOMATION_CYCLE_CONTRACT_VERSION",
+    "PREVIOUS_AUTOMATION_CYCLE_CONTRACT_VERSION",
+    "TARGETED_AUTOMATION_CYCLE_CONTRACT_VERSION",
     "AutomationCycleFailureReason",
     "AutomationCycleOperationStatus",
     "AutomationCycleReadResult",

@@ -19,14 +19,29 @@ from core.job_library_refresh import (
     refresh_job_library,
 )
 from core.private_home import PrivateHome
-from core.search_profile import PrivateHomeSearchProfileRepository
+from core.search_profile import (
+    PrivateHomeSearchProfileRepository,
+    SaveSearchProfileCommand,
+    SearchProfileListResult,
+    SearchProfileListStatus,
+    SearchProfileSourceKind,
+    SearchProfileSourceReference,
+    save_search_profile,
+)
 from core.search_profile_intent_policy import (
+    EnableAutoRequestApplicationBatchCommand,
+    EnableAutoRequestApplicationBatchFailureReason,
+    EnableAutoRequestApplicationBatchStatus,
     PrivateHomeSearchProfileIntentPolicyRepository,
     SaveSearchProfileIntentPolicyCommand,
     SaveSearchProfileIntentPolicyReason,
     SaveSearchProfileIntentPolicyStatus,
     SearchProfileIntentMode,
+    SearchProfileIntentPolicyReadResult,
     SearchProfileIntentPolicyReadStatus,
+    SearchProfileIntentPolicyWriteResult,
+    SearchProfileIntentPolicyWriteStatus,
+    enable_auto_request_application_for_enabled_search_profiles,
     save_search_profile_intent_policy,
 )
 from tests.test_application_plan import NOW, SUBJECT
@@ -67,6 +82,120 @@ def _save_policy(
     )
 
 
+def _create_profile(
+    *,
+    home: PrivateHome,
+    display_name: str,
+    board: str,
+    subject_id: str = SUBJECT,
+):
+    result = save_search_profile(
+        SaveSearchProfileCommand(
+            subject_id=subject_id,
+            display_name=display_name,
+            company=display_name,
+            title="Engineer",
+            source=SearchProfileSourceReference(
+                SearchProfileSourceKind.KNOWN_GREENHOUSE_BOARD,
+                board,
+            ),
+            enabled=True,
+            now=NOW,
+        ),
+        repository=PrivateHomeSearchProfileRepository(home),
+    )
+    assert result.profile is not None
+    return result.profile
+
+
+def _enable_all(
+    *,
+    home: PrivateHome,
+    subject_id: str = SUBJECT,
+    now=NOW,
+    search_profile_repository=None,
+    policy_repository=None,
+):
+    return enable_auto_request_application_for_enabled_search_profiles(
+        EnableAutoRequestApplicationBatchCommand(
+            subject_id=subject_id,
+            now=now,
+        ),
+        search_profile_repository=(
+            search_profile_repository
+            or PrivateHomeSearchProfileRepository(home)
+        ),
+        policy_repository=(
+            policy_repository
+            or PrivateHomeSearchProfileIntentPolicyRepository(home)
+        ),
+    )
+
+
+class _RecordingSearchProfileRepository:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.get_calls: list[str] = []
+
+    def list_enabled(self, subject_id):
+        return self.delegate.list_enabled(subject_id)
+
+    def get(self, subject_id, profile_id):
+        self.get_calls.append(profile_id)
+        return self.delegate.get(subject_id, profile_id)
+
+
+class _FailOnePolicyRepository:
+    def __init__(self, delegate, failing_profile_id: str) -> None:
+        self.delegate = delegate
+        self.failing_profile_id = failing_profile_id
+
+    def get_current(self, subject_id, search_profile_id):
+        return self.delegate.get_current(subject_id, search_profile_id)
+
+    def save(self, policy):
+        if policy.profile_id == self.failing_profile_id:
+            return SearchProfileIntentPolicyWriteResult(
+                SearchProfileIntentPolicyWriteStatus.FAILED,
+                None,
+            )
+        return self.delegate.save(policy)
+
+
+class _IntegrityFailingProfileRepository:
+    def __init__(self) -> None:
+        self.get_calls = 0
+
+    def list_enabled(self, _subject_id):
+        return SearchProfileListResult(
+            SearchProfileListStatus.INTEGRITY_FAILURE,
+            (),
+        )
+
+    def get(self, _subject_id, _profile_id):
+        self.get_calls += 1
+        raise AssertionError("an untrusted profile snapshot must not be used")
+
+
+class _IntegrityFailingPolicyRepository:
+    def __init__(self, delegate, failing_profile_id: str) -> None:
+        self.delegate = delegate
+        self.failing_profile_id = failing_profile_id
+        self.get_calls: list[str] = []
+
+    def get_current(self, subject_id, search_profile_id):
+        self.get_calls.append(search_profile_id)
+        if search_profile_id == self.failing_profile_id:
+            return SearchProfileIntentPolicyReadResult(
+                SearchProfileIntentPolicyReadStatus.INTEGRITY_FAILURE,
+                None,
+            )
+        return self.delegate.get_current(subject_id, search_profile_id)
+
+    def save(self, policy):
+        return self.delegate.save(policy)
+
+
 async def _refresh(
     *,
     home: PrivateHome,
@@ -98,6 +227,220 @@ async def _refresh(
         accepted_intent_repository=(
             PrivateHomeAcceptedJobIntentRepository(home)
         ),
+    )
+
+
+def test_enable_auto_request_application_for_all_enabled_profiles_serially(
+    tmp_path,
+) -> None:
+    home = PrivateHome(tmp_path)
+    zulu = _create_profile(
+        home=home,
+        display_name="Zulu",
+        board="zulu-board",
+    )
+    alpha = _create_profile(
+        home=home,
+        display_name="Alpha",
+        board="alpha-board",
+    )
+    profile_repository = _RecordingSearchProfileRepository(
+        PrivateHomeSearchProfileRepository(home)
+    )
+    policy_repository = PrivateHomeSearchProfileIntentPolicyRepository(home)
+
+    result = _enable_all(
+        home=home,
+        search_profile_repository=profile_repository,
+        policy_repository=policy_repository,
+    )
+
+    assert result.status is EnableAutoRequestApplicationBatchStatus.COMPLETED
+    assert result.summary.selected == 2
+    assert result.summary.created == 2
+    assert result.summary.unchanged == result.summary.failed == 0
+    assert profile_repository.get_calls == [alpha.profile_id, zulu.profile_id]
+    for profile in (alpha, zulu):
+        current = policy_repository.get_current(SUBJECT, profile.profile_id)
+        assert current.status is SearchProfileIntentPolicyReadStatus.FOUND
+        assert (
+            current.policy.intent_mode
+            is SearchProfileIntentMode.AUTO_REQUEST_APPLICATION
+        )
+        assert current.policy.enabled is True
+
+
+def test_enable_auto_request_application_batch_is_idempotent(tmp_path) -> None:
+    home = PrivateHome(tmp_path)
+    profile = _create_profile(
+        home=home,
+        display_name="Idempotent",
+        board="idempotent-board",
+    )
+
+    first = _enable_all(home=home)
+    replay = _enable_all(home=home, now=NOW + timedelta(minutes=1))
+    current = PrivateHomeSearchProfileIntentPolicyRepository(
+        home
+    ).get_current(SUBJECT, profile.profile_id)
+
+    assert first.status is EnableAutoRequestApplicationBatchStatus.COMPLETED
+    assert first.summary.created == 1
+    assert replay.status is EnableAutoRequestApplicationBatchStatus.COMPLETED
+    assert replay.summary.selected == replay.summary.unchanged == 1
+    assert replay.summary.created == replay.summary.failed == 0
+    assert current.status is SearchProfileIntentPolicyReadStatus.FOUND
+    assert current.policy.policy_version == 1
+
+
+def test_enable_auto_request_application_batch_is_noop_without_profiles(
+    tmp_path,
+) -> None:
+    result = _enable_all(home=PrivateHome(tmp_path))
+
+    assert result.status is EnableAutoRequestApplicationBatchStatus.NOOP
+    assert result.summary.selected == 0
+    assert result.summary.created == 0
+    assert result.summary.unchanged == 0
+    assert result.summary.failed == 0
+    assert result.failure_reason is None
+
+
+def test_enable_auto_request_application_batch_isolates_persistence_failure(
+    tmp_path,
+) -> None:
+    home = PrivateHome(tmp_path)
+    alpha = _create_profile(
+        home=home,
+        display_name="Alpha",
+        board="partial-alpha",
+    )
+    zulu = _create_profile(
+        home=home,
+        display_name="Zulu",
+        board="partial-zulu",
+    )
+    stored = PrivateHomeSearchProfileIntentPolicyRepository(home)
+    policy_repository = _FailOnePolicyRepository(stored, zulu.profile_id)
+
+    result = _enable_all(
+        home=home,
+        policy_repository=policy_repository,
+    )
+
+    assert (
+        result.status
+        is EnableAutoRequestApplicationBatchStatus.PARTIAL_FAILURE
+    )
+    assert result.summary.selected == 2
+    assert result.summary.created == 1
+    assert result.summary.unchanged == 0
+    assert result.summary.failed == 1
+    assert (
+        result.failure_reason
+        is EnableAutoRequestApplicationBatchFailureReason.POLICY_UPDATE_FAILED
+    )
+    assert (
+        stored.get_current(SUBJECT, alpha.profile_id).status
+        is SearchProfileIntentPolicyReadStatus.FOUND
+    )
+    assert (
+        stored.get_current(SUBJECT, zulu.profile_id).status
+        is SearchProfileIntentPolicyReadStatus.NOT_FOUND
+    )
+
+
+def test_enable_auto_request_application_batch_is_subject_isolated(
+    tmp_path,
+) -> None:
+    home = PrivateHome(tmp_path)
+    selected = _create_profile(
+        home=home,
+        display_name="Selected",
+        board="selected-board",
+    )
+    other_subject = "subject-other"
+    other = _create_profile(
+        home=home,
+        display_name="Other",
+        board="other-board",
+        subject_id=other_subject,
+    )
+    policies = PrivateHomeSearchProfileIntentPolicyRepository(home)
+
+    result = _enable_all(home=home, policy_repository=policies)
+
+    assert result.status is EnableAutoRequestApplicationBatchStatus.COMPLETED
+    assert result.summary.selected == 1
+    assert (
+        policies.get_current(SUBJECT, selected.profile_id).status
+        is SearchProfileIntentPolicyReadStatus.FOUND
+    )
+    assert (
+        policies.get_current(other_subject, other.profile_id).status
+        is SearchProfileIntentPolicyReadStatus.NOT_FOUND
+    )
+
+
+def test_enable_auto_request_application_batch_fails_closed_on_snapshot_integrity(
+    tmp_path,
+) -> None:
+    home = PrivateHome(tmp_path)
+    profiles = _IntegrityFailingProfileRepository()
+
+    result = _enable_all(
+        home=home,
+        search_profile_repository=profiles,
+    )
+
+    assert result.status is EnableAutoRequestApplicationBatchStatus.FAILED
+    assert result.summary.selected == 0
+    assert (
+        result.failure_reason
+        is EnableAutoRequestApplicationBatchFailureReason
+        .PROFILE_SNAPSHOT_INTEGRITY_FAILURE
+    )
+    assert profiles.get_calls == 0
+
+
+def test_enable_auto_request_application_batch_stops_on_policy_integrity_failure(
+    tmp_path,
+) -> None:
+    home = PrivateHome(tmp_path)
+    alpha = _create_profile(
+        home=home,
+        display_name="Alpha",
+        board="integrity-alpha",
+    )
+    beta = _create_profile(
+        home=home,
+        display_name="Beta",
+        board="integrity-beta",
+    )
+    zulu = _create_profile(
+        home=home,
+        display_name="Zulu",
+        board="integrity-zulu",
+    )
+    stored = PrivateHomeSearchProfileIntentPolicyRepository(home)
+    policies = _IntegrityFailingPolicyRepository(stored, beta.profile_id)
+
+    result = _enable_all(home=home, policy_repository=policies)
+
+    assert result.status is EnableAutoRequestApplicationBatchStatus.FAILED
+    assert result.summary.selected == 3
+    assert result.summary.created == 1
+    assert result.summary.unchanged == 0
+    assert result.summary.failed == 2
+    assert (
+        result.failure_reason
+        is EnableAutoRequestApplicationBatchFailureReason
+        .POLICY_INTEGRITY_FAILURE
+    )
+    assert policies.get_calls == [alpha.profile_id, beta.profile_id]
+    assert (
+        stored.get_current(SUBJECT, zulu.profile_id).status
+        is SearchProfileIntentPolicyReadStatus.NOT_FOUND
     )
 
 

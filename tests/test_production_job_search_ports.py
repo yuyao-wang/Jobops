@@ -13,6 +13,7 @@ from core.job_library_refresh import ConfiguredSearchProfileExecutor
 from core.job_search import (
     JobSearchReason,
     JobSearchRequest,
+    JobSearchResult,
     JobSearchStatus,
     search_jobs,
 )
@@ -33,8 +34,16 @@ from source_connectors.greenhouse_board import (
     JobSearchExecutionPolicy,
 )
 from source_connectors.production_job_search import (
+    ConfiguredProviderJobSearchRouter,
     JobSearchProviderCapabilityStatus,
+    build_conversational_job_search_port,
     build_production_job_search_ports,
+)
+from source_connectors.provider_job_search import (
+    AshbyBoardConfig,
+    GlassdoorPartnerConfig,
+    JobviteFeedConfig,
+    LeverSiteConfig,
 )
 
 
@@ -78,6 +87,16 @@ class FakeBoundedHttp:
     async def get(self, request: BoundedHttpRequest) -> BoundedHttpResult:
         self.requests.append(request)
         return self.results.pop(0)
+
+
+class FakeSearchPort:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def search(self, request):
+        self.calls.append(request)
+        return self.result
 
 
 def _request(
@@ -138,7 +157,7 @@ async def test_greenhouse_production_search_is_bounded_stable_and_deduplicated()
 
 
 @pytest.mark.asyncio
-async def test_provider_boundary_is_exact_and_lever_is_not_advertised() -> None:
+async def test_provider_boundary_is_exact_and_unconfigured_sources_are_not_advertised() -> None:
     http = FakeBoundedHttp(_success({"jobs": []}))
     built = build_production_job_search_ports(
         boards=(BOARD,),
@@ -152,7 +171,10 @@ async def test_provider_boundary_is_exact_and_lever_is_not_advertised() -> None:
         for item in built.capabilities
     ) == (
         ("GREENHOUSE", JobSearchProviderCapabilityStatus.SUPPORTED),
+        ("ASHBY", JobSearchProviderCapabilityStatus.UNSUPPORTED),
         ("LEVER", JobSearchProviderCapabilityStatus.UNSUPPORTED),
+        ("GLASSDOOR", JobSearchProviderCapabilityStatus.UNSUPPORTED),
+        ("JOBVITE", JobSearchProviderCapabilityStatus.UNSUPPORTED),
     )
     result = await search_jobs(
         _request(company="Unconfigured Labs"),
@@ -303,3 +325,109 @@ async def test_factory_is_network_free_and_s3b_executor_consumes_ports(
     assert "utils.discovery" not in production_source
     assert "playwright" not in production_source
     assert "openai" not in production_source
+
+
+@pytest.mark.asyncio
+async def test_factory_allows_no_company_feed_and_router_is_unsupported() -> None:
+    http = FakeBoundedHttp(_success({"jobs": []}))
+    built = build_production_job_search_ports(
+        boards=(),
+        http_port=http,
+        policy=JobSearchExecutionPolicy(allowed_providers=()),
+    )
+
+    assert dict(built.ports) == {}
+    assert all(
+        capability.status is JobSearchProviderCapabilityStatus.UNSUPPORTED
+        for capability in built.capabilities
+    )
+    router = build_conversational_job_search_port(built)
+    result = await router.search(
+        JobSearchRequest(
+            request_id="request-no-company-feed",
+            company="Example Company",
+            title="Platform Engineer",
+        )
+    )
+    assert result.status is JobSearchStatus.UNSUPPORTED
+    assert http.requests == []
+
+
+def test_factory_binds_every_configured_provider_without_network() -> None:
+    http = FakeBoundedHttp()
+    built = build_production_job_search_ports(
+        boards=(BOARD,),
+        ashby_boards=(AshbyBoardConfig("Example Ashby", "ashby-example"),),
+        lever_sites=(LeverSiteConfig("Example Lever", "lever-example"),),
+        glassdoor=GlassdoorPartnerConfig(
+            "glassdoor-ca",
+            "synthetic-partner",
+            "synthetic-key",
+        ),
+        jobvite_feeds=(
+            JobviteFeedConfig(
+                "Example Jobvite",
+                "jobvite-example",
+                "synthetic-api",
+                "synthetic-secret",
+            ),
+        ),
+        http_port=http,
+        policy=JobSearchExecutionPolicy(
+            allowed_providers=(
+                "GREENHOUSE",
+                "ASHBY",
+                "LEVER",
+                "GLASSDOOR",
+                "JOBVITE",
+            )
+        ),
+    )
+
+    assert len(built.ports) == 5
+    assert all(
+        capability.status is JobSearchProviderCapabilityStatus.SUPPORTED
+        for capability in built.capabilities
+    )
+    assert http.requests == []
+
+
+@pytest.mark.asyncio
+async def test_conversational_router_skips_only_unsupported_sources() -> None:
+    unsupported = FakeSearchPort(
+        JobSearchResult.unsupported()
+    )
+    stopped_failure = FakeSearchPort(
+        JobSearchResult.failed(JobSearchReason.SOURCE_TIMEOUT)
+    )
+    never_called = FakeSearchPort(
+        JobSearchResult.unsupported()
+    )
+    router = ConfiguredProviderJobSearchRouter(
+        (unsupported, stopped_failure, never_called)
+    )
+    request = JobSearchRequest(
+        "conversational-search-synthetic", "Acme", "Backend Engineer"
+    )
+
+    result = await router.search(request)
+
+    assert result.status is JobSearchStatus.FAILED
+    assert result.reason_code is JobSearchReason.SOURCE_TIMEOUT
+    assert unsupported.calls == [request]
+    assert stopped_failure.calls == [request]
+    assert never_called.calls == []
+
+
+def test_conversational_router_is_built_without_network() -> None:
+    http = FakeBoundedHttp()
+    built = build_production_job_search_ports(
+        boards=(BOARD,),
+        http_port=http,
+        policy=JobSearchExecutionPolicy(),
+    )
+
+    router = build_conversational_job_search_port(built)
+
+    assert isinstance(router, ConfiguredProviderJobSearchRouter)
+    assert http.requests == []

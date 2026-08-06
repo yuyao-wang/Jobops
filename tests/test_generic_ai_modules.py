@@ -447,6 +447,89 @@ def test_preferred_name_uses_the_explicit_private_fact():
     assert result.value == "Synthetic Preferred"
 
 
+@pytest.mark.parametrize(
+    ("key", "label", "value", "sensitivity"),
+    (
+        (
+            "employment_status",
+            "Current employment status",
+            "Synthetic employed status",
+            Sensitivity.EMPLOYMENT,
+        ),
+        (
+            "graduation_date",
+            "Expected graduation date",
+            "May 2030",
+            Sensitivity.EDUCATION,
+        ),
+        (
+            "accommodation",
+            "Do you require a reasonable accommodation during the interview process?",
+            "No accommodation requested",
+            Sensitivity.HEALTH,
+        ),
+    ),
+)
+def test_explicit_migrated_sensitive_labels_use_verified_values_but_new_mapping_reviews(
+    key,
+    label,
+    value,
+    sensitivity,
+):
+    resolver = AnswerResolver({}, answers={key: value})
+    control = FormControl(
+        index=0,
+        role="textbox",
+        tag="input",
+        label=label,
+        required=True,
+        selector="#synthetic-sensitive-answer",
+    )
+
+    deterministic = resolver.resolve(control)
+    proposed_mapping = resolver.resolve(control, key)
+
+    assert isinstance(deterministic, ResolvedField)
+    assert deterministic.canonical_key == key
+    assert deterministic.value == value
+    assert deterministic.sensitivity is sensitivity
+    assert isinstance(proposed_mapping, ResolverUnresolvedField)
+    assert "new sensitive mapping" in proposed_mapping.reason
+    assert proposed_mapping.sensitivity is sensitivity
+
+
+@pytest.mark.parametrize(
+    "label",
+    (
+        "Employment status of spouse",
+        "Graduation",
+        "Accommodation",
+    ),
+)
+def test_ambiguous_migrated_sensitive_labels_remain_unresolved(label):
+    resolver = AnswerResolver(
+        {},
+        answers={
+            "employment_status": "Synthetic employed status",
+            "graduation_date": "May 2030",
+            "accommodation": "No accommodation requested",
+        },
+    )
+    control = FormControl(
+        index=0,
+        role="textbox",
+        tag="input",
+        label=label,
+        required=True,
+        selector="#synthetic-ambiguous-answer",
+    )
+
+    result = resolver.resolve(control)
+
+    assert isinstance(result, ResolverUnresolvedField)
+    assert result.reason == "no unambiguous canonical mapping"
+
+
 def test_company_name_and_specific_address_do_not_inherit_personal_fallbacks():
     resolver = AnswerResolver(
         {
@@ -552,7 +635,7 @@ def test_model_mapping_needs_candidate_self_semantics_not_input_type_alone():
 
 
 def test_dynamic_question_without_canonical_mapping_requires_attention():
-    question = "How did you hear about this specific role?"
+    question = "Describe a project that is uniquely relevant to this role."
     resolver = AnswerResolver({})
     control = FormControl(
         index=0,

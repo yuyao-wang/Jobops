@@ -17,6 +17,7 @@ from .application_plan import (
     ApplicationPlanReadStatus,
     ApplicationPlanRepository,
 )
+from .job_prioritization import ProposedPriorityLevel
 from .application_preparation_orchestrator import (
     PREPARED_RESUME_PUBLICATION_STOP_REASON_CONTRACT_VERSION,
     ApplicationPreparationStage,
@@ -26,6 +27,13 @@ from .application_preparation_orchestrator import (
     PublicPreparationStageResult,
 )
 from .private_home import PrivateHome, PrivateHomeError
+from .resume_candidates import (
+    ResumeArtifactType,
+    ResumeCandidate,
+    ResumeCandidateReadStatus,
+    ResumeCandidateRepository,
+    ResumeCandidateStatus,
+)
 from .publication_stopped_lineage import (
     PublicationBlockingDirective,
     PublicationMaterialKind,
@@ -60,6 +68,11 @@ from .resume_layout_revision import (
     ResumeLayoutRevisionRun,
     ResumeLayoutRevisionStatus,
 )
+from .resume_selection import (
+    ResumeSelectionDecision,
+    ResumeSelectionDecisionReadStatus,
+    ResumeSelectionDecisionRepository,
+)
 from .resume_tailoring import (
     TailoredResumeDraft,
     TailoredResumeDraftReadStatus,
@@ -76,10 +89,16 @@ from .resume_visual_qa import (
 
 
 PREPARED_RESUME_MATERIAL_CONTRACT_VERSION = "prepared-resume-material-v1"
+APPROVED_RESUME_REUSE_MATERIAL_CONTRACT_VERSION = (
+    "approved-resume-reuse-material-v1"
+)
 
 _HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 _MATERIAL_ID_PATTERN = re.compile(
     r"^prepared-resume-material-[a-f0-9]{64}$"
+)
+_REUSE_MATERIAL_ID_PATTERN = re.compile(
+    r"^approved-resume-reuse-material-[a-f0-9]{64}$"
 )
 
 
@@ -441,9 +460,117 @@ class PreparedResumeMaterial:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovedResumeReuseMaterial:
+    """One P2 material record that preserves an approved PDF byte-for-byte."""
+
+    material_id: str
+    contract_version: str
+    subject_id: str
+    application_plan_id: str
+    job_id: str
+    job_revision: int
+    job_content_hash: str
+    source_selection_decision_id: str
+    source_selection_decision_hash: str
+    source_resume_id: str
+    source_candidate_version: str
+    source_artifact_sha256: str
+    pdf_reference: str
+    pdf_sha256: str
+    pdf_byte_size: int
+    page_count: int
+    material_role: PreparedMaterialRole
+    published_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.contract_version != (
+            APPROVED_RESUME_REUSE_MATERIAL_CONTRACT_VERSION
+        ):
+            raise ValueError("approved-resume reuse contract is unsupported")
+        for name, maximum in (
+            ("subject_id", 160),
+            ("application_plan_id", 160),
+            ("job_id", 160),
+            ("source_selection_decision_id", 160),
+            ("source_resume_id", 160),
+            ("source_candidate_version", 80),
+            ("pdf_reference", 400),
+        ):
+            _clean_text(name, getattr(self, name), maximum=maximum)
+        if type(self.job_revision) is not int or self.job_revision < 1:
+            raise ValueError("job_revision must be a positive integer")
+        for name in (
+            "job_content_hash",
+            "source_selection_decision_hash",
+            "source_artifact_sha256",
+            "pdf_sha256",
+        ):
+            _require_hash(name, getattr(self, name))
+        if self.pdf_sha256 != self.source_artifact_sha256:
+            raise ValueError("P2 reuse must preserve the selected PDF bytes")
+        if type(self.pdf_byte_size) is not int or self.pdf_byte_size <= 0:
+            raise ValueError("pdf_byte_size must be positive")
+        if type(self.page_count) is not int or self.page_count < 1:
+            raise ValueError("page_count must be at least one")
+        object.__setattr__(
+            self, "material_role", PreparedMaterialRole(self.material_role)
+        )
+        _require_aware("published_at", self.published_at)
+        expected_id = "approved-resume-reuse-material-" + _canonical_hash(
+            self.identity_dict()
+        )
+        if (
+            _REUSE_MATERIAL_ID_PATTERN.fullmatch(self.material_id) is None
+            or self.material_id != expected_id
+        ):
+            raise ValueError("approved-resume reuse material ID is invalid")
+
+    def identity_dict(self) -> dict[str, Any]:
+        return {
+            "application_plan_id": self.application_plan_id,
+            "contract_version": self.contract_version,
+            "job_content_hash": self.job_content_hash,
+            "job_id": self.job_id,
+            "job_revision": self.job_revision,
+            "material_role": self.material_role.value,
+            "pdf_sha256": self.pdf_sha256,
+            "source_artifact_sha256": self.source_artifact_sha256,
+            "source_candidate_version": self.source_candidate_version,
+            "source_resume_id": self.source_resume_id,
+            "source_selection_decision_hash": (
+                self.source_selection_decision_hash
+            ),
+            "source_selection_decision_id": (
+                self.source_selection_decision_id
+            ),
+            "subject_id": self.subject_id,
+        }
+
+    def content_dict(self) -> dict[str, Any]:
+        return {
+            "material_id": self.material_id,
+            **self.identity_dict(),
+            "page_count": self.page_count,
+            "pdf_byte_size": self.pdf_byte_size,
+            "pdf_reference": self.pdf_reference,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.content_dict(),
+            "published_at": _rfc3339(self.published_at),
+        }
+
+
+PreparedResumeMaterialRecord = (
+    PreparedResumeMaterial | ApprovedResumeReuseMaterial
+)
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedResumeMaterialWriteResult:
     status: PreparedResumeMaterialWriteStatus
-    material: PreparedResumeMaterial | None
+    material: PreparedResumeMaterialRecord | None
     reason_code: PreparedResumeMaterialFailureReason | None
     retryable: bool
 
@@ -463,7 +590,10 @@ class PreparedResumeMaterialWriteResult:
             PreparedResumeMaterialWriteStatus.UNCHANGED,
         }:
             if (
-                not isinstance(self.material, PreparedResumeMaterial)
+                not isinstance(
+                    self.material,
+                    (PreparedResumeMaterial, ApprovedResumeReuseMaterial),
+                )
                 or self.reason_code is not None
                 or self.retryable
             ):
@@ -475,7 +605,7 @@ class PreparedResumeMaterialWriteResult:
 @dataclass(frozen=True, slots=True)
 class PreparedResumeMaterialReadResult:
     status: PreparedResumeMaterialReadStatus
-    material: PreparedResumeMaterial | None
+    material: PreparedResumeMaterialRecord | None
     reason_code: PreparedResumeMaterialFailureReason | None = None
 
     def __post_init__(self) -> None:
@@ -489,7 +619,10 @@ class PreparedResumeMaterialReadResult:
             )
         if status is PreparedResumeMaterialReadStatus.FOUND:
             if (
-                not isinstance(self.material, PreparedResumeMaterial)
+                not isinstance(
+                    self.material,
+                    (PreparedResumeMaterial, ApprovedResumeReuseMaterial),
+                )
                 or self.reason_code is not None
             ):
                 raise ValueError("found publication read is invalid")
@@ -508,7 +641,7 @@ class PreparedResumeMaterialReadResult:
 @runtime_checkable
 class PreparedResumeMaterialRepository(Protocol):
     def save(
-        self, material: PreparedResumeMaterial
+        self, material: PreparedResumeMaterialRecord
     ) -> PreparedResumeMaterialWriteResult:
         """Persist one immutable prepared resume material."""
 
@@ -523,7 +656,58 @@ class PreparedResumeMaterialRepository(Protocol):
         """Resolve the current prepared resume for one plan."""
 
 
-def _material_from_dict(value: Any) -> PreparedResumeMaterial:
+def _material_from_dict(value: Any) -> PreparedResumeMaterialRecord:
+    if (
+        isinstance(value, Mapping)
+        and value.get("contract_version")
+        == APPROVED_RESUME_REUSE_MATERIAL_CONTRACT_VERSION
+    ):
+        expected = {
+            "application_plan_id",
+            "contract_version",
+            "job_content_hash",
+            "job_id",
+            "job_revision",
+            "material_id",
+            "material_role",
+            "page_count",
+            "pdf_byte_size",
+            "pdf_reference",
+            "pdf_sha256",
+            "published_at",
+            "source_artifact_sha256",
+            "source_candidate_version",
+            "source_resume_id",
+            "source_selection_decision_hash",
+            "source_selection_decision_id",
+            "subject_id",
+        }
+        if set(value) != expected:
+            raise ValueError("persisted approved-resume reuse material is invalid")
+        return ApprovedResumeReuseMaterial(
+            material_id=value["material_id"],
+            contract_version=value["contract_version"],
+            subject_id=value["subject_id"],
+            application_plan_id=value["application_plan_id"],
+            job_id=value["job_id"],
+            job_revision=value["job_revision"],
+            job_content_hash=value["job_content_hash"],
+            source_selection_decision_id=value[
+                "source_selection_decision_id"
+            ],
+            source_selection_decision_hash=value[
+                "source_selection_decision_hash"
+            ],
+            source_resume_id=value["source_resume_id"],
+            source_candidate_version=value["source_candidate_version"],
+            source_artifact_sha256=value["source_artifact_sha256"],
+            pdf_reference=value["pdf_reference"],
+            pdf_sha256=value["pdf_sha256"],
+            pdf_byte_size=value["pdf_byte_size"],
+            page_count=value["page_count"],
+            material_role=PreparedMaterialRole(value["material_role"]),
+            published_at=_parse_timestamp(value["published_at"]),
+        )
     expected = {
         "material_id",
         "contract_version",
@@ -599,12 +783,17 @@ class PrivateHomePreparedResumeMaterialRepository:
     def _path(self, subject_id: str, material_id: str) -> Path:
         if (
             not isinstance(material_id, str)
-            or _MATERIAL_ID_PATTERN.fullmatch(material_id) is None
+            or (
+                _MATERIAL_ID_PATTERN.fullmatch(material_id) is None
+                and _REUSE_MATERIAL_ID_PATTERN.fullmatch(material_id) is None
+            )
         ):
             raise ValueError("material_id is invalid")
         return self._subject_directory(subject_id) / f"{material_id}.json"
 
-    def _artifact_is_valid(self, material: PreparedResumeMaterial) -> bool:
+    def _artifact_is_valid(
+        self, material: PreparedResumeMaterialRecord
+    ) -> bool:
         try:
             path = self._home.contained_path(material.pdf_reference)
             if path.is_symlink() or not path.is_file():
@@ -717,7 +906,11 @@ class PrivateHomePreparedResumeMaterialRepository:
         for path in paths:
             if (
                 path.suffix != ".json"
-                or _MATERIAL_ID_PATTERN.fullmatch(path.stem) is None
+                or (
+                    _MATERIAL_ID_PATTERN.fullmatch(path.stem) is None
+                    and _REUSE_MATERIAL_ID_PATTERN.fullmatch(path.stem)
+                    is None
+                )
             ):
                 return PreparedResumeMaterialReadResult(
                     status=(
@@ -764,10 +957,12 @@ class PrivateHomePreparedResumeMaterialRepository:
         )
 
     def save(
-        self, material: PreparedResumeMaterial
+        self, material: PreparedResumeMaterialRecord
     ) -> PreparedResumeMaterialWriteResult:
-        if not isinstance(material, PreparedResumeMaterial):
-            raise TypeError("material must be a PreparedResumeMaterial")
+        if not isinstance(
+            material, (PreparedResumeMaterial, ApprovedResumeReuseMaterial)
+        ):
+            raise TypeError("material must be a prepared-resume record")
         path = self._path(material.subject_id, material.material_id)
         with self._lock:
             if not self._artifact_is_valid(material):
@@ -848,11 +1043,19 @@ class PublishPreparedResumeCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class PublishApprovedResumeReuseCommand:
+    subject_id: str
+    application_plan_id: str
+    resume_selection_decision_id: str
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PublishPreparedResumeResult:
     status: PreparedResumeMaterialStatus
     subject_id: str
     application_plan_id: str
-    material: PreparedResumeMaterial | None
+    material: PreparedResumeMaterialRecord | None
     write_result: PreparedResumeMaterialWriteResult | None
     reason_code: PreparedResumeMaterialFailureReason | None
     not_ready_reason: PreparedResumeMaterialNotReadyReason | None
@@ -904,7 +1107,10 @@ class PublishPreparedResumeResult:
         }:
             expected = PreparedResumeMaterialWriteStatus(status.value)
             if (
-                not isinstance(self.material, PreparedResumeMaterial)
+                not isinstance(
+                    self.material,
+                    (PreparedResumeMaterial, ApprovedResumeReuseMaterial),
+                )
                 or not isinstance(
                     self.write_result, PreparedResumeMaterialWriteResult
                 )
@@ -934,7 +1140,7 @@ class PublishPreparedResumeResult:
 
 
 def _failure(
-    command: PublishPreparedResumeCommand,
+    command: PublishPreparedResumeCommand | PublishApprovedResumeReuseCommand,
     reason: PreparedResumeMaterialFailureReason,
     *,
     retryable: bool = False,
@@ -961,7 +1167,7 @@ def _failure(
 
 
 def _not_ready(
-    command: PublishPreparedResumeCommand,
+    command: PublishPreparedResumeCommand | PublishApprovedResumeReuseCommand,
     reason: PreparedResumeMaterialNotReadyReason,
     *,
     detail: str,
@@ -978,6 +1184,222 @@ def _not_ready(
         retryable=False,
         message=f"The prepared resume is not ready: {detail}",
         stopped_source_lineage=stopped_source_lineage,
+    )
+
+
+def publish_approved_resume_reuse(
+    command: PublishApprovedResumeReuseCommand,
+    *,
+    application_plan_repository: ApplicationPlanRepository,
+    selection_repository: ResumeSelectionDecisionRepository,
+    candidate_repository: ResumeCandidateRepository,
+    material_repository: PreparedResumeMaterialRepository,
+    home: PrivateHome | None = None,
+) -> PublishPreparedResumeResult:
+    """Publish the exact selected PDF for a P2 plan without rewriting it."""
+
+    active_home = home or PrivateHome.discover()
+    try:
+        subject_id = _clean_text(
+            "subject_id", command.subject_id, maximum=160
+        )
+        plan_id = _clean_text(
+            "application_plan_id",
+            command.application_plan_id,
+            maximum=160,
+        )
+        decision_id = _clean_text(
+            "resume_selection_decision_id",
+            command.resume_selection_decision_id,
+            maximum=160,
+        )
+        now = _require_aware("now", command.now)
+    except (AttributeError, TypeError, ValueError):
+        return _failure(
+            command, PreparedResumeMaterialFailureReason.INVALID_REQUEST
+        )
+
+    try:
+        plan_read = application_plan_repository.get(plan_id)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason
+            .APPLICATION_PLAN_INTEGRITY_FAILURE,
+        )
+    if plan_read.status is ApplicationPlanReadStatus.NOT_FOUND:
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.APPLICATION_PLAN_NOT_FOUND,
+        )
+    if (
+        plan_read.status is not ApplicationPlanReadStatus.FOUND
+        or not isinstance(plan_read.plan, ApplicationPlan)
+    ):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason
+            .APPLICATION_PLAN_INTEGRITY_FAILURE,
+        )
+    plan = plan_read.plan
+    if plan.subject_id != subject_id:
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason
+            .APPLICATION_PLAN_SUBJECT_MISMATCH,
+        )
+    if plan.priority_level is not ProposedPriorityLevel.P2:
+        return _failure(
+            command, PreparedResumeMaterialFailureReason.INVALID_REQUEST
+        )
+
+    try:
+        selection_read = selection_repository.get(
+            subject_id=subject_id, decision_id=decision_id
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+    if selection_read.status is ResumeSelectionDecisionReadStatus.NOT_FOUND:
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.SOURCE_SELECTION_MISSING,
+        )
+    if (
+        selection_read.status is not ResumeSelectionDecisionReadStatus.FOUND
+        or not isinstance(selection_read.decision, ResumeSelectionDecision)
+    ):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+    selection = selection_read.decision
+    if (
+        selection.subject_id != subject_id
+        or selection.application_plan_id != plan.plan_id
+        or selection.job_id != plan.job_id
+        or selection.job_revision != plan.job_revision
+        or selection.job_content_hash != plan.job_content_hash
+    ):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.SOURCE_SELECTION_AMBIGUOUS,
+        )
+
+    try:
+        candidate_read = candidate_repository.get(
+            subject_id=subject_id, resume_id=selection.source_resume_id
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+    if (
+        candidate_read.status is not ResumeCandidateReadStatus.FOUND
+        or not isinstance(candidate_read.candidate, ResumeCandidate)
+    ):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+    candidate = candidate_read.candidate
+    if (
+        candidate.subject_id != subject_id
+        or candidate.resume_id != selection.source_resume_id
+        or candidate.contract_version != selection.source_candidate_version
+        or candidate.artifact_sha256
+        != selection.source_artifact_sha256
+        or candidate.status is not ResumeCandidateStatus.SELECTABLE
+        or candidate.artifact_type is not ResumeArtifactType.PDF
+    ):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+
+    try:
+        pdf_path = active_home.contained_path(candidate.artifact_reference)
+        if pdf_path.is_symlink() or not pdf_path.is_file():
+            raise ValueError("selected resume PDF is not a regular file")
+        content = pdf_path.read_bytes()
+        page_count = pdf_page_count(content)
+    except (OSError, PrivateHomeError, TypeError, ValueError):
+        return _failure(
+            command, PreparedResumeMaterialFailureReason.PDF_UNREADABLE
+        )
+    if hashlib.sha256(content).hexdigest() != candidate.artifact_sha256:
+        return _failure(
+            command, PreparedResumeMaterialFailureReason.PDF_HASH_DRIFT
+        )
+    if not content.startswith(b"%PDF-") or page_count < 1:
+        return _failure(
+            command, PreparedResumeMaterialFailureReason.PDF_INVALID
+        )
+
+    identity = {
+        "application_plan_id": plan.plan_id,
+        "contract_version": APPROVED_RESUME_REUSE_MATERIAL_CONTRACT_VERSION,
+        "job_content_hash": plan.job_content_hash,
+        "job_id": plan.job_id,
+        "job_revision": plan.job_revision,
+        "material_role": PreparedMaterialRole.RESUME.value,
+        "pdf_sha256": candidate.artifact_sha256,
+        "source_artifact_sha256": candidate.artifact_sha256,
+        "source_candidate_version": candidate.contract_version,
+        "source_resume_id": candidate.resume_id,
+        "source_selection_decision_hash": selection.decision_content_hash,
+        "source_selection_decision_id": selection.decision_id,
+        "subject_id": subject_id,
+    }
+    try:
+        material = ApprovedResumeReuseMaterial(
+            material_id=(
+                "approved-resume-reuse-material-"
+                + _canonical_hash(identity)
+            ),
+            pdf_reference=candidate.artifact_reference,
+            pdf_byte_size=len(content),
+            page_count=page_count,
+            published_at=now,
+            **identity,
+        )
+    except (TypeError, ValueError):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_INTEGRITY_FAILURE,
+        )
+    try:
+        write_result = material_repository.save(material)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return _failure(
+            command,
+            PreparedResumeMaterialFailureReason.MATERIAL_PERSISTENCE_FAILED,
+            retryable=True,
+        )
+    if write_result.status is PreparedResumeMaterialWriteStatus.FAILED:
+        return _failure(
+            command,
+            write_result.reason_code
+            or PreparedResumeMaterialFailureReason
+            .MATERIAL_PERSISTENCE_FAILED,
+            retryable=write_result.retryable,
+        )
+    status = PreparedResumeMaterialStatus(write_result.status.value)
+    return PublishPreparedResumeResult(
+        status=status,
+        subject_id=subject_id,
+        application_plan_id=plan_id,
+        material=write_result.material,
+        write_result=write_result,
+        reason_code=None,
+        not_ready_reason=None,
+        retryable=False,
+        message=(
+            "The approved P2 resume was reused without byte changes."
+        ),
     )
 
 
@@ -1678,21 +2100,26 @@ def prepared_resume_publication_public_result(
 
 
 __all__ = [
+    "APPROVED_RESUME_REUSE_MATERIAL_CONTRACT_VERSION",
     "PREPARED_RESUME_MATERIAL_CONTRACT_VERSION",
+    "ApprovedResumeReuseMaterial",
     "PreparedMaterialRole",
     "PreparedResumeMaterial",
     "PreparedResumeMaterialFailureReason",
     "PreparedResumeMaterialNotReadyReason",
     "PreparedResumeMaterialReadResult",
     "PreparedResumeMaterialReadStatus",
+    "PreparedResumeMaterialRecord",
     "PreparedResumeMaterialRepository",
     "PreparedResumeMaterialStatus",
     "PreparedResumeMaterialWriteResult",
     "PreparedResumeMaterialWriteStatus",
     "PrivateHomePreparedResumeMaterialRepository",
+    "PublishApprovedResumeReuseCommand",
     "PublishPreparedResumeCommand",
     "PublishPreparedResumeResult",
     "prepared_resume_material_id",
     "prepared_resume_publication_public_result",
+    "publish_approved_resume_reuse",
     "publish_prepared_resume",
 ]

@@ -23,6 +23,9 @@ from auth import (
 )
 from auth.credentials import CredentialStore, MacOSSecurityCredentialStore
 from core.application_engine import JobApplicationEngine
+from core.application_execution_profile import (
+    ApplicationExecutionIdentityProfile,
+)
 from core.browser_broker import lease_browser_session
 from core.bundles import (
     ApplicationBundle,
@@ -30,7 +33,11 @@ from core.bundles import (
     file_sha256,
     priority_to_tier,
 )
-from core.materials import MaterialValidationError, build_tier_materials
+from core.materials import (
+    MaterialValidationError,
+    build_tier_materials,
+    project_materials_for_legacy_execution,
+)
 from core.event_ledger import hash_job_url
 from core.outcomes import (
     ApplicationOutcome,
@@ -261,15 +268,28 @@ def _build_application_bundle(
         policy=decision,
         fallback_resume=fallback_resume,
     )
+    materials = project_materials_for_legacy_execution(
+        home=home,
+        subject_id=str(
+            vault.facts.get("subject_id")
+            or "legacy-private-home-owner"
+        ),
+        job_id=job.job_id,
+        materials=materials,
+    )
     profile = vault.application_profile(
         resume_path=materials.resume_path,
         job_id=job.job_id,
+    )
+    identity_profile = (
+        ApplicationExecutionIdentityProfile.from_legacy_profile(profile)
+        .to_application_bundle_profile()
     )
     bundle = ApplicationBundle(
         run_id=run_id,
         job=job,
         materials=materials,
-        profile=profile,
+        profile=identity_profile,
         answers=dict(answer_report.values),
         policy=decision,
     )
@@ -389,6 +409,55 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_cli_queue(
+    csv_path: Path,
+    resume_dir: Path,
+    *,
+    priorities: str,
+    statuses: str,
+    limit: int,
+    exact_job_id: str | None,
+) -> list[CSVApplication]:
+    """Load one CLI queue view, with an optional fail-closed exact target."""
+
+    if exact_job_id is None:
+        return load_csv_queue(
+            csv_path,
+            resume_dir,
+            priorities=priorities,
+            statuses=statuses,
+            limit=limit,
+        )
+
+    target_job_id = exact_job_id.strip()
+    if not target_job_id:
+        raise ValueError("--job-id must be non-empty")
+
+    eligible = load_csv_queue(
+        csv_path,
+        resume_dir,
+        priorities=priorities,
+        statuses=statuses,
+        limit=0,
+    )
+    matches: list[CSVApplication] = []
+    for application in eligible:
+        job = JobSpec(
+            url=application.url,
+            company=application.company,
+            title=application.title,
+            tier=priority_to_tier(application.row.get("priority", "")),
+        )
+        if job.job_id == target_job_id:
+            matches.append(application)
+
+    if len(matches) != 1:
+        raise ValueError(
+            "--job-id must match exactly one priority/status-eligible CSV row"
+        )
+    return matches[:limit] if limit > 0 else matches
+
+
 def cmd_queue(args: argparse.Namespace) -> int:
     vault = CandidateVault.load(
         PrivateHome(Path(args.home).expanduser().resolve()) if args.home else None
@@ -399,12 +468,13 @@ def cmd_queue(args: argparse.Namespace) -> int:
         if args.resume_dir
         else vault.paths.master_documents
     )
-    queue = load_csv_queue(
+    queue = _load_cli_queue(
         csv_path,
         resume_dir,
         priorities=args.priorities,
         statuses=args.statuses,
         limit=args.limit,
+        exact_job_id=args.job_id,
     )
     summary = {
         "queue": str(csv_path),
@@ -562,6 +632,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 async def cmd_apply_csv(args: argparse.Namespace) -> int:
+    if args.preview:
+        args.list = True
+        return cmd_queue(args)
+
     home = PrivateHome(Path(args.home).expanduser().resolve()) if args.home else PrivateHome.discover()
     vault = CandidateVault.load(home)
     csv_path = Path(args.csv).expanduser().resolve() if args.csv else vault.paths.job_queue
@@ -570,16 +644,14 @@ async def cmd_apply_csv(args: argparse.Namespace) -> int:
         if args.resume_dir
         else vault.paths.master_documents
     )
-    queue = load_csv_queue(
+    queue = _load_cli_queue(
         csv_path,
         resume_dir,
         priorities=args.priorities,
         statuses=args.statuses,
         limit=args.limit,
+        exact_job_id=args.job_id,
     )
-    if args.preview:
-        args.list = True
-        return cmd_queue(args)
     if not queue:
         _json_print({"queue": str(csv_path), "selected": 0})
         return 0
@@ -654,6 +726,7 @@ async def cmd_apply_csv(args: argparse.Namespace) -> int:
                     page=None,
                     bundle=bundle,
                     request_submit=args.submit,
+                    private_home=home,
                 )
             else:
                 async with lease_browser_session(
@@ -676,6 +749,7 @@ async def cmd_apply_csv(args: argparse.Namespace) -> int:
                         tenant=application.company,
                         lease_ttl_seconds=args.lease_ttl,
                         browser_lease=browser.lease,
+                        private_home=home,
                     )
 
             attempted += 1
@@ -700,10 +774,21 @@ async def cmd_apply_csv(args: argparse.Namespace) -> int:
     return int(final_exit)
 
 
-async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
-    """Re-read and submit one run whose Review was persisted earlier."""
+async def submit_reviewed_application(
+    args: argparse.Namespace,
+    *,
+    credential_store: CredentialStore | None = None,
+    browser_lease_provider: Any | None = None,
+    request_submit: bool = True,
+) -> ApplicationOutcome:
+    """Re-read and submit one run whose Review was persisted earlier.
 
-    if not args.approve:
+    The optional injected production dependencies let the authenticated
+    Dashboard reuse the server-owned Keychain and Chromium runtime.  The CLI
+    keeps its existing standalone behavior when they are omitted.
+    """
+
+    if request_submit and not args.approve:
         raise ValueError(
             "submit-reviewed requires --approve after the recorded Review was inspected"
         )
@@ -715,15 +800,17 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
         if args.resume_dir
         else vault.paths.master_documents
     )
-    store = MacOSSecurityCredentialStore()
+    store = credential_store or MacOSSecurityCredentialStore()
     engine = JobApplicationEngine.from_private_home(
         home=home,
         credential_store=store,
     )
     mailbox_verifier = _mailbox_verifier(vault, store)
     run = engine.ledger.get_run(args.run_id)
-    approved_review_hash = engine.latest_review_hash(args.run_id)
-    if not approved_review_hash:
+    approved_review_hash = (
+        engine.latest_review_hash(args.run_id) if request_submit else ""
+    )
+    if request_submit and not approved_review_hash:
         raise ValueError("run has no persisted REVIEW_READY fingerprint")
 
     candidates = load_csv_queue(
@@ -766,8 +853,7 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
         )
         engine.record_outcome(outcome)
         _project_csv_outcome(csv_path, application, outcome)
-        print(outcome.to_json())
-        return int(outcome.exit_code)
+        return outcome
     if bundle.job.job_id != run.job_id:
         raise ValueError("reviewed run no longer matches the selected job")
 
@@ -775,20 +861,19 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
     if submission_guard is not None:
         engine.record_outcome(submission_guard)
         _project_csv_outcome(csv_path, application, submission_guard)
-        print(submission_guard.to_json())
-        return int(submission_guard.exit_code)
+        return submission_guard
 
     if bundle.policy.blockers:
         outcome = await engine.execute(
             page=None,
             bundle=bundle,
-            request_submit=True,
+            request_submit=request_submit,
             approve_gate_a=True,
             approved_review_hash=approved_review_hash,
+            private_home=home,
         )
         _project_csv_outcome(csv_path, application, outcome)
-        print(outcome.to_json())
-        return int(outcome.exit_code)
+        return outcome
 
     brain = None
     if args.semantic_mapper:
@@ -799,19 +884,12 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
 
         brain = ClaudeBrain(verbose=False, profile=profile)
 
-    async with async_playwright() as playwright:
-        async with lease_browser_session(
-            playwright,
-            profile=profile,
-            leases=engine.leases,
-            owner=args.run_id,
-            headless=args.headless,
-            ttl_seconds=args.lease_ttl,
-        ) as browser:
+    if browser_lease_provider is not None:
+        async with browser_lease_provider.lease(owner=args.run_id) as browser:
             outcome = await engine.execute(
-                page=browser.session.page,
+                page=browser.page,
                 bundle=bundle,
-                request_submit=True,
+                request_submit=request_submit,
                 approve_gate_a=True,
                 approved_review_hash=approved_review_hash,
                 credential_store=store,
@@ -821,8 +899,41 @@ async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
                 tenant=application.company,
                 lease_ttl_seconds=args.lease_ttl,
                 browser_lease=browser.lease,
+                private_home=home,
             )
+    else:
+        async with async_playwright() as playwright:
+            async with lease_browser_session(
+                playwright,
+                profile=profile,
+                leases=engine.leases,
+                owner=args.run_id,
+                headless=args.headless,
+                ttl_seconds=args.lease_ttl,
+            ) as browser:
+                outcome = await engine.execute(
+                    page=browser.session.page,
+                    bundle=bundle,
+                    request_submit=request_submit,
+                    approve_gate_a=True,
+                    approved_review_hash=approved_review_hash,
+                    credential_store=store,
+                    mailbox_verifier=mailbox_verifier,
+                    brain=brain,
+                    platform_hint=application.row.get("source", ""),
+                    tenant=application.company,
+                    lease_ttl_seconds=args.lease_ttl,
+                    browser_lease=browser.lease,
+                    private_home=home,
+                )
     _project_csv_outcome(csv_path, application, outcome)
+    return outcome
+
+
+async def cmd_submit_reviewed(args: argparse.Namespace) -> int:
+    """CLI wrapper for the shared reviewed-application submission path."""
+
+    outcome = await submit_reviewed_application(args)
     print(outcome.to_json())
     return int(outcome.exit_code)
 
@@ -928,6 +1039,11 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--priorities", default="High,Medium,Low")
         command.add_argument("--statuses", default=DEFAULT_STATUSES)
         command.add_argument("--limit", type=int, default=0)
+        command.add_argument(
+            "--job-id",
+            default=None,
+            help="Select exactly one priority/status-eligible canonical job ID",
+        )
         if name == "queue":
             command.add_argument("--list", action="store_true")
         else:

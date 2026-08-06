@@ -37,11 +37,11 @@ from .model_provider_capabilities import (
 )
 from .priority_agent_adapter import (
     DEFAULT_PROMPT_VERSION,
-    PRIORITY_AGENT_OUTPUT_SCHEMA,
     PRIORITY_AGENT_OUTPUT_SCHEMA_NAME,
     PRIORITY_AGENT_OUTPUT_SCHEMA_VERSION,
     PRIORITY_AGENT_SYSTEM_PROMPT,
     priority_agent_output_from_data,
+    priority_agent_output_schema,
     priority_context_data,
 )
 
@@ -237,6 +237,9 @@ class StructuredBackendPriorityAgentAdapter:
         self._complete = method
         self._call_metadata = call_metadata
         self._metadata = _stable_domain_metadata(call_metadata)
+        self._invocation_model_id = _configured_model_id(
+            resolved_backend.backend
+        )
         self._limits = limits
 
     @property
@@ -249,18 +252,19 @@ class StructuredBackendPriorityAgentAdapter:
 
     async def evaluate(self, context: PriorityContext) -> PriorityAgentOutput:
         input_data = priority_context_data(context)
+        output_schema = priority_agent_output_schema(context)
         request = IsolatedStructuredModelRequest(
             component_id=PRIORITY_MODEL_COMPONENT_ID,
             invocation_id=_invocation_id(
                 input_data=input_data,
                 metadata=self.call_metadata,
             ),
-            model_id=self.call_metadata.model_id,
+            model_id=self._invocation_model_id,
             system_prompt=PRIORITY_AGENT_SYSTEM_PROMPT,
             input_data=input_data,
             images=(),
             output_schema_name=PRIORITY_AGENT_OUTPUT_SCHEMA_NAME,
-            output_schema=PRIORITY_AGENT_OUTPUT_SCHEMA,
+            output_schema=output_schema,
             timeout_seconds=self._limits.timeout_seconds,
             max_input_bytes=self._limits.max_input_bytes,
             max_output_bytes=self._limits.max_output_bytes,
@@ -338,7 +342,7 @@ class StructuredBackendPriorityAgentAdapter:
             ) from cause
         try:
             Draft202012Validator(
-                dict(PRIORITY_AGENT_OUTPUT_SCHEMA)
+                dict(request.output_schema)
             ).validate(raw)
             return priority_agent_output_from_data(raw)
         except (ValidationError, AttributeError, KeyError, TypeError, ValueError):
@@ -357,6 +361,11 @@ def _selected_backend_id(ai_config: Mapping[str, Any]) -> str:
     else:
         value = ai_config.get("default_backend", "codex_cli")
     return value if isinstance(value, str) else ""
+
+
+def _configured_model_id(backend: object) -> str:
+    value = getattr(backend, "model", "")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def build_production_priority_agent(
@@ -393,8 +402,9 @@ def build_production_priority_agent(
         isolation_profile_registry=isolation_profile_registry,
     )
     active_limits = limits or ProductionPriorityAgentLimits()
-    model_id = str(
-        getattr(resolved.backend, "model", "")
+    invocation_model_id = _configured_model_id(resolved.backend)
+    model_id = (
+        invocation_model_id
         or resolved.selected_backend_id + "-provider-default"
     )
     call_metadata = ProductionPriorityAgentCallMetadata(

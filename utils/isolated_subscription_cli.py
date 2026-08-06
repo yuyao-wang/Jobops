@@ -57,8 +57,19 @@ _FORBIDDEN_EVENT_ITEMS = frozenset(
     }
 )
 _ALLOWED_CHILD_ENVIRONMENT = frozenset(
-    {"CODEX_HOME", "HOME", "LANG", "PATH", "TMPDIR"}
+    {
+        "CODEX_HOME",
+        "HOME",
+        "LANG",
+        "PATH",
+        "SSL_CERT_FILE",
+        "TMPDIR",
+    }
 )
+_ALLOWED_PREFERENCE_DOMAINS = frozenset(
+    {"com.openai.codex", "kCFPreferencesAnyApplication"}
+)
+_SYSTEM_CA_BUNDLE = "/etc/ssl/cert.pem"
 _TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -149,6 +160,11 @@ def _seatbelt_profile(
     reads = " ".join(
         f'(subpath "{literal(path)}")' for path in read_roots
     )
+    preference_rules = " ".join(
+        "(allow user-preference-read "
+        f'(preference-domain "{literal(domain)}"))'
+        for domain in spec.allowed_preference_domains
+    )
     return (
         '(version 1) (deny default) '
         '(import "/System/Library/Sandbox/Profiles/system.sb") '
@@ -157,6 +173,7 @@ def _seatbelt_profile(
         f"(allow file-read* {reads}) "
         f'(allow file-write* (subpath "{literal(str(workspace))}") '
         f'(subpath "{literal(str(session_home))}")) '
+        f"{preference_rules} "
         "(allow network-outbound)"
     )
 
@@ -183,6 +200,39 @@ def _terminate_group(process: asyncio.subprocess.Process) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         process.kill()
+
+
+def _process_failure_diagnostic(stderr: bytes) -> str:
+    """Classify bounded CLI stderr without retaining provider output."""
+
+    lowered = stderr.lower()
+    if b"operation not permitted" in lowered or b"sandbox" in lowered:
+        return "SANDBOX_DENIED"
+    if b"failed to load managed config" in lowered:
+        return "MANAGED_CONFIG_UNAVAILABLE"
+    if b"not logged in" in lowered or b"authentication" in lowered:
+        return "AUTHENTICATION_UNAVAILABLE"
+    if b"dns" in lowered:
+        return "DNS_UNAVAILABLE"
+    if b"certificate" in lowered or b"tls" in lowered:
+        return "TLS_UNAVAILABLE"
+    if b"proxy" in lowered:
+        return "PROXY_UNAVAILABLE"
+    if b"failed to send" in lowered:
+        return "REQUEST_SEND_FAILED"
+    if b"stream disconnected" in lowered:
+        return "STREAM_DISCONNECTED"
+    if b"timed out" in lowered:
+        return "TRANSPORT_TIMEOUT"
+    if b"connection" in lowered or b"network" in lowered:
+        return "TRANSPORT_FAILURE"
+    if b"rate limit" in lowered or b"usage limit" in lowered:
+        return "USAGE_LIMITED"
+    if b"unknown feature" in lowered or b"unexpected argument" in lowered:
+        return "CLI_CONTRACT_UNSUPPORTED"
+    if b"failed to load" in lowered or b"configuration" in lowered:
+        return "CONFIGURATION_UNAVAILABLE"
+    return "PROCESS_EXIT_UNCLASSIFIED"
 
 
 class IsolatedSubscriptionCLIRunner:
@@ -372,14 +422,7 @@ class IsolatedSubscriptionCLIRunner:
                 )
             else:
                 schema_path = workspace / "output-schema.json"
-                schema_path.write_text(
-                    json.dumps(
-                        request.output_schema,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    encoding="utf-8",
-                )
+                schema_path.write_bytes(request.output_schema_bytes())
                 image_paths: list[str] = []
                 for image in request.images:
                     suffix = ".png" if image.media_type == "image/png" else ".jpg"
@@ -410,6 +453,11 @@ class IsolatedSubscriptionCLIRunner:
                         not isinstance(key, str)
                         or not isinstance(value, str)
                         for key, value in spec.environment.items()
+                    )
+                    or any(
+                        not isinstance(domain, str)
+                        or domain not in _ALLOWED_PREFERENCE_DOMAINS
+                        for domain in spec.allowed_preference_domains
                     )
                 ):
                     final_result = _result(
@@ -525,7 +573,7 @@ class IsolatedSubscriptionCLIRunner:
                     stderr_pair = stderr_pair or await stderr_task
                     returncode = await process_task
                     stdout, stdout_oversized = stdout_pair
-                    _, stderr_oversized = stderr_pair
+                    stderr, stderr_oversized = stderr_pair
                     result_path = workspace / spec.result_file_name
                     result_bytes = (
                         result_path.read_bytes()
@@ -575,7 +623,7 @@ class IsolatedSubscriptionCLIRunner:
                                 IsolatedStructuredModelStatus.PROCESS_FAILED
                             )
                             parsed_output = None
-                            diagnostic = "PROCESS_FAILED"
+                            diagnostic = _process_failure_diagnostic(stderr)
                         else:
                             try:
                                 Draft202012Validator(
@@ -768,11 +816,16 @@ class CodexSubscriptionCLIInvocationAdapter:
                 "HOME": session_home,
                 "LANG": "en_US.UTF-8",
                 "PATH": "/usr/bin:/bin",
+                "SSL_CERT_FILE": _SYSTEM_CA_BUNDLE,
                 "TMPDIR": workspace,
             },
             result_file_name="result.json",
             executable_read_roots=(resource_root,),
             allowed_process_executables=(executable,),
+            allowed_preference_domains=(
+                "com.openai.codex",
+                "kCFPreferencesAnyApplication",
+            ),
         )
 
     def parse_process_output(
@@ -811,6 +864,7 @@ def probe_isolated_subscription_cli_runtime(
 
     if (
         not Path(sandbox_executable).is_file()
+        or not Path(_SYSTEM_CA_BUNDLE).is_file()
         or not adapter.probe_contract()
     ):
         return False
@@ -915,6 +969,10 @@ def probe_isolated_subscription_cli_runtime(
             result_file_name="unused",
             executable_read_roots=(str(Path(executable).parent),),
             allowed_process_executables=(executable,),
+            allowed_preference_domains=(
+                "com.openai.codex",
+                "kCFPreferencesAnyApplication",
+            ),
         )
         cli_profile = _seatbelt_profile(
             workspace=workspace,
@@ -958,6 +1016,30 @@ def probe_isolated_subscription_cli_runtime(
             and "--image" in contract.stdout
         )
         if not basic_contract:
+            return False
+
+        config_load = subprocess.run(
+            [
+                sandbox_executable,
+                "-p",
+                cli_profile,
+                executable,
+                "features",
+                "list",
+            ],
+            cwd=workspace,
+            env={
+                "CODEX_HOME": str(session),
+                "HOME": str(session),
+                "LANG": "en_US.UTF-8",
+                "PATH": "/usr/bin:/bin",
+                "TMPDIR": str(workspace),
+            },
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if config_load.returncode != 0:
             return False
 
         debug_home = root / "debug-home"

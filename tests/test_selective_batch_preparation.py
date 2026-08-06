@@ -55,7 +55,6 @@ from tests.test_application_preparation_orchestrator import (
     _recipe,
 )
 from tests.test_human_attention_queue import (
-    _completed_with_real_answers,
     _deferred_recipe,
     _invoke,
 )
@@ -282,7 +281,20 @@ async def test_attention_plan_is_skipped_once_with_all_item_ids(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
-    plan, *_ = await _completed_with_real_answers(home)
+    plan, plans = _plan(home, job_id="job-current-attention")
+    runs = PrivateHomeApplicationPreparationRunRepository(home)
+    _recorder, recipe = _deferred_recipe(
+        stage=ApplicationPreparationStage.RESUME_EVIDENCE,
+        public_status="DEFERRED_NO_EVIDENCE",
+        reason_code="NO_TRUSTED_EVIDENCE",
+    )
+    await _invoke(
+        plan=plan,
+        plan_repository=plans,
+        run_repository=runs,
+        recipe=recipe,
+        now=NOW,
+    )
     queue = build_current_human_attention_queue(
         subject_id=plan.subject_id,
         now=NOW,
@@ -319,6 +331,71 @@ async def test_attention_plan_is_skipped_once_with_all_item_ids(
         item.item_id for item in queue.items
     )
     assert result.summary.skipped_human_attention == 1
+
+
+@pytest.mark.asyncio
+async def test_superseded_attention_policy_replays_exact_plan(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "private")
+    plan, plans = _plan(home, job_id="job-superseded-attention")
+    runs = PrivateHomeApplicationPreparationRunRepository(home)
+    _recorder, recipe = _deferred_recipe(
+        stage=ApplicationPreparationStage.RESUME_EVIDENCE,
+        public_status="DEFERRED_NO_EVIDENCE",
+        reason_code="NO_TRUSTED_EVIDENCE",
+    )
+    await _invoke(
+        plan=plan,
+        plan_repository=plans,
+        run_repository=runs,
+        recipe=recipe,
+        now=NOW,
+    )
+    queue = build_current_human_attention_queue(
+        subject_id=plan.subject_id,
+        now=NOW,
+        run_repository=PrivateHomeApplicationPreparationRunRepository(home),
+        application_plan_repository=PrivateHomeApplicationPlanRepository(
+            home
+        ),
+        answer_set_repository=(
+            PrivateHomePreparedApplicationAnswerSetRepository(home)
+        ),
+    )
+    preparation = _Preparation()
+    observed: list[tuple[str, tuple[str, ...]]] = []
+
+    def replay_policy(current_plan, attention_items):
+        observed.append(
+            (
+                current_plan.plan_id,
+                tuple(item.item_id for item in attention_items),
+            )
+        )
+        return current_plan.plan_id == plan.plan_id
+
+    result = await run_selective_batch_preparation(
+        SelectiveBatchPreparationCommand(
+            subject_id=plan.subject_id,
+            now=NOW,
+            application_plan_ids=(plan.plan_id,),
+        ),
+        application_plan_repository=PrivateHomeApplicationPlanRepository(
+            home
+        ),
+        human_attention_queue_reader=_QueueReader(queue),
+        single_job_preparation=preparation,
+        current_attention_replay_policy=replay_policy,
+    )
+
+    assert result.status is SelectiveBatchPreparationStatus.COMPLETED
+    assert [call.application_plan_id for call in preparation.calls] == [
+        plan.plan_id
+    ]
+    assert observed == [
+        (plan.plan_id, tuple(item.item_id for item in queue.items))
+    ]
 
 
 @pytest.mark.asyncio

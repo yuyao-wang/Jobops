@@ -216,6 +216,46 @@ def test_trusted_candidate_vault_records_create_typed_immutable_set(
         answer_set.subject_id = "changed"
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "stored_sensitivity", "expected_sensitivity"),
+    (
+        (
+            "employment_status",
+            "Synthetic employed status",
+            "employment",
+            CanonicalAnswerSensitivity.EMPLOYMENT,
+        ),
+        (
+            "graduation_date",
+            "May 2030",
+            "education",
+            CanonicalAnswerSensitivity.EDUCATION,
+        ),
+        (
+            "accommodation",
+            "No accommodation requested",
+            "health",
+            CanonicalAnswerSensitivity.HEALTH,
+        ),
+    ),
+)
+def test_specialized_sensitive_records_keep_their_exact_sensitivity(
+    tmp_path: Path,
+    key: str,
+    value: str,
+    stored_sensitivity: str,
+    expected_sensitivity: CanonicalAnswerSensitivity,
+) -> None:
+    result, _plan_value, _repository = _run(
+        PrivateHome(tmp_path / "private"),
+        [_record(key, value, sensitivity=stored_sensitivity)],
+    )
+
+    assert result.status is PreparedApplicationAnswerSetStatus.CREATED
+    prepared = _answers_by_key(result)[CanonicalApplicationAnswerKey(key)]
+    assert prepared.sensitivity is expected_sensitivity
+
+
 def test_snapshot_preserves_provenance_scope_and_stable_identity(
     tmp_path: Path,
 ) -> None:
@@ -253,6 +293,26 @@ def test_snapshot_preserves_provenance_scope_and_stable_identity(
     )
     assert phone.allowed_scope == {"job_ids": [JOB_ID]}
     assert phone.recorded_at < phone.verified_at
+
+
+def test_json_multi_select_fact_is_normalized_to_typed_tuple(
+    tmp_path: Path,
+) -> None:
+    result, _plan_value, _repository = _run(
+        PrivateHome(tmp_path / "private"),
+        [
+            _record(
+                "job_discovery_source",
+                ["Synthetic job board"],
+            )
+        ],
+    )
+
+    assert result.status is PreparedApplicationAnswerSetStatus.CREATED
+    prepared = _answers_by_key(result)[
+        CanonicalApplicationAnswerKey.JOB_DISCOVERY_SOURCE
+    ]
+    assert prepared.value == ("Synthetic job board",)
 
 
 def test_legacy_alias_normalizes_and_unknown_never_becomes_answer(
@@ -360,7 +420,7 @@ def test_demographics_use_explicit_choice_or_policy_decline_only(
         assert projected[key].supporting_fact_ids == ()
 
 
-def test_attestation_consent_signature_are_always_human_required(
+def test_attestation_consent_signature_wait_for_runtime_requiredness(
     tmp_path: Path,
 ) -> None:
     result, _plan_value, _repository = _run(
@@ -387,7 +447,7 @@ def test_attestation_consent_signature_are_always_human_required(
         assert unresolved[key].reason is (
             UnresolvedAnswerReason.REQUIRES_ATTESTATION
         )
-        assert unresolved[key].blocking is True
+        assert unresolved[key].blocking is False
 
 
 def test_unresolved_items_do_not_discard_safe_answers(

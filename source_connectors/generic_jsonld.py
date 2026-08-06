@@ -7,6 +7,7 @@ import ipaddress
 import json
 import socket
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any
@@ -23,6 +24,7 @@ from .contract import (
     ReadJobResult,
     SourceJobObservation,
     SourcePlatform,
+    WORKDAY_PUBLIC_JOB_HOST_SUFFIXES,
     WorkMode,
 )
 from .greenhouse import _plain_text
@@ -39,6 +41,22 @@ _BLOCKED_HOSTNAMES = frozenset(
         "metadata.azure.internal",
     }
 )
+_BLOCKED_AGGREGATOR_DOMAINS = frozenset(
+    {
+        "glassdoor.ca",
+        "glassdoor.com",
+        "indeed.com",
+        "linkedin.com",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedHttpTarget:
+    logical_url: str
+    connect_urls: tuple[str, ...]
+    host_header: str
+    sni_hostname: str
 
 
 class _JsonLdScriptParser(HTMLParser):
@@ -154,12 +172,32 @@ def _hostname_is_blocked(hostname: str) -> bool:
         normalized == "localhost"
         or normalized.endswith(".localhost")
         or normalized in _BLOCKED_HOSTNAMES
+        or any(
+            normalized == domain or normalized.endswith(f".{domain}")
+            for domain in _BLOCKED_AGGREGATOR_DOMAINS
+        )
     )
 
 
 def _resolved_addresses_are_public(addresses: Iterable[str]) -> bool:
     values = tuple(addresses)
     return bool(values) and all(not _is_blocked_ip(value) for value in values)
+
+
+def _connect_url(logical_url: str, address: str) -> str:
+    parsed = urlsplit(logical_url)
+    ip = ipaddress.ip_address(address)
+    host = f"[{ip.compressed}]" if ip.version == 6 else ip.compressed
+    netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    return urlunsplit(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            parsed.query,
+            "",
+        )
+    )
 
 
 def _job_type_contains_job_posting(value: Any) -> bool:
@@ -308,12 +346,31 @@ def _work_mode(value: Any) -> tuple[WorkMode, ProvenanceSource, str]:
     return WorkMode.UNKNOWN, ProvenanceSource.SYSTEM, "UNKNOWN"
 
 
+def _source_identity(source_url: str) -> tuple[SourcePlatform, AtsType]:
+    host = (urlsplit(source_url).hostname or "").casefold().rstrip(".")
+    if any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in WORKDAY_PUBLIC_JOB_HOST_SUFFIXES
+    ):
+        return SourcePlatform.WORKDAY, AtsType.WORKDAY
+    for suffix, platform in (
+        ("smartrecruiters.com", SourcePlatform.SMARTRECRUITERS),
+        ("icims.com", SourcePlatform.ICIMS),
+        ("successfactors.com", SourcePlatform.SUCCESSFACTORS),
+        ("successfactors.eu", SourcePlatform.SUCCESSFACTORS),
+    ):
+        if host == suffix or host.endswith(f".{suffix}"):
+            return platform, AtsType.UNKNOWN
+    return SourcePlatform.GENERIC_WEB, AtsType.UNKNOWN
+
+
 def _observation_from_posting(
     *,
     posting: Mapping[str, Any],
     source_url: str,
     observed_at: datetime,
 ) -> SourceJobObservation:
+    source_platform, ats_type = _source_identity(source_url)
     title = _required_text(posting.get("title"), "title", 240)
     raw_description = posting.get("description")
     if not isinstance(raw_description, str):
@@ -361,7 +418,7 @@ def _observation_from_posting(
         FieldProvenance("observed_at", ProvenanceSource.SYSTEM, "clock"),
     )
     return SourceJobObservation(
-        source_platform=SourcePlatform.GENERIC_WEB,
+        source_platform=source_platform,
         source_job_id=source_job_id,
         source_url=source_url,
         application_url=application_url,
@@ -371,7 +428,7 @@ def _observation_from_posting(
         location=location,
         work_mode=work_mode,
         posted_at=posted_at,
-        ats_type=AtsType.UNKNOWN,
+        ats_type=ats_type,
         observed_at=_rfc3339(observed_at),
         provenance=provenance,
     )
@@ -395,11 +452,14 @@ class GenericJsonLdJobReader:
         self._clock = clock or _utc_now
         self._resolver = resolver or _default_resolver
 
-    async def _validate_public_url(self, value: str) -> str | ReadJobResult:
+    async def _validate_public_url(
+        self, value: str
+    ) -> _ValidatedHttpTarget | ReadJobResult:
         normalized = _normalized_http_url(value)
         if isinstance(normalized, ReadJobResult):
             return normalized
-        hostname = urlsplit(normalized).hostname
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
         if hostname is None:
             return ReadJobResult.failed(ReadJobReason.INVALID_URL)
         if _hostname_is_blocked(hostname):
@@ -408,140 +468,189 @@ class GenericJsonLdJobReader:
         if literal is not None:
             if _is_blocked_ip(literal):
                 return ReadJobResult.failed(ReadJobReason.UNSAFE_URL)
-            return normalized
-        try:
-            addresses = await asyncio.wait_for(
-                asyncio.to_thread(self._resolver, hostname),
-                timeout=self._timeout_seconds,
-            )
-        except TimeoutError:
-            return ReadJobResult.failed(ReadJobReason.SOURCE_TIMEOUT)
-        except (OSError, socket.gaierror):
-            return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
+            addresses = (literal,)
+        else:
+            try:
+                addresses = tuple(
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._resolver, hostname),
+                        timeout=self._timeout_seconds,
+                    )
+                )
+            except TimeoutError:
+                return ReadJobResult.failed(ReadJobReason.SOURCE_TIMEOUT)
+            except (OSError, socket.gaierror):
+                return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
+            except TypeError:
+                return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
         try:
             is_public = _resolved_addresses_are_public(addresses)
+            canonical_addresses = tuple(
+                dict.fromkeys(
+                    str(ipaddress.ip_address(value)) for value in addresses
+                )
+            )
         except (TypeError, ValueError):
             return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
         if not is_public:
             return ReadJobResult.failed(ReadJobReason.UNSAFE_URL)
-        return normalized
+        if not canonical_addresses:
+            return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
+        return _ValidatedHttpTarget(
+            logical_url=normalized,
+            connect_urls=tuple(
+                _connect_url(normalized, address)
+                for address in canonical_addresses
+            ),
+            host_header=parsed.netloc,
+            sni_hostname=hostname,
+        )
 
     async def _fetch_html(
         self, initial_url: str
     ) -> tuple[str, str] | ReadJobResult:
-        current: str | ReadJobResult = initial_url
+        current = await self._validate_public_url(initial_url)
+        if isinstance(current, ReadJobResult):
+            return current
         redirects = 0
-        async with httpx.AsyncClient(
-            timeout=self._timeout_seconds,
-            transport=self._transport,
-            follow_redirects=False,
-            trust_env=False,
-            headers={
-                "Accept": "text/html, application/xhtml+xml",
-                "User-Agent": "Jobops/1.0 GenericJsonLdJobReader",
-            },
-        ) as client:
-            while True:
-                current = await self._validate_public_url(current)
-                if isinstance(current, ReadJobResult):
-                    return current
-                client.cookies.clear()
-                try:
-                    async with client.stream("GET", current) as response:
-                        if response.status_code in _REDIRECT_STATUSES:
-                            location = response.headers.get("location")
-                            if not location or redirects >= _MAX_REDIRECTS:
-                                return ReadJobResult.failed(
-                                    ReadJobReason.SOURCE_RESPONSE_INVALID
-                                )
-                            redirect_url = urljoin(current, location)
-                            validated = await self._validate_public_url(
-                                redirect_url
-                            )
-                            if isinstance(validated, ReadJobResult):
-                                if (
-                                    validated.reason_code
-                                    is ReadJobReason.INVALID_URL
-                                ):
-                                    return ReadJobResult.failed(
-                                        ReadJobReason.SOURCE_RESPONSE_INVALID
-                                    )
-                                return validated
-                            current = validated
-                            redirects += 1
-                            continue
-                        if response.status_code == 404:
-                            return ReadJobResult.failed(
-                                ReadJobReason.JOB_NOT_FOUND
-                            )
-                        if response.status_code == 410:
-                            return ReadJobResult.failed(ReadJobReason.JOB_CLOSED)
-                        if response.status_code in {408, 504}:
-                            return ReadJobResult.failed(
-                                ReadJobReason.SOURCE_TIMEOUT
-                            )
-                        if response.status_code == 429:
-                            return ReadJobResult.failed(
-                                ReadJobReason.SOURCE_RATE_LIMITED
-                            )
-                        if response.status_code >= 500:
-                            return ReadJobResult.failed(
-                                ReadJobReason.SOURCE_UNAVAILABLE
-                            )
-                        if response.status_code != 200:
-                            return ReadJobResult.failed(
-                                ReadJobReason.SOURCE_UNAVAILABLE,
-                                retryable=False,
-                            )
-                        content_type = (
-                            response.headers.get("content-type", "")
-                            .split(";", 1)[0]
-                            .strip()
-                            .casefold()
-                        )
-                        if content_type not in _HTML_CONTENT_TYPES:
-                            return ReadJobResult.failed(
-                                ReadJobReason.UNSUPPORTED_URL
-                            )
-                        raw_length = response.headers.get("content-length")
-                        if raw_length is not None:
-                            try:
-                                content_length = int(raw_length)
-                                if (
-                                    content_length < 0
-                                    or content_length > _MAX_RESPONSE_BYTES
-                                ):
-                                    return ReadJobResult.failed(
-                                        ReadJobReason.SOURCE_RESPONSE_INVALID
-                                    )
-                            except ValueError:
-                                return ReadJobResult.failed(
-                                    ReadJobReason.SOURCE_RESPONSE_INVALID
-                                )
-                        content = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            content.extend(chunk)
-                            if len(content) > _MAX_RESPONSE_BYTES:
-                                return ReadJobResult.failed(
-                                    ReadJobReason.SOURCE_RESPONSE_INVALID
-                                )
-                        try:
-                            encoding = response.encoding or "utf-8"
-                            decoded = bytes(content).decode(
-                                encoding,
-                                errors="replace",
-                            )
-                        except LookupError:
-                            return ReadJobResult.failed(
-                                ReadJobReason.SOURCE_RESPONSE_INVALID
-                            )
-                        return current, decoded
-                except httpx.TimeoutException:
+        while True:
+            redirect_url: str | None = None
+            saw_timeout = False
+            deadline = asyncio.get_running_loop().time() + self._timeout_seconds
+            for connect_url in current.connect_urls:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
                     return ReadJobResult.failed(ReadJobReason.SOURCE_TIMEOUT)
-                except httpx.HTTPError:
-                    return ReadJobResult.failed(
-                        ReadJobReason.SOURCE_UNAVAILABLE
-                    )
+                # A fresh client per address prevents connection-pool reuse
+                # across hostnames or failover targets sharing an IP.
+                async with httpx.AsyncClient(
+                    timeout=remaining,
+                    transport=self._transport,
+                    follow_redirects=False,
+                    trust_env=False,
+                    headers={
+                        "Accept": "text/html, application/xhtml+xml",
+                        "User-Agent": "Jobops/1.0 GenericJsonLdJobReader",
+                    },
+                ) as client:
+                    client.cookies.clear()
+                    try:
+                        async with asyncio.timeout(remaining):
+                            # Connect to one already validated address.  The
+                            # original authority remains the HTTP Host and
+                            # HTTPS TLS SNI.  Transport failures may move to
+                            # the next prevalidated address without DNS.
+                            async with client.stream(
+                                "GET",
+                                connect_url,
+                                headers={"Host": current.host_header},
+                                extensions={
+                                    "sni_hostname": current.sni_hostname
+                                },
+                            ) as response:
+                                if response.status_code in _REDIRECT_STATUSES:
+                                    location = response.headers.get("location")
+                                    if (
+                                        not location
+                                        or redirects >= _MAX_REDIRECTS
+                                    ):
+                                        return ReadJobResult.failed(
+                                            ReadJobReason.SOURCE_RESPONSE_INVALID
+                                        )
+                                    redirect_url = urljoin(
+                                        current.logical_url, location
+                                    )
+                                    break
+                                if response.status_code == 404:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.JOB_NOT_FOUND
+                                    )
+                                if response.status_code == 410:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.JOB_CLOSED
+                                    )
+                                if response.status_code in {408, 504}:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.SOURCE_TIMEOUT
+                                    )
+                                if response.status_code == 429:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.SOURCE_RATE_LIMITED
+                                    )
+                                if response.status_code >= 500:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.SOURCE_UNAVAILABLE
+                                    )
+                                if response.status_code != 200:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.SOURCE_UNAVAILABLE,
+                                        retryable=False,
+                                    )
+                                content_type = (
+                                    response.headers.get("content-type", "")
+                                    .split(";", 1)[0]
+                                    .strip()
+                                    .casefold()
+                                )
+                                if content_type not in _HTML_CONTENT_TYPES:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.UNSUPPORTED_URL
+                                    )
+                                raw_length = response.headers.get(
+                                    "content-length"
+                                )
+                                if raw_length is not None:
+                                    try:
+                                        content_length = int(raw_length)
+                                        if (
+                                            content_length < 0
+                                            or content_length
+                                            > _MAX_RESPONSE_BYTES
+                                        ):
+                                            return ReadJobResult.failed(
+                                                ReadJobReason.SOURCE_RESPONSE_INVALID
+                                            )
+                                    except ValueError:
+                                        return ReadJobResult.failed(
+                                            ReadJobReason.SOURCE_RESPONSE_INVALID
+                                        )
+                                content = bytearray()
+                                async for chunk in response.aiter_bytes():
+                                    content.extend(chunk)
+                                    if len(content) > _MAX_RESPONSE_BYTES:
+                                        return ReadJobResult.failed(
+                                            ReadJobReason.SOURCE_RESPONSE_INVALID
+                                        )
+                                try:
+                                    encoding = response.encoding or "utf-8"
+                                    decoded = bytes(content).decode(
+                                        encoding,
+                                        errors="replace",
+                                    )
+                                except LookupError:
+                                    return ReadJobResult.failed(
+                                        ReadJobReason.SOURCE_RESPONSE_INVALID
+                                    )
+                                return current.logical_url, decoded
+                    except (TimeoutError, httpx.TimeoutException):
+                        saw_timeout = True
+                        continue
+                    except httpx.HTTPError:
+                        continue
+            if redirect_url is not None:
+                validated = await self._validate_public_url(redirect_url)
+                if isinstance(validated, ReadJobResult):
+                    if validated.reason_code is ReadJobReason.INVALID_URL:
+                        return ReadJobResult.failed(
+                            ReadJobReason.SOURCE_RESPONSE_INVALID
+                        )
+                    return validated
+                current = validated
+                redirects += 1
+                continue
+            if saw_timeout:
+                return ReadJobResult.failed(ReadJobReason.SOURCE_TIMEOUT)
+            return ReadJobResult.failed(ReadJobReason.SOURCE_UNAVAILABLE)
 
     async def read_job(self, request: ReadJobRequest) -> ReadJobResult:
         if not isinstance(request, ReadJobRequest):

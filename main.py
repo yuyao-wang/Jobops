@@ -25,6 +25,7 @@ Usage:
 import asyncio
 import argparse
 import copy
+import ipaddress
 import random
 import sys
 import yaml
@@ -72,6 +73,15 @@ def load_profile(path: str = "profile.yaml") -> dict:
         print(f"  Applications requiring resume upload will fail.")
 
     return profile
+
+
+def _is_loopback_server_host(host: str) -> bool:
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 async def prepare_production_server_bootstrap(
@@ -734,6 +744,10 @@ Examples:
         return
 
     if args.command == "server":
+        if not _is_loopback_server_host(args.host):
+            parser.error(
+                "the production Dashboard must bind to a loopback host"
+            )
         from core.production_application_bootstrap import (
             ProductionApplicationBootstrapError,
         )
@@ -751,7 +765,7 @@ Examples:
         except ProductionApplicationBootstrapError as exc:
             parser.error(
                 "production bootstrap failed "
-                f"({exc.failure.value}); provide --config or "
+                f"({exc}); provide --config or "
                 "JOBOPS_CONFIG_FILE using the production application template"
             )
         try:

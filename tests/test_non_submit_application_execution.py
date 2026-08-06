@@ -30,7 +30,7 @@ from core.outcomes import (
     OutcomeStatus,
     ReasonCode,
 )
-from core.policy import ApprovalActor
+from core.policy import ApprovalActor, JobTier
 from core.permits import GateAConsumptionReference
 
 from test_application_bundle_assembly import (
@@ -103,8 +103,8 @@ class _Engine:
         )
 
 
-def _setup(tmp_path: Path):
-    parts = _assembly_setup(tmp_path)
+def _setup(tmp_path: Path, *, tier: JobTier = JobTier.LOW):
+    parts = _assembly_setup(tmp_path, execution_tier=tier)
     assembled = _assemble(parts)
     assert assembled.record is not None
     assert assembled.bundle is not None
@@ -204,6 +204,29 @@ async def test_human_gate_a_without_approval_defers_before_browser_or_engine(
 
 
 @pytest.mark.asyncio
+async def test_automatic_gate_a_approval_cannot_bypass_non_low_policy(
+    tmp_path: Path,
+) -> None:
+    parts, assembled, repository = _setup(tmp_path, tier=JobTier.MEDIUM)
+    engine = _Engine()
+    browser = _BrowserProvider()
+
+    result, _, _ = await _execute(
+        parts,
+        assembled,
+        repository,
+        engine=engine,
+        browser=browser,
+    )
+
+    assert result.status is (
+        NonSubmitApplicationExecutionStatus.DEFERRED_GATE_A_REQUIRED
+    )
+    assert browser.calls == 0
+    assert engine.calls == []
+
+
+@pytest.mark.asyncio
 async def test_engine_receives_exact_bundle_and_hard_non_submit_arguments(
     tmp_path: Path,
 ) -> None:
@@ -276,7 +299,12 @@ async def test_runtime_required_sensitive_input_defers_and_records_controls(
         reason_code=ReasonCode.SENSITIVE_ANSWER_REQUIRED,
         message="synthetic attestation required",
         adapter="synthetic",
-        details={"review": {"unresolved_required": ["attestation"]}},
+        details={
+            "review": {
+                "unresolved_required": ["attestation"],
+                "validation_errors": ["resume upload was not recognized"],
+            }
+        },
     )
 
     result, engine, _ = await _execute(
@@ -288,7 +316,10 @@ async def test_runtime_required_sensitive_input_defers_and_records_controls(
         .DEFERRED_RUNTIME_INPUT_REQUIRED
     )
     assert result.record is not None
-    assert result.record.runtime_unresolved_controls == ("attestation",)
+    assert result.record.runtime_unresolved_controls == (
+        "attestation",
+        "resume upload was not recognized",
+    )
     assert engine.calls[0]["request_submit"] is False
 
 

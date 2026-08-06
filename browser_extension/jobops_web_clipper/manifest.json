@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "JobOps Web Clipper",
+  "version": "0.1.0",
+  "description": "Send the one job page you opened to your local JobOps Dashboard for review.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_title": "Save this page to JobOps"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

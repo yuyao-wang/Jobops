@@ -141,6 +141,7 @@ def _execution_context(
     plan_repository,
     *,
     mode: AutonomyMode = AutonomyMode.SUPERVISED,
+    tier: JobTier = JobTier.MEDIUM,
 ):
     facts = PrivateHomeCandidateIdentityFactRepository(home)
     for key, value in (
@@ -196,7 +197,7 @@ def _execution_context(
 
     decision = PolicyEngine(
         PolicyConfig(mode=mode)
-    ).decide(JobTier.MEDIUM, RiskSignals())
+    ).decide(tier, RiskSignals())
     decision_hash = _mapping_hash(policy_decision_to_dict(decision))
     input_hash = hashlib.sha256(b"synthetic-policy-input").hexdigest()
     record_id = "plan-execution-policy-" + _mapping_hash(
@@ -309,6 +310,7 @@ def _setup(
     *,
     blocking: bool = False,
     execution_mode: AutonomyMode = AutonomyMode.SUPERVISED,
+    execution_tier: JobTier = JobTier.MEDIUM,
 ):
     parts = _manifest_setup(tmp_path)
     manifest_result = _include(parts)
@@ -360,6 +362,7 @@ def _setup(
         plan,
         parts["resume"]["plan_repository"],
         mode=execution_mode,
+        tier=execution_tier,
     )
     return {
         "answer_repository": answer_repository,
@@ -496,22 +499,15 @@ def test_factory_receives_only_exact_prepared_inputs(tmp_path: Path) -> None:
     assert request.job_posting.job_id == parts["plan"].job_id
 
 
-def test_blocking_unresolved_answers_are_not_ready_without_factory_or_write(
+def test_runtime_conditional_attestations_do_not_block_bundle_assembly(
     tmp_path: Path,
 ) -> None:
     parts = _setup(tmp_path, blocking=True)
 
     result = _run(parts)
 
-    assert result.status is ApplicationBundleAssemblyStatus.NOT_READY
-    assert result.not_ready_reason is (
-        ApplicationBundleAssemblyNotReadyReason
-        .BLOCKING_UNRESOLVED_ANSWERS
-    )
-    assert parts["factory"].requests == []
-    assert not tuple(
-        parts["home"].paths.application_bundle_assemblies.rglob("*.json")
-    )
+    assert result.status is ApplicationBundleAssemblyStatus.CREATED
+    assert len(parts["factory"].requests) == 1
 
 
 def test_nonblocking_optional_unresolved_does_not_block(

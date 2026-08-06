@@ -755,7 +755,7 @@ async def test_persisted_workday_attestation_is_replayed_on_later_gate_b(
     )
 
     assert second.status is OutcomeStatus.SUBMITTED_VERIFIED
-    assert registry.requests[1:] == [(False, "d" * 64), (True, "d" * 64)]
+    assert registry.requests[1:] == [(True, "d" * 64)]
 
 
 @pytest.mark.asyncio

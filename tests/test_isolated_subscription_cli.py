@@ -24,6 +24,7 @@ from core.model_provider_capabilities import (
 from utils.isolated_subscription_cli import (
     CodexSubscriptionCLIInvocationAdapter,
     IsolatedSubscriptionCLIRunner,
+    _process_failure_diagnostic,
     probe_isolated_subscription_cli_runtime,
 )
 from utils.llm import model_backend_registry
@@ -82,8 +83,14 @@ class _FakeSubscriptionAdapter:
     backend_id = "fake_subscription_cli"
     supports_image_input = True
 
-    def __init__(self, script: str) -> None:
+    def __init__(
+        self,
+        script: str,
+        *,
+        preference_domains: tuple[str, ...] = (),
+    ) -> None:
         self.script = script
+        self.preference_domains = preference_domains
         self.build_calls = 0
         self.image_hashes: tuple[str, ...] = ()
         self.workspace: str | None = None
@@ -125,6 +132,7 @@ class _FakeSubscriptionAdapter:
             result_file_name="result.json",
             executable_read_roots=("/bin",),
             allowed_process_executables=("/bin/sh", "/bin/bash"),
+            allowed_preference_domains=self.preference_domains,
         )
 
     def parse_process_output(self, stdout: bytes, result_bytes: bytes):
@@ -140,6 +148,45 @@ def _profile():
     return model_execution_isolation_profiles(
         isolated_subscription_cli_runner_available=True
     )["ISOLATED_SUBSCRIPTION_CLI_V1"]
+
+
+def test_structured_request_budget_includes_canonical_output_schema_bytes():
+    request = _request()
+    canonical_schema = json.dumps(
+        request.output_schema,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+
+    assert request.output_schema_bytes() == canonical_schema
+    assert request.total_input_byte_count() == (
+        len(request.input_bytes())
+        + len(request.system_prompt.encode("utf-8"))
+        + len(canonical_schema)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected"),
+    (
+        (b"Error: Operation not permitted", "SANDBOX_DENIED"),
+        (
+            b"Failed to load managed config",
+            "MANAGED_CONFIG_UNAVAILABLE",
+        ),
+        (b"Authentication unavailable", "AUTHENTICATION_UNAVAILABLE"),
+        (b"DNS resolution failed", "DNS_UNAVAILABLE"),
+        (b"TLS certificate failed", "TLS_UNAVAILABLE"),
+        (b"Proxy refused request", "PROXY_UNAVAILABLE"),
+        (b"Failed to send request", "REQUEST_SEND_FAILED"),
+        (b"Response stream disconnected", "STREAM_DISCONNECTED"),
+        (b"Network connection failed", "TRANSPORT_FAILURE"),
+        (b"synthetic opaque failure", "PROCESS_EXIT_UNCLASSIFIED"),
+    ),
+)
+def test_process_failure_diagnostic_is_typed_and_bounded(stderr, expected):
+    assert _process_failure_diagnostic(stderr) == expected
 
 
 @pytest.mark.skipif(
@@ -237,6 +284,28 @@ async def test_image_and_output_bounds_fail_closed_without_generation(tmp_path):
     assert adapter.build_calls == 0
 
 
+@pytest.mark.asyncio
+async def test_runner_rejects_unapproved_preference_domain(tmp_path):
+    adapter = _FakeSubscriptionAdapter(
+        """printf '%s' '{"answer":"unused"}' > result.json""",
+        preference_domains=("synthetic.unapproved.preference",),
+    )
+
+    result = await IsolatedSubscriptionCLIRunner(
+        temporary_root=str(tmp_path)
+    ).execute(
+        _request(),
+        backend_adapter=adapter,
+        isolation_profile=_profile(),
+    )
+
+    assert (
+        result.status
+        is IsolatedStructuredModelStatus.CLI_CONTRACT_UNSUPPORTED
+    )
+    assert adapter.build_calls == 1
+
+
 @pytest.mark.skipif(
     shutil.which("codex") is None, reason="requires installed Codex CLI"
 )
@@ -292,8 +361,14 @@ def test_codex_contract_subscription_projection_and_runtime_probe(tmp_path):
         "HOME",
         "LANG",
         "PATH",
+        "SSL_CERT_FILE",
         "TMPDIR",
     }
+    assert spec.environment["SSL_CERT_FILE"] == "/etc/ssl/cert.pem"
+    assert spec.allowed_preference_domains == (
+        "com.openai.codex",
+        "kCFPreferencesAnyApplication",
+    )
     missing_home = tmp_path / "missing-session"
     missing_home.mkdir()
     assert not probe_isolated_subscription_cli_runtime(

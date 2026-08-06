@@ -280,8 +280,8 @@ def _answer_records(
         "race_ethnicity": (common.get("race_ethnicity"), "voluntary_self_id"),
         "veteran_status": (common.get("veteran_status"), "voluntary_self_id"),
         "disability_status": (common.get("disability_status"), "voluntary_self_id"),
-        "employment_status": (current.get("employment_status_answer"), "personal"),
-        "graduation_date": (education.get("default_application_graduation_answer"), "personal"),
+        "employment_status": (current.get("employment_status_answer"), "employment"),
+        "graduation_date": (education.get("default_application_graduation_answer"), "education"),
         "accommodation": (accommodations.get("answer_exactly_as"), "health"),
     }
     answers: dict[str, Any] = {}

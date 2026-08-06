@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jobops-runtime
+data:
+  JOBOPS_ENV: demo
+  JOBOPS_API_BASE_URL: http://jobops-api:8080
+  JOBOPS_API_PORT: "8080"
+  JOBOPS_DASHBOARD_PORT: "3000"
+  JOBOPS_WORKER_HEALTH_PORT: "8081"
+  S3_BUCKET: jobops-artifacts
+  S3_ENDPOINT: http://minio:9000

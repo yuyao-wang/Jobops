@@ -74,6 +74,10 @@ def _subject_key(subject_id: str) -> str:
 
 class SearchProfileSourceKind(StrEnum):
     KNOWN_GREENHOUSE_BOARD = "KNOWN_GREENHOUSE_BOARD"
+    KNOWN_ASHBY_BOARD = "KNOWN_ASHBY_BOARD"
+    KNOWN_LEVER_SITE = "KNOWN_LEVER_SITE"
+    GLASSDOOR_PARTNER_SEARCH = "GLASSDOOR_PARTNER_SEARCH"
+    KNOWN_JOBVITE_FEED = "KNOWN_JOBVITE_FEED"
 
 
 class SearchProfileRefreshMode(StrEnum):
@@ -120,7 +124,7 @@ class SearchProfileSourceReference:
             not isinstance(self.source_id, str)
             or _SOURCE_ID_RE.fullmatch(self.source_id) is None
         ):
-            raise ValueError("source_id must be a Greenhouse board token")
+            raise ValueError("source_id must be a configured source token")
 
     def to_dict(self) -> dict[str, str]:
         return {"kind": self.kind.value, "source_id": self.source_id}
@@ -672,10 +676,7 @@ def save_search_profile(
         display_name = _clean("display_name", command.display_name, 240)
         if not isinstance(command.source, SearchProfileSourceReference):
             raise TypeError("source must be typed")
-        if command.source.kind is not (
-            SearchProfileSourceKind.KNOWN_GREENHOUSE_BOARD
-        ):
-            raise ValueError("source is unsupported")
+        SearchProfileSourceKind(command.source.kind)
         if type(command.enabled) is not bool:
             raise TypeError("enabled must be boolean")
         now = _aware("now", command.now)

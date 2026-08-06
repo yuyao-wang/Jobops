@@ -1240,6 +1240,18 @@ async def run_application_execution(
             "terminal application execution is unchanged",
             run=current.run,
         )
+    if (
+        current.status is ApplicationExecutionRunReadStatus.FOUND
+        and current.run is not None
+        and current.run.execution_binding_hash == binding
+        and current.run.overall_status
+        is ApplicationExecutionRunStatus.DEFERRED
+    ):
+        return _result(
+            ApplicationExecutionStatus.DEFERRED,
+            "identical deferred application execution is unchanged",
+            run=current.run,
+        )
 
     stages: list[ApplicationExecutionStageResult] = []
 

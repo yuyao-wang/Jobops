@@ -13,6 +13,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .cache/
+.tools/
 .mypy_cache/
 .pytest_cache/
 
@@ -40,6 +41,10 @@ browser/
 browser-data/
 auth-state/
 logs/
+.runtime/
+
+# Tests are not required by the control-plane runtime image.
+tests/
 
 # Secrets, databases, and live browser artifacts
 .env

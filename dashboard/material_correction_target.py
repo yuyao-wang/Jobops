@@ -36,13 +36,13 @@ class MaterialCorrectionTargetUIResult:
 
 
 _MESSAGES = {
-    MaterialCorrectionTargetStatus.AVAILABLE: "修正目标已加载。",
-    MaterialCorrectionTargetStatus.ITEM_NOT_CURRENT: "该待处理事项已不再是当前事项。",
-    MaterialCorrectionTargetStatus.NOT_CORRECTABLE: "该事项不支持材料修正。",
-    MaterialCorrectionTargetStatus.TARGET_STALE: "材料版本已变化，请刷新待处理事项。",
-    MaterialCorrectionTargetStatus.TARGET_INCOMPLETE: "当前材料缺少安全修正所需的正式标识。",
-    MaterialCorrectionTargetStatus.PREVIEW_UNAVAILABLE: "当前材料预览不可用，不能进行盲目修改。",
-    MaterialCorrectionTargetStatus.FAILED: "暂时无法安全读取修正目标。",
+    MaterialCorrectionTargetStatus.AVAILABLE: "The correction target is ready.",
+    MaterialCorrectionTargetStatus.ITEM_NOT_CURRENT: "This attention item is no longer current.",
+    MaterialCorrectionTargetStatus.NOT_CORRECTABLE: "This item does not support material correction.",
+    MaterialCorrectionTargetStatus.TARGET_STALE: "The material changed. Refresh the attention item.",
+    MaterialCorrectionTargetStatus.TARGET_INCOMPLETE: "The material is missing the identity required for a safe correction.",
+    MaterialCorrectionTargetStatus.PREVIEW_UNAVAILABLE: "A safe preview is unavailable; blind editing is blocked.",
+    MaterialCorrectionTargetStatus.FAILED: "The correction target could not be read safely.",
 }
 
 

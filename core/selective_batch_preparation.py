@@ -310,6 +310,15 @@ class SingleJobPreparationCallable(Protocol):
         """Run P2b4 for one existing plan."""
 
 
+class CurrentAttentionReplayPolicy(Protocol):
+    def __call__(
+        self,
+        plan: ApplicationPlan,
+        attention_items: tuple[Any, ...],
+    ) -> bool:
+        """Allow replay only when every current blocker is superseded."""
+
+
 async def _resolve(value: Any) -> Any:
     if inspect.isawaitable(value):
         return await value
@@ -538,6 +547,9 @@ async def run_selective_batch_preparation(
     application_plan_repository: ApplicationPlanRepository,
     human_attention_queue_reader: HumanAttentionQueueReader,
     single_job_preparation: SingleJobPreparationCallable,
+    current_attention_replay_policy: (
+        CurrentAttentionReplayPolicy | None
+    ) = None,
 ) -> SelectiveBatchPreparationResult:
     """Take one attention snapshot, then run eligible plans serially."""
 
@@ -613,11 +625,9 @@ async def run_selective_batch_preparation(
         candidate_ids = tuple(plan.plan_id for plan in listed.plans)
         requested_count = len(candidate_ids)
 
-    attention_by_plan: dict[str, list[str]] = {}
+    attention_by_plan: dict[str, list[Any]] = {}
     for item in queue.items:
-        attention_by_plan.setdefault(item.application_plan_id, []).append(
-            item.item_id
-        )
+        attention_by_plan.setdefault(item.application_plan_id, []).append(item)
 
     results: list[SelectiveBatchPlanResult] = []
     selected = 0
@@ -654,8 +664,17 @@ async def run_selective_batch_preparation(
         if plan.subject_id != command.subject_id:
             results.append(_not_found(plan_id))
             continue
-        attention_ids = tuple(attention_by_plan.get(plan.plan_id, ()))
-        if attention_ids:
+        attention_items = tuple(attention_by_plan.get(plan.plan_id, ()))
+        replay_current_attention = False
+        if attention_items and current_attention_replay_policy is not None:
+            try:
+                replay_current_attention = bool(
+                    current_attention_replay_policy(plan, attention_items)
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                replay_current_attention = False
+        if attention_items and not replay_current_attention:
+            attention_ids = tuple(item.item_id for item in attention_items)
             results.append(_skipped(plan, attention_ids))
             continue
 
@@ -692,6 +711,7 @@ __all__ = [
     "BatchPlanExecutionStatus",
     "BatchPlanReasonCode",
     "BatchPlanSelectionStatus",
+    "CurrentAttentionReplayPolicy",
     "HumanAttentionQueueReader",
     "SelectiveBatchFailureReason",
     "SelectiveBatchPlanResult",

@@ -120,6 +120,7 @@ class RunnableApplicationQueueItem:
     priority_decision: PriorityDecision | None
     application_intent: AcceptedJobIntent | None
     reasons: tuple[RunnableApplicationReason, ...]
+    priority_failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -137,6 +138,14 @@ class RunnableApplicationQueueItem:
             "reasons",
             tuple(RunnableApplicationReason(item) for item in self.reasons),
         )
+        if self.priority_failure_reason is not None:
+            reason = self.priority_failure_reason.strip()
+            if (
+                not reason
+                or len(reason) > 160
+                or reason != self.priority_failure_reason
+            ):
+                raise ValueError("priority failure reason is invalid")
         if (
             not isinstance(self.subject_id, str)
             or not self.subject_id
@@ -159,6 +168,7 @@ class RunnableApplicationQueueItem:
                 or self.application_intent.intent
                 is not JobIntakeIntent.REQUEST_APPLICATION
                 or self.reasons
+                or self.priority_failure_reason is not None
             ):
                 raise ValueError("RUNNABLE application item is invalid")
             return
@@ -304,6 +314,7 @@ def _blocked(
     status: RunnableApplicationStatus,
     decision: PriorityDecision | None,
     intent: AcceptedJobIntent | None,
+    priority_failure_reason: str | None = None,
 ) -> RunnableApplicationQueueItem:
     return RunnableApplicationQueueItem(
         subject_id=subject_id,
@@ -313,6 +324,7 @@ def _blocked(
         priority_decision=decision,
         application_intent=intent,
         reasons=(_STATUS_REASON[status],),
+        priority_failure_reason=priority_failure_reason,
     )
 
 
@@ -324,6 +336,7 @@ def _classify(
     decision: PriorityDecision | None,
     intent: AcceptedJobIntent | None,
     admission: PreparationAdmissionPolicy,
+    priority_failure_reason: str | None = None,
 ) -> RunnableApplicationQueueItem:
     if queue_status is not CurrentPriorityItemStatus.CURRENT:
         return _blocked(
@@ -333,6 +346,7 @@ def _classify(
             status=RunnableApplicationStatus.BLOCKED_NOT_CURRENT,
             decision=None,
             intent=intent,
+            priority_failure_reason=priority_failure_reason,
         )
     if not isinstance(decision, PriorityDecision):
         raise ValueError("CURRENT priority item has no decision")
@@ -538,6 +552,9 @@ async def build_runnable_application_queue(
                     decision=queue_item.decision,
                     intent=intent,
                     admission=policy.preparation_admission,
+                    priority_failure_reason=(
+                        queue_item.latest_failure_reason
+                    ),
                 )
             )
         except (AttributeError, TypeError, ValueError):

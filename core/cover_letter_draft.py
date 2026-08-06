@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 
 
 COVER_LETTER_DRAFT_CONTRACT_VERSION = "cover-letter-draft-v1"
-COVER_LETTER_DRAFT_POLICY_VERSION = "cover-letter-draft-policy-v1"
+COVER_LETTER_DRAFT_POLICY_VERSION = "cover-letter-draft-policy-v2"
 
 COVER_LETTER_DRAFT_AGENT_POLICY = """Cover Letter Agent policy (static, non-negotiable):
 
@@ -105,6 +106,8 @@ MAX_COVER_LETTER_TEXT_CHARS = 4_000
 MAX_GREETING_CHARS = 200
 MAX_CLOSING_CHARS = 400
 MAX_RATIONALE_CHARS = 2_000
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class CoverLetterParagraphPurpose(str, Enum):
@@ -1022,6 +1025,27 @@ class _OutputRejected(ValueError):
     """The Agent output failed a deterministic safety check."""
 
 
+def _safe_rejection_category(rejection: _OutputRejected) -> str:
+    detail = str(rejection)
+    if detail.startswith("the paragraph asserts "):
+        return "UNSUPPORTED_TOKEN"
+    if detail.startswith("a job-description detail"):
+        return "JD_AS_CANDIDATE_FACT"
+    if detail.startswith("a JD-derived claim"):
+        return "JD_LEADING_CANDIDATE_CLAIM"
+    if detail == "unknown evidence reference":
+        return "UNKNOWN_EVIDENCE_REFERENCE"
+    if detail == "evidence scope is not permitted":
+        return "EVIDENCE_SCOPE_INVALID"
+    if detail == "JD alignment reference is not in the job description":
+        return "UNKNOWN_JD_REFERENCE"
+    if detail == "the draft contains an unresolved placeholder":
+        return "PLACEHOLDER_PRESENT"
+    if detail == "paragraph order is not contiguous":
+        return "PARAGRAPH_ORDER_INVALID"
+    return "OUTPUT_CONTRACT_REJECTED"
+
+
 def _words(text: str) -> tuple[str, ...]:
     return tuple(_WORD_PATTERN.findall(text))
 
@@ -1031,21 +1055,20 @@ def _casefold_word_set(text: str) -> frozenset[str]:
 
 
 def _checkable_tokens(text: str) -> tuple[str, ...]:
-    """Numbers and proper-noun-like words that must trace to a legitimate source.
+    """Numbers that must trace to a legitimate source.
 
     ``_WORD_PATTERN`` deliberately excludes trailing punctuation characters
     (unlike the resume-tailoring tokenizer), so a sentence-final word is
     compared without a trailing period ever being part of the token.
+
+    Capitalization is not a factual signal: role titles, technology names,
+    acronyms and sentence starts are routinely capitalized.  Semantic claims
+    remain subject to the independent cover-letter Fact QA stage.
     """
 
-    tokens = _words(text)
-    checked: list[str] = []
-    for index, token in enumerate(tokens):
-        if _NUMBER_PATTERN.search(token):
-            checked.append(token)
-        elif index > 0 and any(char.isupper() for char in token):
-            checked.append(token)
-    return tuple(checked)
+    return tuple(
+        token for token in _words(text) if _NUMBER_PATTERN.search(token)
+    )
 
 
 def _contains_placeholder(text: str) -> bool:
@@ -1063,7 +1086,16 @@ def _validate_agent_output(
     evidence_by_id = {
         item.evidence_id: item for item in snapshot.evidence_items
     }
-    jd_words = _casefold_word_set(job.description)
+    jd_words = _casefold_word_set(
+        " ".join(
+            (
+                job.title,
+                job.company,
+                job.location,
+                job.description,
+            )
+        )
+    )
     all_text = output.greeting + " " + output.closing
     for paragraph in output.paragraphs:
         all_text += " " + paragraph.text
@@ -1099,10 +1131,20 @@ def _validate_agent_output(
                 allowed_words |= _casefold_word_set(
                     evidence_by_id[evidence_id].evidence_text
                 )
-            tokens = _words(proposal.text)
-            if tokens:
-                leading = tokens[0].casefold()
-                if leading in jd_words and leading not in allowed_words:
+            if proposal.purpose is CoverLetterParagraphPurpose.QUALIFICATION:
+                paragraph_text = proposal.text.casefold()
+                cited_evidence_text = tuple(
+                    evidence_by_id[evidence_id].evidence_text.casefold()
+                    for evidence_id in proposal.evidence_ids
+                )
+                if any(
+                    reference.casefold() in paragraph_text
+                    and not any(
+                        reference.casefold() in evidence_text
+                        for evidence_text in cited_evidence_text
+                    )
+                    for reference in proposal.jd_alignment
+                ):
                     raise _OutputRejected(
                         "a JD-derived claim about the role is presented as "
                         "a fact about the candidate without evidence"
@@ -1114,7 +1156,12 @@ def _validate_agent_output(
                         f"the paragraph asserts {token} without supporting "
                         "evidence or JD context"
                     )
-                if folded in jd_words and folded not in allowed_words:
+                if (
+                    proposal.purpose
+                    is CoverLetterParagraphPurpose.QUALIFICATION
+                    and folded in jd_words
+                    and folded not in allowed_words
+                ):
                     raise _OutputRejected(
                         "a job-description detail is presented as a "
                         "candidate fact without evidence"
@@ -1413,6 +1460,10 @@ async def draft_cover_letter(
             job=job,
         )
     except _OutputRejected as rejection:
+        _LOGGER.warning(
+            "cover_letter_draft_rejected category=%s",
+            _safe_rejection_category(rejection),
+        )
         return _needs_human(
             command, draft_binding=binding, detail=f"{rejection}."
         )

@@ -45,7 +45,10 @@ from .profile_store import CandidateVault, ProfileStoreError
 APPLICATION_FACT_SNAPSHOT_CONTRACT_VERSION = (
     "application-fact-snapshot-v1"
 )
-APPLICATION_ANSWER_POLICY_VERSION = "application-answer-policy-v1"
+APPLICATION_ANSWER_POLICY_VERSION = "application-answer-policy-v2"
+SUPPORTED_APPLICATION_ANSWER_POLICY_VERSIONS = frozenset(
+    {"application-answer-policy-v1", APPLICATION_ANSWER_POLICY_VERSION}
+)
 PREPARED_APPLICATION_ANSWER_SET_CONTRACT_VERSION = (
     "prepared-application-answer-set-v1"
 )
@@ -275,6 +278,13 @@ def _fact_from_record(
             else ApplicationFactVerificationStatus.USER_CONFIRMED
         )
         sensitivity = _stored_sensitivity(record["sensitivity"])
+        value = record["value"]
+        if (
+            canonical_application_answer_definition(key).value_type
+            is CanonicalAnswerValueType.MULTI_SELECT
+            and isinstance(value, list)
+        ):
+            value = tuple(value)
         confirmed = _parse_time("confirmed_at", record["confirmed_at"])
         recorded = _parse_optional_time(
             "recorded_at", record.get("recorded_at")
@@ -292,14 +302,14 @@ def _fact_from_record(
             "source": record["source"],
             "source_classification": classification.value,
             "source_record_id": record["source_record_id"],
-            "value": record["value"],
+            "value": value,
             "verification_status": verification.value,
             "verified_at": _rfc3339(confirmed),
         }
         return ApplicationFact(
             fact_id=record["fact_id"],
             canonical_key=key,
-            value=record["value"],
+            value=value,
             source_record_id=record["source_record_id"],
             source=record["source"],
             source_classification=classification,
@@ -326,9 +336,9 @@ def _stored_sensitivity(value: Any) -> CanonicalAnswerSensitivity:
             CanonicalAnswerSensitivity.VOLUNTARY_SELF_ID
         ),
         "demographic": CanonicalAnswerSensitivity.VOLUNTARY_SELF_ID,
-        "health": CanonicalAnswerSensitivity.VOLUNTARY_SELF_ID,
-        "employment": CanonicalAnswerSensitivity.PERSONAL,
-        "education": CanonicalAnswerSensitivity.PERSONAL,
+        "health": CanonicalAnswerSensitivity.HEALTH,
+        "employment": CanonicalAnswerSensitivity.EMPLOYMENT,
+        "education": CanonicalAnswerSensitivity.EDUCATION,
     }
     if isinstance(value, CanonicalAnswerSensitivity):
         return value
@@ -460,7 +470,9 @@ class ApplicationAnswerPolicy:
 
     def __post_init__(self) -> None:
         _clean_text("policy_id", self.policy_id, maximum=160)
-        if self.policy_version != APPLICATION_ANSWER_POLICY_VERSION:
+        if self.policy_version not in (
+            SUPPORTED_APPLICATION_ANSWER_POLICY_VERSIONS
+        ):
             raise ValueError("answer policy version is unsupported")
         for name, values in (
             ("tracked_keys", self.tracked_keys),
@@ -793,7 +805,9 @@ class PreparedApplicationAnswerSet:
         ):
             raise ValueError("answer taxonomy binding is invalid")
         _clean_text("answer_policy_id", self.answer_policy_id)
-        if self.answer_policy_version != APPLICATION_ANSWER_POLICY_VERSION:
+        if self.answer_policy_version not in (
+            SUPPORTED_APPLICATION_ANSWER_POLICY_VERSIONS
+        ):
             raise ValueError("answer policy version is invalid")
         _require_hash("answer_policy_hash", self.answer_policy_hash)
         if not self.answers:
@@ -1543,10 +1557,10 @@ def prepare_application_answers(
                 _unresolved(
                     key,
                     UnresolvedAnswerReason.REQUIRES_ATTESTATION,
-                    blocking=True,
+                    blocking=False,
                     action=(
                         "The candidate must personally review and attest "
-                        "if this field appears."
+                        "if a later FormIR observes this field as required."
                     ),
                 )
             )
@@ -1944,6 +1958,7 @@ def application_answers_public_result(
 
 __all__ = [
     "APPLICATION_ANSWER_POLICY_VERSION",
+    "SUPPORTED_APPLICATION_ANSWER_POLICY_VERSIONS",
     "APPLICATION_FACT_SNAPSHOT_CONTRACT_VERSION",
     "ApplicationAnswerPolicy",
     "ApplicationFact",

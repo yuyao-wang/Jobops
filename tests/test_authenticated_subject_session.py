@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,9 +20,11 @@ from core.authenticated_subject import (
     AuthenticatedSubjectStatus,
     AuthenticationMethod,
     KeychainAuthenticatedSubjectSessionProvider,
+    LocalAuthenticatedSubjectSessionIssuer,
     resolve_authenticated_subject,
 )
 from dashboard.authentication import (
+    LocalDashboardSessionController,
     make_authenticated_subject_dependency,
     require_subject_access,
 )
@@ -77,6 +80,66 @@ def _request(cookie: str | None, *, claimed_subject: str = "subject-other"):
             "server": ("127.0.0.1", 8080),
         }
     )
+
+
+def _issuance_request(
+    *,
+    client: str = "127.0.0.1",
+    origin: str = "http://127.0.0.1:8080",
+) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/auth/local-session",
+            "raw_path": b"/api/auth/local-session",
+            "query_string": b"subject_id=subject-attacker",
+            "headers": [
+                (b"host", b"127.0.0.1:8080"),
+                (b"origin", origin.encode("ascii")),
+                (b"sec-fetch-site", b"same-origin"),
+                (b"x-subject-id", b"subject-attacker"),
+            ],
+            "client": (client, 12345),
+            "server": ("127.0.0.1", 8080),
+        }
+    )
+
+
+def test_local_session_issuer_is_loopback_same_origin_and_server_bound(
+) -> None:
+    store = InMemoryCredentialStore()
+    provider = KeychainAuthenticatedSubjectSessionProvider(store)
+    issuer = LocalAuthenticatedSubjectSessionIssuer(
+        session_writer=provider,
+        subject_id=SUBJECT,
+        master_secret="synthetic-master-secret-not-for-production",
+        ttl_seconds=600,
+    )
+    controller = LocalDashboardSessionController(
+        issuer=issuer,
+        clock=lambda: NOW,
+    )
+
+    issued = controller.issue(_issuance_request())
+    authenticated = provider.authenticate(issued.credential, now=NOW)
+
+    assert authenticated.status is AuthenticatedSubjectStatus.AUTHENTICATED
+    assert authenticated.context is not None
+    assert authenticated.context.subject_id == SUBJECT
+    assert authenticated.context.expires_at == NOW + timedelta(seconds=600)
+    assert "subject-attacker" not in issued.context.subject_id
+
+    with pytest.raises(HTTPException) as remote:
+        controller.issue(_issuance_request(client="192.0.2.10"))
+    assert remote.value.status_code == 403
+    with pytest.raises(HTTPException) as cross_origin:
+        controller.issue(
+            _issuance_request(origin="https://attacker.invalid")
+        )
+    assert cross_origin.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -168,7 +231,9 @@ async def test_credentials_stay_secret_and_boundary_has_no_business_calls(
     assert stored is not None
     assert credential.secret not in stored
     assert credential.secret not in repr(credential)
-    assert await health() == {"status": "not_ready"}
+    response = await health()
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"status": "not_ready"}
 
     forbidden = {
         "job_library_refresh",

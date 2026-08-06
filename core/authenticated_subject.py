@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import re
 import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -24,6 +26,11 @@ AUTHENTICATED_SUBJECT_SESSION_CONTRACT_VERSION = (
 )
 AUTHENTICATED_SUBJECT_SESSION_SERVICE = "jobops.dashboard.sessions.v1"
 AUTHENTICATED_SUBJECT_COOKIE_NAME = "jobops_session"
+LOCAL_AUTHENTICATED_SESSION_ISSUER_CONTRACT_VERSION = (
+    "local-authenticated-session-issuer-v1"
+)
+MIN_LOCAL_SESSION_TTL_SECONDS = 300
+MAX_LOCAL_SESSION_TTL_SECONDS = 86_400
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{20,128}")
 _CREDENTIAL_SECRET_RE = re.compile(r"[A-Za-z0-9_-]{32,256}")
 _HASH_RE = re.compile(r"[0-9a-f]{64}")
@@ -173,6 +180,98 @@ class AuthenticatedSubjectSessionProvider(Protocol):
         *,
         now: datetime,
     ) -> AuthenticatedSubjectResult: ...
+
+
+@runtime_checkable
+class AuthenticatedSubjectSessionWriter(Protocol):
+    def save_session(
+        self,
+        context: AuthenticatedSubjectContext,
+        credential: AuthenticatedSessionCredential,
+    ) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedAuthenticatedSubjectSession:
+    context: AuthenticatedSubjectContext
+    credential: AuthenticatedSessionCredential = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, AuthenticatedSubjectContext):
+            raise TypeError("issued session context must be typed")
+        if not isinstance(self.credential, AuthenticatedSessionCredential):
+            raise TypeError("issued session credential must be typed")
+        if self.context.session_id != self.credential.session_id:
+            raise ValueError("issued session binding is invalid")
+
+
+class LocalAuthenticatedSubjectSessionIssuer:
+    """Issue one bounded local session for the configured opaque subject."""
+
+    def __init__(
+        self,
+        *,
+        session_writer: AuthenticatedSubjectSessionWriter,
+        subject_id: str,
+        master_secret: str,
+        ttl_seconds: int,
+    ) -> None:
+        if not isinstance(session_writer, AuthenticatedSubjectSessionWriter):
+            raise TypeError("session_writer must support authenticated sessions")
+        self._session_writer = session_writer
+        self._subject_id = _clean("subject_id", subject_id, 160)
+        self._master_secret = _clean(
+            "session master secret", master_secret, 4096
+        ).encode("utf-8")
+        if (
+            type(ttl_seconds) is not int
+            or not MIN_LOCAL_SESSION_TTL_SECONDS
+            <= ttl_seconds
+            <= MAX_LOCAL_SESSION_TTL_SECONDS
+        ):
+            raise ValueError("session TTL is outside the local policy")
+        self._ttl_seconds = ttl_seconds
+
+    @property
+    def ttl_seconds(self) -> int:
+        return self._ttl_seconds
+
+    def issue(self, *, now: datetime) -> IssuedAuthenticatedSubjectSession:
+        issued_at = _aware("now", now)
+        session_id = secrets.token_urlsafe(24)
+        nonce = secrets.token_bytes(32)
+        binding = (
+            session_id.encode("ascii")
+            + b"\0"
+            + _time(issued_at).encode("ascii")
+            + b"\0"
+            + nonce
+        )
+        secret = base64.urlsafe_b64encode(
+            hmac.new(
+                self._master_secret,
+                binding,
+                hashlib.sha256,
+            ).digest()
+        ).decode("ascii").rstrip("=")
+        credential = AuthenticatedSessionCredential(
+            session_id=session_id,
+            secret=secret,
+        )
+        context = AuthenticatedSubjectContext(
+            session_id=session_id,
+            subject_id=self._subject_id,
+            authentication_method=(
+                AuthenticationMethod.LOCAL_KEYCHAIN_SESSION
+            ),
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(seconds=self._ttl_seconds),
+        )
+        self._session_writer.save_session(context, credential)
+        return IssuedAuthenticatedSubjectSession(
+            context=context,
+            credential=credential,
+        )
 
 
 def _credential_hash(secret: str) -> str:
@@ -350,8 +449,14 @@ __all__ = [
     "AuthenticatedSubjectResult",
     "AuthenticatedSubjectSession",
     "AuthenticatedSubjectSessionProvider",
+    "AuthenticatedSubjectSessionWriter",
     "AuthenticatedSubjectStatus",
     "AuthenticationMethod",
+    "IssuedAuthenticatedSubjectSession",
     "KeychainAuthenticatedSubjectSessionProvider",
+    "LOCAL_AUTHENTICATED_SESSION_ISSUER_CONTRACT_VERSION",
+    "LocalAuthenticatedSubjectSessionIssuer",
+    "MAX_LOCAL_SESSION_TTL_SECONDS",
+    "MIN_LOCAL_SESSION_TTL_SECONDS",
     "resolve_authenticated_subject",
 ]

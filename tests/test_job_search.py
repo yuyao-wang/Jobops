@@ -113,6 +113,8 @@ def test_search_contract_is_independent_from_public_read_contract() -> None:
         "company",
         "title",
         "location",
+        "title_any",
+        "result_limit",
     ]
     assert type(JobSearchReason.SOURCE_TIMEOUT) is JobSearchReason
     assert type(ReadJobReason.SOURCE_TIMEOUT) is ReadJobReason
@@ -292,9 +294,9 @@ async def test_known_company_and_explicit_alias_use_one_board_get(
         assert request.method == "GET"
         assert request.url == (
             "https://boards-api.greenhouse.io/"
-            "v1/boards/examplelabs/jobs"
+            "v1/boards/examplelabs/jobs?content=true"
         )
-        assert request.url.query == b""
+        assert request.url.query == b"content=true"
         return httpx.Response(200, json=_payload())
 
     port = _searcher(handler)
@@ -304,6 +306,12 @@ async def test_known_company_and_explicit_alias_use_one_board_get(
     assert result.status is JobSearchStatus.SUCCEEDED
     assert result.candidate_set is not None
     assert calls == 1
+    first = result.candidate_set.candidates[0]
+    assert first.source_job_id == "1001"
+    assert first.observation is not None
+    assert first.observation.description == (
+        "This description must not affect candidate matching."
+    )
 
 
 @pytest.mark.parametrize("company", ("Unknown Labs", "Example", "Labs"))
@@ -374,6 +382,32 @@ async def test_title_matching_sorting_limit_and_candidate_shape() -> None:
         "1011",
         "1012",
     ]
+
+
+@pytest.mark.asyncio
+async def test_approved_role_phrases_are_or_matched_without_six_job_selection() -> None:
+    request = JobSearchRequest(
+        request_id="approved-role-search",
+        company="Example Labs",
+        title="Machine Learning Engineer",
+        title_any=("Machine Learning Engineer", "Backend Engineer"),
+        result_limit=1000,
+    )
+
+    result = await search_jobs(
+        request,
+        port=_searcher(
+            lambda request: httpx.Response(200, json=_payload())
+        ),
+    )
+
+    assert result.candidate_set is not None
+    identifiers = tuple(
+        candidate.source_job_id
+        for candidate in result.candidate_set.candidates
+    )
+    assert "1004" in identifiers
+    assert len(identifiers) == 12
 
 
 @pytest.mark.asyncio
@@ -537,6 +571,45 @@ async def test_invalid_board_response_is_not_empty_success(payload) -> None:
     }
     assert result.retryable is False
     assert result.candidate_set is None
+
+
+@pytest.mark.asyncio
+async def test_custom_greenhouse_career_url_uses_safe_board_identity() -> None:
+    payload = _payload()
+    payload["jobs"][0]["absolute_url"] = (
+        "https://careers.example.com/jobs/1001?gh_jid=1001"
+    )
+
+    result = await search_jobs(
+        _request(),
+        port=_searcher(lambda request: httpx.Response(200, json=payload)),
+    )
+
+    assert result.status is JobSearchStatus.SUCCEEDED
+    assert result.candidate_set is not None
+    assert result.candidate_set.candidates[0].source_url == (
+        "https://job-boards.greenhouse.io/examplelabs/jobs/1001"
+    )
+    assert result.candidate_set.candidates[0].observation is not None
+    assert result.candidate_set.candidates[0].observation.application_url == (
+        "https://careers.example.com/jobs/1001?gh_jid=1001"
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_greenhouse_career_url_requires_matching_job_id() -> None:
+    payload = _payload()
+    payload["jobs"][0]["absolute_url"] = (
+        "https://careers.example.com/jobs/1001?gh_jid=other"
+    )
+
+    result = await search_jobs(
+        _request(),
+        port=_searcher(lambda request: httpx.Response(200, json=payload)),
+    )
+
+    assert result.status is JobSearchStatus.FAILED
+    assert result.reason_code is JobSearchReason.CANDIDATE_VALIDATION_FAILED
 
 
 @pytest.mark.asyncio

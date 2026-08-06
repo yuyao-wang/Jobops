@@ -10,6 +10,26 @@ read-model boundary plus the P1a2 preparation-admission contract.
 
 Jobops 采用 workflow-first modular monolith。四个业务组件先以进程内 typed contract 协作；只有出现独立 trust boundary、release lifecycle、availability target 或 scaling profile 时，才拆成独立服务。Workflow coordination is a persisted state-machine responsibility, not a fifth service.
 
+## Kubernetes Demo 目标（只准备环境，不迁移运行时）
+
+`deploy/base` 定义未来共享镜像的三个进程边界：`jobops-api`、
+`jobops-dashboard` 与单副本 `jobops-worker`。`deploy/overlays/local` 在 Mac 的
+Docker Desktop + kind 中增加单副本 PostgreSQL StatefulSet、非权威 Redis
+Deployment 和单副本 MinIO StatefulSet；`deploy/overlays/production` 不部署这些
+数据 Pods，只通过相同环境变量绑定未来托管 PostgreSQL、Redis 与对象存储。
+
+当前三个应用 Deployment 固定为零副本，直到业务代码提供 `jobops.api`、
+`jobops.dashboard`、`jobops.worker` 入口、健康检查，以及 PostgreSQL/Redis/S3
+adapter。PostgreSQL 将成为计划中的 authoritative business store；Redis 丢失不能
+改变 durable workflow、permit、submission intent 或 duplicate-submit fence；MinIO
+只保存 PostgreSQL 已绑定 content hash 的 artifact bytes。
+
+环境规划不会把现有 SQLite 或 Private Home 当作共享卷挂给多个 Pod。正式迁移必须
+停止 writer、生成一致 SQLite snapshot、保留 stable ID/content hash、逐对象验证上传、
+reconcile 后单次切换，且不能存在 SQLite 与 PostgreSQL 双 writer。当前 loopback
+Dashboard、macOS Keychain、本机浏览器登录态和 CAPTCHA/MFA handoff 边界继续有效；
+这些能力不会因为 kind 环境存在而自动迁入 Worker。
+
 ```mermaid
 flowchart TB
     subgraph L1["Frontend and interaction layer"]
@@ -87,39 +107,115 @@ services continue to receive only its plain `subject_id` and never import
 FastAPI or session types. S3d0 does not add login, refresh UI, Search,
 Discovery, application execution or browser behavior.
 
-S3d adds one authenticated Dashboard action above that boundary. The route
+The production local-session issuer is a narrow bootstrap mechanism above
+S3d0, not a general login system. Its trust root is the loopback-bound server,
+the validated server configuration's single opaque subject, the transiently
+resolved master secret and the server-side CredentialStore. The browser, page
+JavaScript, request body/query, ordinary headers and Host alone are untrusted
+identity inputs. Both the TCP peer and request URL hostname must be loopback;
+the exact `Origin` must equal the request scheme/host/port, and
+`Sec-Fetch-Site`, when present, must be `same-origin`. This blocks remote or
+cross-origin session minting but does not claim protection from a compromised
+same-user local process, browser profile or host OS. Reverse-proxy and remote
+Dashboard deployment are outside this trust model.
+
+Responsibilities are deliberately split. The loopback bind and request checks
+constrain who may ask for a session. `Origin` and Fetch Metadata constrain the
+browser context that may mint it. The cookie carries only the opaque session
+reference and credential, is path `/`, HttpOnly and SameSite=Strict, and is
+Secure only on HTTPS; it never carries a subject. The CredentialStore
+(Keychain in production) stores the server-side subject/session context and
+only a credential hash. The configured secret reference may itself resolve
+through Keychain or the allowed environment source, but the resolved master
+secret remains only inside the issuer and is absent from diagnostics and
+business records.
+
+First browser load has an explicit order:
+
+```text
+GET /api/auth/session
+  → 401 when no valid cookie exists
+POST /api/auth/local-session from the exact loopback origin
+  → persist server-bound session hash
+  → Set-Cookie: HttpOnly; SameSite=Strict
+  → begin the Dashboard read requests
+```
+
+In addition, any JSON Dashboard request that independently receives 401 uses
+the same single in-flight session bootstrap and retries that request once.
+403, 404 and 503 are terminal UI-visible authentication/configuration failures,
+not triggers for another identity source or an unbounded retry. Current tests
+exercise the server pieces and inspect the static JavaScript contract; a real
+browser executing this sequence over a temporary HTTP server remains pending.
+The current issuer also chooses a new session ID, and therefore a new Keychain
+account, on every issuance; no listing or garbage-collection contract bounds
+those records yet.
+
+S3d adds one authenticated Dashboard action above that boundary. `POST`
 accepts only an invocation ID and reprioritization budget, obtains the subject
-from the S3d0 dependency, and calls one injected S3b public callable. Its
+from the S3d0 dependency, starts one injected S3b public callable and returns
+`RUNNING` without holding the HTTP request open. Authenticated
+`GET /api/job-library/refresh/status` polls the same subject-scoped task. The
 controller shares an in-flight invocation for duplicate requests and rejects a
-second concurrent invocation for the same subject. The browser UI disables the
-button while running and reuses the same invocation ID for transport retries;
-a later explicit click creates a new invocation.
+second concurrent invocation for the same subject. The browser disables only
+the Refresh control, polls until a terminal typed result, reloads the formal
+Jobs projection, and then renders the bounded result; a later explicit click
+creates a new invocation.
 
 The UI projection exposes only bounded typed counts, safe source failures, the
 refresh run ID and completion time. It never displays repository paths,
-credentials, raw exceptions or internal hashes. A completed refresh may reload
-the legacy job and Priority views, but it does not invoke plan creation,
+credentials, raw exceptions or internal hashes. A completed refresh reloads
+the formal Jobs projection, but it does not invoke plan creation,
 Preparation, automation cycles, Browser, ATS or submission. Production
 composition injects the already-composed S3b callable and authenticated
 dependency; the Dashboard does not assemble Search, Public Read, Discovery or
 P1d3 dependencies.
 
-S3e adds a second, independent authenticated Dashboard action. Its request
-contains only a stable invocation ID; a versioned server-side configuration
-supplies the four bounded budgets and composition binding. The handler passes
-the S3d0 subject and explicit clock time to one injected P2c10a public callable.
-Duplicate in-flight requests share the same task, a competing invocation is
-rejected as already running, and transport replay retains the invocation ID so
-P2c10a can return `UNCHANGED`.
+S3e is the authenticated non-blocking supervisor above S3c, S3b, and P2c10a.
+`POST /api/automation-cycle/run` contains only a stable invocation ID and
+returns `RUNNING` immediately. The explicit start action first enables the
+existing `AUTO_REQUEST_APPLICATION` policy for one validated snapshot of the
+subject's enabled SearchProfiles, then completes an audited S3b refresh. This
+is the provenance-bearing user decision that lets refreshed jobs acquire
+`REQUEST_APPLICATION`; it does not fabricate intent for an arbitrary library
+row. `GET /api/automation-cycle/status` returns the subject's current or most
+recent session so a browser reload can resume polling.
 
-The UI projects P2c10a's ordered stages and typed counters into Plan
-created/reused, Preparation completed/deferred/failed, Execution
-completed/deferred/failed/uncertain and Human Attention skipped summaries.
-It explicitly states that deferred work does not block other jobs and
-`SUBMISSION_UNCERTAIN` is never automatically retried. The action neither
-calls S3b nor refreshes job sources; “Refresh Job Library” and “Continue
-Automatic Application” remain separate user decisions. No Gate, permit,
-Browser, Engine, ATS or submit controls are exposed in the Dashboard.
+After preflight, S3e freezes the authoritative Runnable Application queue order,
+excluding only jobs whose current execution projection is already `SUBMITTED`,
+and invokes P2c10a once per job with a single-job allowlist and per-stage
+budgets capped at one. Deferred, failed and submission-uncertain execution
+items remain in the snapshot so their safety checkpoint cannot be bypassed.
+Each P2c10a child binds Priority and Plan to that job and passes only that
+cycle's successful Plan IDs through Preparation, Bundle, and Execution. The
+supervisor has a finite server-side cycle bound, never runs two job episodes
+concurrently, and publishes phase, current/total position, completed-cycle
+count, ordered stage projection, and cumulative safe counters. A replayed
+execution-queue `skipped_not_ready` result remains a visible checkpoint and
+does not advance the job cursor. A task done callback owns cleanup, so an HTTP
+disconnect cannot leave the subject stuck in an in-memory `RUNNING` state. If
+the finite bound is reached, an in-process subject cursor records the last
+safely completed job so the next explicit Start resumes with the remaining
+ordered suffix instead of replaying the same prefix. The cursor exists only
+while that bounded suffix remains: completing the snapshot, or finding the
+cursor already at the end of a newly refreshed snapshot, clears it and starts
+the latest snapshot as a new batch. This prevents newly inserted
+higher-priority prefix jobs from being hidden behind an empty cursor slice.
+Operational queue and child commands require a fresh timezone-aware clock
+value; clock failure never reuses the session start time for Gate or
+permit-sensitive work.
+
+`POST /api/automation-cycle/stop` sets a subject/session-scoped cooperative
+stop flag and returns `STOPPING`. It never cancels a Browser or submit call:
+the current child cycle reaches its persisted safe outcome and the supervisor
+does not start the next job. Review, CAPTCHA/MFA/login handoff, stage failure,
+Human Attention, and submission uncertainty end the session visibly; uncertain
+submission is never retried. The Dashboard exposes no direct Gate, permit,
+Browser, Engine, ATS, or submit control. A repeated start for the same active
+subject observes the existing session rather than creating parallel work.
+Preflight observes the same stop flag while polling S3b: the automatic session
+can end without starting a work snapshot, while an already-started refresh is
+allowed to finish safely in the background.
 
 S3f adds a third authenticated interaction that is strictly read-only. On
 initial Dashboard load, and once after a completed S3e invocation, the handler
@@ -220,11 +316,22 @@ Conversational Intake
               ├── list_current(subject_id)
               └── list_enabled(subject_id)
 
-PublicJobReader
-  ↓
+Multi-source discovery
+  ├── AuthorizedWebSearchPort
+  ├── read-only Job Alert Inbox
+  ├── user-gesture Web Clipper
+  └── pasted URL
+        ↓
+  subject-scoped JobLeadRepository
+        ↓
+  canonical resolver
+        ├── official URL → PublicJobReader
+        └── platform lead → configured feed + authorized exact web search
+                                (never read the platform page)
+
+PublicJobReader / canonical resolver / Conversational Intake
+  ↓ exactly one validated observation
 SourceJobObservation
-  ↓
-Conversational Intake
   ↓
 JobIntakeProposal
   ↓
@@ -255,30 +362,76 @@ external evidence, not a `JobPosting`; it contains no `job_id`, `revision`,
 
 S3a adds the subject-scoped configuration boundary above `JobSearchPort`.
 `SearchProfile` stores one canonical `JobSearchRequest`, an explicit
-`KNOWN_GREENHOUSE_BOARD` source reference, enabled state and fixed `MANUAL`
-refresh mode. The profile service does not invoke the search port or
-Discovery. Immutable versions are stored in Private Home; provider reads
-select the highest valid version per logical profile and order current/enabled
-profiles by canonical display name and profile ID rather than filesystem
-metadata.
+typed source reference, enabled state and fixed `MANUAL` refresh mode. Current
+source kinds are `KNOWN_GREENHOUSE_BOARD`, `KNOWN_ASHBY_BOARD`,
+`KNOWN_LEVER_SITE`, credential-gated `GLASSDOOR_PARTNER_SEARCH`, and
+credential-gated `KNOWN_JOBVITE_FEED`. The persisted SearchProfile schema stays
+v1 because the record shape and identity rules did not change; older Greenhouse
+records remain byte-compatible. The profile service does not invoke the search
+port or Discovery. Immutable versions are stored in Private Home; provider
+reads select the highest valid version per logical profile and order
+current/enabled profiles by canonical display name and profile ID rather than
+filesystem metadata.
 
 S3b1 supplies the production source boundary consumed by that executor.
-`build_production_job_search_ports(...)` binds each exact typed Greenhouse
-source reference to a board-scoped `JobSearchPort`; it does not infer provider
-identity from a URL or company string. The injected HTTP port enforces fixed
-HTTPS hosts, per-hop redirect validation, timeouts and decoded-response bounds.
-Greenhouse JSON is structurally validated, candidates are deterministically
-matched, de-duplicated, sorted and bounded, and transport/content failures stay
-typed. SearchProfile v1 has no Lever tenant source, so factory capability
-metadata explicitly reports Lever search as unsupported rather than falling
-back to Browser, Agent or legacy discovery.
+`build_production_job_search_ports(...)` factory v2 binds each exact typed
+source reference to one configured `JobSearchPort`; it does not infer provider
+identity from a URL or company string. It supports Greenhouse boards, Ashby
+public job boards, Lever public postings sites, optional Glassdoor partner
+search, and optional licensed Jobvite feeds. The injected HTTP port enforces
+fixed HTTPS hosts, per-hop redirect validation, timeouts and decoded-response
+bounds. Public/partner JSON is structurally validated, candidates are
+deterministically matched, de-duplicated, sorted and bounded, and
+transport/content failures stay typed. Glassdoor and Jobvite ports do not
+exist unless their repository-external `SecretReference` credentials resolve
+during production bootstrap; secret query parameters are excluded from object
+representations and are never exposed through Dashboard capability metadata.
+The safe example/default search configuration contains zero company tenants
+and zero enabled provider IDs. Brave search-index discovery, the alert inbox,
+the Clipper/pasted-URL Lead repository and configured company feeds are
+independent optional composition inputs: enabling any Lead channel does not
+require inventing a Greenhouse, Ashby or Lever tenant.
 
 S3b is the explicit manual refresh boundary above those enabled profiles. It
-reads one fixed enabled snapshot, invokes a provider-neutral profile search
-executor once per profile, canonicalizes and de-duplicates candidate URLs,
-then calls the public job reader and formal Discovery once per unique URL.
-Discovery receives a resolved `ADD_JOB` proposal with
+reads one fixed enabled-source snapshot and the ACTIVE policy. When approved
+ROLE rows exist, it strips only deterministic preference boilerplate, creates
+an OR title request, and invokes each distinct configured company source once;
+the stored per-title profile query is the no-policy compatibility fallback.
+It then canonicalizes and de-duplicates candidate URLs,
+then obtains one formal `SourceJobObservation` per unique URL and calls formal
+Discovery once. When the listing/feed response already carries the complete
+description, the candidate binds that observation and S3b does not repeat a
+per-job public read. A candidate without a complete bound observation retains
+the existing `PublicJobReader` fallback. Discovery receives a resolved
+`ADD_JOB` proposal with
 `MANUAL_LIBRARY_REFRESH`; it remains the only JobPosting writer.
+Each durable candidate result publishes a process-local IMPORTING snapshot, so
+the Dashboard can reread the formal subject Job Library progressively. Search
+completion and Discovery durability never wait for Priority, and Priority
+failure cannot remove already imported rows.
+
+The primary Jobs intake is `ConversationalJobFinderUIController`, which adapts
+the existing URL-first conversational contracts rather than creating a second
+job model. One isolated, no-tool strict-schema call extracts only explicit
+company/title/optional-location clues and a non-authorizing intent hint from at
+most two user turns. `ConfiguredProviderJobSearchRouter` then chooses the first
+production-composed source that owns the named company; credential-gated
+Glassdoor search remains last. URL input bypasses NLP and uses the existing
+`PublicJobReader`. Search results remain process-local until the user selects a
+candidate; the selected public URL is reread and still stops at
+`WAITING_FOR_ACTION`. Only an explicit `ADD_JOB` or `REQUEST_APPLICATION` calls
+subject-aware formal Discovery and accepted-intent persistence. The internal
+conversation identity hashes the server-authenticated subject with the browser
+conversation ID, so request body/query/header subject values have no authority.
+
+LinkedIn and Indeed remain human-controlled platform-page boundaries, not
+`JobSearchPort` implementations. They can contribute unverified `JobLead`
+records through an authorized search index, a user-authorized alert inbox, a
+pasted URL, or an explicit current-page Web Clipper action. The server never
+fetches their authenticated pages, stores their cookies, searches or paginates
+their UI, or bypasses login, CAPTCHA, MFA, rate limits or anti-bot controls.
+The older `/api/job-source-import` controller remains a compatibility surface,
+not the guided Dashboard entry point.
 
 S4a0a keeps that `JobPosting` globally canonical and adds the subject ownership
 boundary separately. Every accepted subject-aware Discovery registers one
@@ -304,16 +457,165 @@ is sufficient and the intent provenance retains every contributing profile ID.
 Changing policy back to add-only affects future refreshes and never cancels
 intent history.
 
+S3b emits non-persisted, typed `SEARCHING`, `IMPORTING` and `PRIORITIZING`
+progress to the Dashboard adapter. Profile progress carries one safe result
+per completed query; a valid zero-match provider response remains distinct
+from a failed request. Import progress carries the pre-de-duplication match
+count, unique URL count and durable Discovery change counts, allowing the
+Dashboard to reread the formal Jobs projection before Priority finishes.
+
 After all profiles and candidates, S3b calls P1d3 once with the shared subject,
-timestamp and explicit bound. Profile, read and Discovery failures are
-isolated and do not suppress that Priority refresh, but a membership failure
-prevents that candidate from entering the subject queue or intent flow. The
+timestamp and explicit bound. If Discovery created or updated jobs, their
+ordered unique job IDs become the P1d3 allowlist; unrelated stale jobs wait for
+a later no-change refresh, avoiding a second AI call for a newly failed item.
+If no job changed, normal bounded STALE/MISSING queue selection re-evaluates
+existing library jobs. Profile, read and Discovery failures are isolated and
+do not suppress that Priority refresh, but a membership failure prevents that
+candidate from entering the subject queue or intent flow. Typed Priority item
+failure codes are retained in the live UI result even though process progress
+is not a second durable workflow. The
 v3 subject/invocation-bound immutable `JobLibraryRefreshRun` records the exact
 membership receipt status and provides zero-call UI replay; v2 runs remain
 readable but do not prove new membership.
 S3b contains no concrete connector, application planning, preparation,
 execution, scheduling or missing-result lifecycle mutation. Intent policy
 evaluation does not trigger P1d4 or a second Priority refresh.
+
+### Multi-source JobLead discovery and canonical resolution
+
+`JobLead` is the durable staging boundary between a discovery source and the
+authoritative JobPosting workflow:
+
+```text
+configured company/ATS feeds ───────────────────────┐
+authorized Web Search API ──┐                       │
+read-only Job Alert Inbox ──┤                       │
+user Web Clipper click ─────┼→ subject JobLead ─────┼→ canonical resolver
+user-pasted URL ────────────┘   DISCOVERED          │
+                                                     ├─ one verified official observation
+                                                     │      ↓
+                                                     │  formal subject Discovery
+                                                     │      ↓
+                                                     │  JobPosting + membership
+                                                     │      ↓ refresh-only handoff
+                                                     │  optional single-job Priority
+                                                     └─ zero/many/unverifiable
+                                                            ↓
+                                                       NEEDS_USER
+```
+
+`core.job_leads` stores immutable, content-hashed, subject-scoped versions with
+source, origin, bounded hints, source URL, timestamps and resolution lineage.
+It deliberately has no description-as-fact, Priority, material, application or
+execution fields. Dashboard reads unresolved Leads in a separate **Needs your
+review** projection; they are excluded from formal job counts and queues.
+
+Every durable Lead URL first passes `canonicalize_job_lead_url(...)`. External
+URLs must use HTTPS and may not contain userinfo, control characters or a
+malformed port. Fragments, tracking state, credentials and all query parameters except a
+bounded allowlist of posting-identity keys are discarded before identity,
+persistence or Dashboard projection. LinkedIn and Indeed collapse to stable job
+ID forms. SuccessFactors preserves only `company`, `career_job_req_id` and the
+normalized `career_ns=job_listing` identity tuple; locale, campaign and session
+parameters do not survive. This is a privacy and deduplication boundary, not a
+claim that the retained URL is already authoritative.
+
+`AuthorizedWebSearchPort` is an optional search-index capability. The current
+production adapter is `BraveAuthorizedWebSearch`, enabled only by an external
+API key and an explicit `storage_rights_confirmed` configuration. Its bounded
+HTTP request sends the secret only in the provider header, accepts JSON from the
+fixed Brave API host, validates each HTTPS result URL, and returns typed
+success, partial or failure without opening any result page. Query planning is
+deterministic from the ACTIVE policy's ROLE, LOCATION and freshness terms. It
+fairly allocates a bounded request/page budget across LinkedIn, Indeed,
+Glassdoor, Greenhouse, Lever, Ashby, Jobvite, Workday, SmartRecruiters, iCIMS,
+SuccessFactors and generic employer-careers index clauses. Coverage is bounded
+and index-dependent; it is not an exhaustive-market contract.
+
+`JobAlertInboxIngestor` is optional and local. It uses a Keychain/CredentialStore-
+backed, TLS IMAP read-only port scoped by mailbox, sender domains, age, message
+count and link count. The credential account must equal the configured
+recipient. The IMAP projection trusts `Authentication-Results` only from an
+explicitly configured receiving `authserv-id`; an alert is eligible only when
+that trusted projection reports DMARC PASS and at least one of SPF or DKIM PASS.
+Missing, conflicting, oversized or untrusted authentication evidence remains
+`UNKNOWN` and the alert is rejected. The deterministic parser writes only Lead
+fields plus a message digest; it does not persist raw mail, raw authentication
+headers, attachments or credentials. Anchor text supplies both hints only for
+explicit `title at company` or `company hiring title [in location]` patterns;
+all other non-generic anchor text is at most a title hint, and company is never
+guessed. This implementation is generic IMAP. Gmail OAuth, push delivery and a
+daily scheduler are not part of the current composition.
+
+`browser_extension/jobops_web_clipper` is a local Manifest V3 extension with
+only `activeTab` and `scripting` permissions and no host permissions. The
+extension runs only after the user clicks its action, captures the current page
+URL, bounded title and bounded current selection, and opens the loopback
+Dashboard with a fragment handoff. Fragments are not sent to the HTTP server;
+Dashboard JavaScript removes the fragment immediately, displays an explicit
+review dialog, and only then calls authenticated `POST /api/job-leads/capture`.
+The extension has no search, navigation, pagination, background fetch or batch
+capture capability.
+
+`core.job_lead_discovery` owns resolution. A direct Lead on a recognized ATS
+host may be read through the existing SSRF-bounded `PublicJobReader`. A
+careers-looking path on an unknown host is not proof of employer ownership: it
+remains `UNKNOWN_WEB`, is not automatically read, and must resolve through a
+recognized source or explicit user continuation. An aggregator Lead is never
+read at its source URL; when company and title hints exist, the resolver may
+try the configured public company feed and then one bounded authorized-web
+canonical query. Observations must match the Lead's company and title hints.
+Exactly one distinct official observation is accepted; zero or multiple
+candidates transition the Lead to `NEEDS_USER`. Accepted resolution invokes
+the existing subject-aware Discovery with membership provenance
+`JOB_LEAD_RESOLUTION`; no new JobPosting writer or platform-specific job model
+exists.
+
+`POST /api/job-leads/{lead_id}/resolve` is the explicit user-continuation path
+for a `DISCOVERED` or `NEEDS_USER` Lead. The authenticated session chooses the
+subject partition; another subject observes the Lead as absent. The submitted
+target must be a public employer/ATS URL, is reread through `PublicJobReader`,
+and reaches formal subject Discovery with `source_ref=lead_id`. A platform URL
+returns Human Intervention without a network read. On accepted Discovery the
+same Lead appends a `RESOLVED` version using the reader's verified final source
+URL. Unlike automatic resolution, this explicit user choice is not described
+as an inferred company/title match. It still grants only add-to-library
+provenance, not application or submission authority.
+
+The Generic JSON-LD reader independently blocks LinkedIn, Indeed and Glassdoor
+exact hosts, subdomains and trailing-dot variants before the initial GET and at
+every redirect hop. This defense-in-depth fence remains active even if a caller
+mistakenly routes an aggregator URL to the public reader. For accepted official
+JSON-LD pages, source family is retained: Workday produces
+`source_platform=WORKDAY, ats_type=WORKDAY`; SmartRecruiters, iCIMS and
+SuccessFactors retain their respective source platform while using
+`ats_type=UNKNOWN`. Other generic pages remain `GENERIC_WEB/UNKNOWN`.
+Each DNS hop is resolved once and all answers must be public. Connections try
+only that prevalidated address set, in order and under one shared deadline,
+while retaining the logical hostname for HTTP Host and TLS SNI. This closes the
+validation/connect DNS-rebinding gap without losing bounded multi-address
+failover.
+
+Production `job_lead_refresh` composes alert ingestion, optional authorized
+search, resolution of existing pasted/clipper/email Leads and one Priority call
+per unique newly resolved job. It is injected into the existing non-blocking
+Refresh controller beside configured provider-feed refresh. Typed progress and
+terminal summaries keep provider requests, raw search hits, unique Leads,
+duplicates, verified resolutions, review items, failures and truncation
+separate. Initial discovery searches, canonical-resolution searches and public
+official-page reads have independent budgets and do not borrow from one
+another. Exhausting the public-read budget before all candidates are checked
+cannot turn a partially checked candidate set into a unique verified job; the
+Lead remains `NEEDS_USER` and the run is typed partial/truncated. Per-source UI
+projections expose requests, completed requests, search hits, discovered and
+unique Leads, duplicates, public reads, resolved jobs, review items, failures
+and truncation rather than collapsing those quantities into “jobs found.”
+Without an authorized search key, the search-index channel is disabled. Direct
+recognized-ATS URLs still resolve automatically; an explicitly pasted or
+Clipper-confirmed public employer URL may be verified through the user-driven
+continuation path. An aggregator or unknown-web Lead with explicit
+company/title hints may still resolve through a configured company feed;
+otherwise it remains safe for user review.
 
 ### Progressive read policy
 
@@ -429,10 +731,12 @@ JobIntakeProposal
 run_discovery()
 ```
 
-Search results are not durable jobs. Selection cannot bypass rereading the
-chosen URL through the unified Public Job Reader.
+Configured `JobSearchPort` candidates remain process-local. Authorized search,
+alert, Clipper and pasted-platform evidence may be durable only as `JobLead`,
+never as a JobPosting. Selection or Lead resolution cannot bypass reading and
+validating one official URL through the unified Public Job Reader.
 
-### Current implementation gap
+### Current implementation status
 
 - Implemented: provider-neutral `ReadJobRequest`, `ReadJobResult`,
   `SourceJobObservation`, `SourceJobReader` Protocol and
@@ -449,8 +753,34 @@ chosen URL through the unified Public Job Reader.
 - Implemented: I2b persists the accepted action only after Discovery acceptance,
   using explicit subject/job/proposal/run bindings and deterministic read
   precedence. `REQUEST_APPLICATION` still stops before Priority or preparation.
-- Implemented: S3b1 production Greenhouse `JobSearchPort` construction with
-  exact SearchProfile source bindings and explicit unsupported Lever capability.
+- Implemented: S3b1 production job-search factory v2 with exact SearchProfile
+  bindings for configured Greenhouse, Ashby, Lever, credential-gated Glassdoor,
+  and licensed credential-gated Jobvite sources. Greenhouse requests
+  `content=true`; all connectors bind a complete listing/feed observation when
+  available so S3b avoids a duplicate detail request.
+- Implemented: authenticated SearchProfile configuration routes accept only
+  composed sources, but the primary Jobs page no longer renders a provider-
+  tenant form. Jobs exposes one conversational Job Finder for public URLs or
+  named job clues. Production NLP extracts clues without tools, a configured-
+  source router searches, the UI allows one clarification and explicit
+  candidate/action review, and accepted results use formal subject Discovery.
+  It does not fetch authenticated aggregator pages or automate challenges.
+- Implemented: `job-lead-v1`, `authorized-web-search-v1` with the optional Brave
+  adapter, `job-lead-discovery-v1`, bounded read-only IMAP alert ingestion,
+  current-page Web Clipper handoff, pasted platform Leads, formal
+  `JOB_LEAD_RESOLUTION` membership provenance and the Dashboard unresolved-Lead
+  projection plus subject-scoped official-URL resolution. Safe default
+  production configuration has no fictitious provider tenant; each Lead
+  channel can be composed without a company feed.
+- Implemented: the existing Refresh action composes configured provider feeds
+  with enabled JobLead channels, exposes `INGESTING_ALERTS`, `DISCOVERING`,
+  `RESOLVING` and Priority-safe counts, and evaluates each unique newly resolved
+  job once.
+- Not implemented or not live-validated: Gmail OAuth, scheduled/daily alert
+  ingestion, daily digest, Saved Jobs bulk import, Google/Bing search adapters,
+  installed-extension operation on a real LinkedIn or Indeed page, live Brave
+  Search reliability, real mailbox ingestion and exhaustive job-market
+  coverage.
 - `GreenhousePublicJobReader` remains exported for connector tests and legacy
   compatibility. `LeverPublicJobReader` is internal. New business callers use
   `read_public_job(...)` for both.
@@ -529,7 +859,9 @@ layers or independently deployed services.
 
 ```mermaid
 flowchart TB
-    UI["Frontend policy editor"] --> PS["PrioritizationPolicy service"]
+    UI["One Dashboard preference dialog"] --> PI["Isolated no-tool NLP interpreter"]
+    PI --> PD["Typed review draft"]
+    PD --> PS["PrioritizationPolicy service"]
     PS --> PR["Approved policy repository"]
 
     J["JobPosting revision"] --> PA["PriorityAgent Port"]
@@ -553,6 +885,20 @@ flowchart TB
     O --> PA
 ```
 
+The production interpreter reuses the configured `priority_evaluation`
+backend capability and isolation policy for exactly one schema-constrained
+generation. Only raw preference text is model input; the authenticated subject
+remains server-side. The interpreter cannot confirm hard constraints, persist
+policy, search sources, rank a job, or trigger application work. SearchProfile
+provider queries remain a separate discovery configuration.
+
+The authenticated Jobs preference editor is a model-free command over the
+active policy. The browser submits only the current version plus exact
+preference IDs/statements/importances. The controller restores category and
+subject from server state; the domain service creates and activates the next
+immutable policy version. NLP remains available only for adding or
+restructuring preferences and reviewed hard-constraint confirmation.
+
 The Priority Agent evaluates soft preferences, domain value, seniority stretch,
 freshness and ambiguous trade-offs under the current approved policy. Ordinary
 code owns deterministic facts, schema validation and enforcement of explicitly
@@ -562,7 +908,10 @@ eligibility coverage for work authorization, citizenship/permanent residency,
 student status and security clearance. These are evidence-backed findings, not
 new system layers or automatic execution rules.
 
-P1b3 supplies the production `PriorityAgentPort`. Its one factory resolves
+P1b3 supplies the production `PriorityAgentPort`. Prompt contract v3 supplies
+the model with a bounded output-contract guide containing only the exact job,
+constraint, preference, verified candidate-fact and deterministic-fact IDs it
+may cite, plus the semantic invariants enforced by ordinary code. Its one factory resolves
 the `priority_evaluation` component through the same M1a/M1a2 capability and
 isolation boundary used by Preparation, then constructs an async-only adapter
 over `complete_structured_request(...)`. The adapter reuses the P1b prompt,
@@ -1802,6 +2151,14 @@ The target call is one redacted, bounded batch per `ApplicationRun`, with no sel
 
 Manual update、scheduled update、CLI、Dashboard 和 Codex 共用业务入口、repository 和 state transition。Repository-root legacy Dashboard/SQLite data is migration input. Private Home CSV remains a current compatibility queue projection until the canonical repository replaces it; neither may become a second workflow.
 
+The authenticated `ReviewedApplicationCompatibilityUIController` is the
+temporary UI projection for current CSV `REVIEW_READY`, `SUBMITTED_VERIFIED`
+and `SUBMIT_UNKNOWN` runs. It rereads the Event Ledger and current CSV row,
+binds an opaque action-time review token, and delegates a confirmed click to
+the shared `submit_reviewed_application()` function with the production
+Keychain and server-owned Browser lease provider. It contains no ATS filling or
+submission implementation of its own and is removed with the CSV projection.
+
 ### Modular monolith first
 
 逻辑边界先由 Python Protocol、dataclass、JSON Schema 和 tests 固定。不能因为未来可能扩展而预先增加 HTTP、database、framework 或 deployment unit。
@@ -1832,7 +2189,12 @@ ApplicationTarget:
   tenant
 ```
 
-LinkedIn、Indeed、RSS 或 company careers page 可能发现一个最终由 Greenhouse、Lever、Ashby、Jobvite 或 Workday 执行的岗位。ATS routing 只能来自可信 application URL 和 verified page markers，不能来自 CSV/source hint。
+LinkedIn、Indeed、alert email、search index、Web Clipper 或 company careers
+page 可能先产生一个 `JobLead`，最终解析到由 Greenhouse、Lever、Ashby、
+Jobvite、Workday 或其他 employer/ATS 页面承载的岗位。Lead origin、邮件
+sender、search snippet、Clipper title 和 selected text 都不是 ATS routing
+evidence。ATS routing 只能来自最终验证的 `SourceJobObservation`、可信
+application URL 和 verified page markers，不能来自 CSV/source hint 或 Lead。
 
 ### Models are bounded capability nodes
 
@@ -2134,9 +2496,16 @@ PNG/JPEG files in stable order, enforces one process tree and strict schema
 output, and deletes the workspace. The Codex adapter disables its Agent tools,
 user configuration, MCP/browser/search integrations, and ambient environment;
 Seatbelt separately denies host filesystem reads and child process execution.
-Runtime availability becomes true only after a no-generation host, login,
-schema, image, and tool-contract probe. Raw Codex remains trusted-only, and
-unsupported hosts fail with `ISOLATION_UNAVAILABLE` without API fallback.
+The Codex host process has two explicit startup-only preference exceptions:
+`com.openai.codex` and the current user's
+`kCFPreferencesAnyApplication` domain. It also receives the public system CA
+bundle through `SSL_CERT_FILE=/etc/ssl/cert.pem`. These exceptions let the
+trusted CLI load managed configuration and establish TLS; they do not grant
+Keychain, browser, candidate-file or arbitrary host-file access, and their
+contents are not model input. Runtime availability becomes true only after a
+no-generation host, login, managed-config load, schema, image, and
+tool-contract probe. Raw Codex remains trusted-only, and unsupported hosts
+fail with `ISOLATION_UNAVAILABLE` without API fallback.
 
 P2a10 binds that provider boundary to the nine existing Preparation Agent
 ports. One production factory resolves every mandatory component through the
@@ -2170,29 +2539,60 @@ platform-specific application config location. It accepts one bounded,
 owner-only, non-symlinked YAML document outside every Git worktree and rejects
 unknown keys, tags, aliases, unsupported versions, and unsafe path overlap.
 Secret references are resolved through environment or the existing credential
-store for availability and are immediately discarded.
+store. The authentication master secret is retained only inside the typed
+local-session issuer and never enters diagnostics or business storage.
 
 `ProductionApplicationBootstrap` constructs Private Home infrastructure, the
-production repository bundle, Keychain session provider, S3b1 and P1b3 factory
-inputs, the existing P2b4g dependency bundle, P2c1d2 rules, an unstarted P2c7a
-runtime, and bounded Automation policy. It performs no search, generation,
-Preparation, navigation, ATS operation, or business-record creation. Owned
-resources close in reverse order after partial failure.
+production repository bundle, Keychain session provider, the
+`production-authentication-runtime-v2` local-session issuer, S3b1 and P1b3
+factory inputs, the existing P2b4g dependency bundle, P2c1d2 rules, an
+unstarted P2c7a runtime, and bounded Automation policy. It performs no search,
+generation, Preparation, navigation, ATS operation, or business-record
+creation. Owned resources close in reverse order after partial failure.
+
+The outer document and bootstrap contracts intentionally remain
+`production-application-config-v1` and `production-application-bootstrap-v1`.
+Only the closed authentication subsection advanced to
+`production-authentication-runtime-v2`; that v2 adds the configured local
+subject, bounded TTL and loopback same-origin issuance policy. These versions
+do not advance in lockstep with composition: the composition root advanced to
+v3 because its installed graph gained local issuance and the membership-first
+empty Jobs reader. A v1 outer document is therefore valid only with its
+required authentication-v2 section, and composition-v3 continues to consume
+the existing bootstrap-v1 typed result.
+
+Model capability resolution failures retain their closed safe status (for
+example `ISOLATION_UNAVAILABLE`) as the typed `section` of
+`AI_CONFIGURATION_INVALID`. Startup may display that allowlisted status, but
+never provider exception text, credentials or paths; all such failures stop
+bootstrap before serving.
 
 `python main.py server` no longer calls the legacy `load_profile()` or starts
 the legacy Scheduler. It builds the complete P2c10c composition after a
-successful bootstrap, atomically installs both authenticated controllers, and
-only then starts FastAPI. A missing mandatory dependency stops startup before
-the server can expose half-configured permanent-503 routes.
+successful bootstrap, atomically installs the authenticated controller set,
+and only then calls the server entry point. Composition construction itself
+fails closed on a missing mandatory dependency. `dashboard_readiness(app)` is
+the single predicate shared by `run_server()` and `/api/health`: startup refuses
+an incomplete installed controller set, and readiness returns unavailable for
+the same missing dependency instead of allowing a half-composed service.
 
 ## P2c10c Production automation composition
 
-`production-automation-composition-v2` is the single authoritative production
+`production-automation-composition-v3` is the single authoritative production
 root for both Job Library Refresh and the five-stage Automation Cycle. It
 constructs S3b1 typed Job Search, the P1b3 provider-neutral Priority Agent,
 P1d1/P1d3 priority services, the complete P2b4g 18-stage async Preparation
 recipe, P2b6, P2c10b1 exact context binding, P2c1-v2 with the P2c1c production
 factory, and the P2c8/P2c9/P2c10a execution handoff.
+
+The same v3 root also binds the subject JobLead repository, optional
+Brave-authorized search adapter, optional read-only local IMAP Job Alert Inbox,
+persisted-Lead canonical resolver, Dashboard unresolved-Lead reader and one
+Priority call per unique resolved formal job. These are optional acquisition
+channels inside the existing Refresh controller, not new workflow services or
+JobPosting writers. The Kubernetes example leaves `job_alert_inbox` null;
+mailbox credentials and local mailbox reads are not moved into the control
+plane Pod.
 
 Profile and execution-policy records are obtained only through the P2c1d1 and
 P2c1d2 public contracts. P2c10b1 orders profile projection, policy decision,
@@ -2205,9 +2605,19 @@ does not search, generate model output, run Preparation, navigate a browser,
 execute ATS logic, or write business records. The FastAPI lifespan owns the
 bootstrap resources, starts them once, and closes them in reverse order.
 Dashboard installation is atomic: Refresh, Automation, authenticated subject
-resolution, lifecycle resources, and redacted diagnostics are installed
-together. Server budgets remain authoritative and request values cannot
-expand them.
+resolution, local session issuance, lifecycle resources, and redacted
+diagnostics are installed together. The browser first checks
+`GET /api/auth/session`; an unauthenticated loopback, same-origin page may call
+the empty-body `POST /api/auth/local-session` once. The issuer binds the
+session to the opaque subject configured by the server, persists only the
+credential hash, and returns an HttpOnly, SameSite=Strict cookie. Subject IDs
+from request bodies, queries, and ordinary headers are ignored. Server budgets
+remain authoritative and request values cannot expand them.
+
+Composition-v3 depends on authentication-runtime-v2 but does not replace the
+outer config-v1 or bootstrap-v1 contracts. Historical composition versions
+describe older installed controller graphs; they are not silently relabeled
+as v3.
 
 ## S4a0 Authenticated Dashboard read layer
 
@@ -2219,12 +2629,40 @@ projection, so a canonical global JobPosting is visible only through the
 authenticated subject's immutable Job Library membership. Neither path reads
 `profile.yaml`, `get_all_jobs()`, legacy SQLite/CSV state, or file mtimes.
 
+Jobs first reads the subject Job Library membership projection. A formal
+`EMPTY` membership snapshot returns the stable empty Jobs model immediately,
+with no P1d2/P1d4 call and therefore no dependency on an approved
+PrioritizationPolicy or CandidateSummary. For a non-empty, integrity-valid
+membership snapshot, the specific `ACTIVE_POLICY_NOT_FOUND` Priority failure
+does not hide already verified jobs: Jobs projects the exact subject postings
+as `NOT_EVALUATED` with no Decision, current-priority count or runnable
+authority. Other Priority failures, membership failure and integrity failure
+remain visible failed reads rather than empty or unevaluated data.
+
 Applications combine each subject-owned ApplicationPlan with the repository's
 formal current PreparationRun, one Human Attention snapshot, one Current
 Execution Queue snapshot, and exact JobPosting reads. The projection exposes
 five user progress steps without changing the underlying 18-stage Preparation
 contract. Terminal submission states take precedence over attention and
 non-terminal preparation states.
+
+Gate-B-only deferrals are a distinct application-read condition. A current
+Execution Queue item with `DEFERRED / GATE_B_AUTHORIZATION /
+USER_AUTHORIZATION_REQUIRED` projects as `READY / REVIEW_AND_SUBMIT`; it is not
+collapsed into `SYSTEM_ISSUE` and is not represented as a generic Human
+Attention text response.
+
+`ApplicationReviewSubmissionUIController` is the authenticated mutation
+boundary behind that action. Its GET projection joins the exact queue item,
+ExecutionRun, non-submit `REVIEW_READY` record, Assembly, AnswerSet and
+JobPosting, then returns only a safe summary plus an opaque hash binding those
+current records. POST accepts only that review token and `confirmed=true`,
+acquires a per-subject/plan in-process duplicate-click lock, rereads and
+revalidates the same graph, creates the existing
+`ExplicitSubmissionAuthorization` with the current Review digest and current
+time, and calls the already-composed single-job P2c7 function. It does not
+implement a second permit, click, evidence or retry path. A stale token cannot
+authorize; `SUBMISSION_UNCERTAIN` is projected terminally and is never retried.
 
 Overview composes the four already-built snapshots without rereading
 repositories or rescoring jobs. Its next-step policy fails system/integrity

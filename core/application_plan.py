@@ -759,6 +759,7 @@ class CreateApplicationPlanCommand:
     job_id: str
     now: datetime
     user_preparation_instructions: str | None = None
+    preferred_application_plan_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -967,6 +968,15 @@ async def create_application_plan(
         instructions = _instructions(
             command.user_preparation_instructions
         )
+        preferred_plan_id = (
+            None
+            if command.preferred_application_plan_id is None
+            else _clean_id(
+                "preferred_application_plan_id",
+                command.preferred_application_plan_id,
+                maximum=180,
+            )
+        )
     except (TypeError, ValueError) as exc:
         return _create_failure(
             subject_id=(
@@ -1056,6 +1066,54 @@ async def create_application_plan(
             job_id=job_id,
             queue=queue,
         )
+        if preferred_plan_id is not None:
+            preferred_read = repository.get(preferred_plan_id)
+            if (
+                preferred_read.status
+                is ApplicationPlanReadStatus.INTEGRITY_FAILURE
+            ):
+                return _create_failure(
+                    subject_id=subject_id,
+                    job_id=job_id,
+                    reason=CreateApplicationPlanReason.PLAN_INTEGRITY_FAILURE,
+                    message="The preferred ApplicationPlan failed integrity checks.",
+                )
+            preferred = preferred_read.plan
+            if (
+                preferred_read.status is ApplicationPlanReadStatus.FOUND
+                and isinstance(preferred, ApplicationPlan)
+                and preferred.subject_id == subject_id
+                and preferred.job_id == job_id
+                and preferred.job_revision == job.revision
+                and preferred.job_content_hash == job.content_hash
+                and preferred.priority_decision_id == decision.decision_id
+                and preferred.policy_id == policy.policy_id
+                and preferred.policy_version == policy.policy_version
+                and preferred.policy_content_hash == policy.policy_content_hash
+                and preferred.priority_level == decision.priority_level
+                and preferred.user_preparation_instructions == instructions
+                and preferred.user_preparation_instructions_hash
+                == application_plan_instruction_hash(instructions)
+            ):
+                write_result = ApplicationPlanWriteResult(
+                    status=ApplicationPlanWriteStatus.UNCHANGED,
+                    plan=preferred,
+                    reason_code=None,
+                    retryable=False,
+                )
+                return CreateApplicationPlanResult(
+                    status=CreateApplicationPlanStatus.UNCHANGED,
+                    reason_code=None,
+                    retryable=False,
+                    subject_id=subject_id,
+                    job_id=job_id,
+                    runnable_status=RunnableApplicationStatus.RUNNABLE,
+                    plan=preferred,
+                    write_result=write_result,
+                    message=(
+                        "The resumable automation-first ApplicationPlan was reused."
+                    ),
+                )
         plan = ApplicationPlan.create(
             subject_id=subject_id,
             job_id=job_id,

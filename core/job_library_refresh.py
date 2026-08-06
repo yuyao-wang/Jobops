@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -44,10 +45,15 @@ from .job_discovery import (
 from .job_search import (
     JobSearchPort,
     JobSearchReason,
+    JobSearchRequest,
     JobSearchResult,
     JobSearchStatus,
     SearchCandidate,
     search_jobs,
+)
+from .prioritization_policy import (
+    PrioritizationPolicy,
+    SoftPreferenceCategory,
 )
 from .private_home import PrivateHome, PrivateHomeError
 from .search_profile import (
@@ -151,6 +157,17 @@ class JobLibraryRefreshStatus(StrEnum):
     PARTIAL_FAILURE = "PARTIAL_FAILURE"
     FAILED = "FAILED"
     NOOP = "NOOP"
+
+
+class JobLibraryRefreshProgressPhase(StrEnum):
+    SEARCHING = "SEARCHING"
+    IMPORTING = "IMPORTING"
+    PRIORITIZING = "PRIORITIZING"
+
+
+class JobLibraryRefreshPriorityScope(StrEnum):
+    NEW_OR_CHANGED = "NEW_OR_CHANGED"
+    EXISTING = "EXISTING"
 
 
 class ProfileRefreshSearchStatus(StrEnum):
@@ -566,6 +583,61 @@ class DiscoveryRefreshSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class JobLibraryRefreshProgress:
+    """Non-persisted, credential-safe progress for one manual refresh."""
+
+    phase: JobLibraryRefreshProgressPhase
+    enabled_profiles: int
+    profile_results: tuple[SearchProfileRefreshResult, ...]
+    unique_candidates: int
+    candidates_processed: int
+    discovery_summary: DiscoveryRefreshSummary
+    priority_scope: JobLibraryRefreshPriorityScope | None = None
+    priority_requested: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "phase", JobLibraryRefreshProgressPhase(self.phase)
+        )
+        if type(self.enabled_profiles) is not int or self.enabled_profiles < 0:
+            raise ValueError("enabled_profiles must be non-negative")
+        if (
+            not isinstance(self.profile_results, tuple)
+            or any(
+                not isinstance(item, SearchProfileRefreshResult)
+                for item in self.profile_results
+            )
+            or len(self.profile_results) > self.enabled_profiles
+        ):
+            raise TypeError("profile_results must be a bounded typed tuple")
+        for name in (
+            "unique_candidates",
+            "candidates_processed",
+            "priority_requested",
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if self.candidates_processed > self.unique_candidates:
+            raise ValueError("processed candidates exceed the unique total")
+        if not isinstance(self.discovery_summary, DiscoveryRefreshSummary):
+            raise TypeError("discovery_summary must be typed")
+        if self.discovery_summary.unique_candidates != self.candidates_processed:
+            raise ValueError("progress discovery counts are inconsistent")
+        if self.priority_scope is not None:
+            object.__setattr__(
+                self,
+                "priority_scope",
+                JobLibraryRefreshPriorityScope(self.priority_scope),
+            )
+        if self.phase is JobLibraryRefreshProgressPhase.PRIORITIZING:
+            if self.priority_scope is None or self.priority_requested < 1:
+                raise ValueError("Priority progress requires a bounded scope")
+        elif self.priority_scope is not None or self.priority_requested:
+            raise ValueError("non-Priority progress cannot name a Priority scope")
+
+
+@dataclass(frozen=True, slots=True)
 class PriorityRefreshSummary:
     status: str
     requested: int
@@ -792,6 +864,7 @@ class ManualJobLibraryRefreshResult:
     status: JobLibraryRefreshStatus
     run: JobLibraryRefreshRun | None
     reason: JobLibraryRefreshFailureReason | None
+    priority_failure_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -801,6 +874,16 @@ class ManualJobLibraryRefreshResult:
             object.__setattr__(
                 self, "reason", JobLibraryRefreshFailureReason(self.reason)
             )
+        if (
+            not isinstance(self.priority_failure_codes, tuple)
+            or any(
+                not isinstance(code, str)
+                or not code
+                or len(code) > 160
+                for code in self.priority_failure_codes
+            )
+        ):
+            raise ValueError("priority_failure_codes must be a safe tuple")
         if self.status is JobLibraryRefreshStatus.UNCHANGED:
             if self.run is None or self.reason is not None:
                 raise ValueError("UNCHANGED refresh result is malformed")
@@ -827,6 +910,12 @@ class SearchProfileSearchExecutor(Protocol):
     ) -> JobSearchResult | Awaitable[JobSearchResult]: ...
 
 
+class ActivePrioritizationPolicyProvider(Protocol):
+    def get_active_policy(
+        self, subject_id: str
+    ) -> PrioritizationPolicy | None: ...
+
+
 class PublicJobReaderCallable(Protocol):
     def __call__(
         self, request: ReadJobRequest
@@ -848,6 +937,12 @@ class PriorityRefreshCallable(Protocol):
     ): ...
 
 
+class JobLibraryRefreshProgressObserver(Protocol):
+    def __call__(
+        self, progress: JobLibraryRefreshProgress
+    ) -> object | Awaitable[object]: ...
+
+
 class ConfiguredSearchProfileExecutor:
     """Resolve a typed source reference to an injected JobSearchPort."""
 
@@ -865,8 +960,29 @@ class ConfiguredSearchProfileExecutor:
             return JobSearchResult.failed(JobSearchReason.INVALID_REQUEST)
         return await search_jobs(profile.search_request, port=port)
 
+    async def search_request(
+        self,
+        *,
+        source: SearchProfileSourceReference,
+        request: JobSearchRequest,
+    ) -> JobSearchResult:
+        """Run one server-created discovery query against a configured source."""
 
-def _profile_snapshot(profiles: tuple[SearchProfile, ...]) -> str:
+        if not isinstance(source, SearchProfileSourceReference):
+            raise TypeError("source must be typed")
+        if not isinstance(request, JobSearchRequest):
+            raise TypeError("request must be typed")
+        port = self._ports.get(source)
+        if port is None:
+            return JobSearchResult.failed(JobSearchReason.INVALID_REQUEST)
+        return await search_jobs(request, port=port)
+
+
+def _profile_snapshot(
+    profiles: tuple[SearchProfile, ...],
+    *,
+    policy_content_hash: str | None = None,
+) -> str:
     return _hash(
         {
             "contract_version": JOB_LIBRARY_REFRESH_CONTRACT_VERSION,
@@ -879,8 +995,82 @@ def _profile_snapshot(profiles: tuple[SearchProfile, ...]) -> str:
                 }
                 for profile in profiles
             ],
+            "policy_content_hash": policy_content_hash,
         }
     )
+
+
+def _discovery_queries(
+    profiles: tuple[SearchProfile, ...],
+    policy: PrioritizationPolicy | None,
+) -> tuple[tuple[SearchProfile, JobSearchRequest], ...]:
+    """Use approved role preferences across each configured source once."""
+
+    if policy is None:
+        return tuple((profile, profile.search_request) for profile in profiles)
+    role_phrases = _role_title_phrases(policy)
+    if not role_phrases:
+        return tuple((profile, profile.search_request) for profile in profiles)
+
+    representative_by_source: dict[
+        SearchProfileSourceReference, SearchProfile
+    ] = {}
+    for profile in profiles:
+        representative_by_source.setdefault(profile.source, profile)
+
+    queries: list[tuple[SearchProfile, JobSearchRequest]] = []
+    for source, profile in representative_by_source.items():
+        request_digest = _hash(
+            {
+                "policy_content_hash": policy.policy_content_hash,
+                "source": source.to_dict(),
+                "title_any": list(role_phrases),
+            }
+        )
+        queries.append(
+            (
+                profile,
+                JobSearchRequest(
+                    request_id=f"approved-preferences-{request_digest}",
+                    company=profile.search_request.company,
+                    title=role_phrases[0],
+                    location=None,
+                    title_any=role_phrases,
+                    result_limit=1000,
+                ),
+            )
+        )
+    return tuple(queries)
+
+
+_ROLE_PREFIX = re.compile(
+    r"^(?:please\s+)?(?:prefer|prioritize|target|seek|seeking|focus\s+on)\s+",
+    re.IGNORECASE,
+)
+_ROLE_SUFFIX = re.compile(
+    r"\s+(?:roles?|positions?|jobs?)\.?$",
+    re.IGNORECASE,
+)
+
+
+def _role_title_phrases(policy: PrioritizationPolicy) -> tuple[str, ...]:
+    """Return bounded title phrases from the approved editable ROLE rows."""
+
+    phrases: list[str] = []
+    for preference in policy.soft_preferences:
+        if preference.category is not SoftPreferenceCategory.ROLE:
+            continue
+        statement = _ROLE_SUFFIX.sub(
+            "",
+            _ROLE_PREFIX.sub("", preference.statement.strip()),
+        ).strip(" .")
+        for phrase in re.split(r"\s*[,;/|]\s*|\s+\bor\b\s+", statement):
+            cleaned = " ".join(phrase.split()).strip(" .")
+            if cleaned and cleaned.casefold() not in {
+                existing.casefold() for existing in phrases
+            }:
+                phrases.append(cleaned)
+    return tuple(phrases[:100])
 
 
 def _empty_discovery() -> DiscoveryRefreshSummary:
@@ -930,6 +1120,28 @@ def _priority_summary(
         unchanged=summary.unchanged,
         failed=summary.failed,
     )
+
+
+def _priority_failure_codes(
+    result: SelectiveBatchReprioritizationResult | None,
+) -> tuple[str, ...]:
+    if not isinstance(result, SelectiveBatchReprioritizationResult):
+        return ()
+    codes: list[str] = []
+    for item in getattr(result, "items", ()):
+        failure = item.failure
+        if failure is None:
+            continue
+        code = failure.reason_code.value
+        if failure.single_job_reason is not None:
+            code = failure.single_job_reason.value
+        proposal_result = getattr(item.single_job_result, "proposal_result", None)
+        proposal_reason = getattr(proposal_result, "reason_code", None)
+        proposal_code = getattr(proposal_reason, "value", None)
+        if isinstance(proposal_code, str) and proposal_code:
+            code = f"{code}:{proposal_code}"
+        codes.append(code)
+    return tuple(codes)
 
 
 def _overall(
@@ -1139,9 +1351,24 @@ async def _resolve(value: Any) -> Any:
     return value
 
 
+async def _emit_progress(
+    observer: JobLibraryRefreshProgressObserver | None,
+    progress: JobLibraryRefreshProgress,
+) -> None:
+    if observer is None:
+        return
+    try:
+        await _resolve(observer(progress))
+    except (OSError, RuntimeError, TypeError, ValueError):
+        # UI progress is advisory and must never change the formal run outcome.
+        return
+
+
 def _profile_result(
     profile: SearchProfile,
     result: Any,
+    *,
+    expected_request_id: str | None = None,
 ) -> tuple[SearchProfileRefreshResult, tuple[SearchCandidate, ...]]:
     if not isinstance(result, JobSearchResult):
         return (
@@ -1157,10 +1384,11 @@ def _profile_result(
             (),
         )
     if result.status is JobSearchStatus.SUCCEEDED:
+        request_id = expected_request_id or profile.search_request.request_id
         if (
             result.candidate_set is None
             or result.candidate_set.request_id
-            != profile.search_request.request_id
+            != request_id
         ):
             return (
                 SearchProfileRefreshResult.create(
@@ -1569,6 +1797,7 @@ def _persist(
     *,
     run: JobLibraryRefreshRun,
     repository: JobLibraryRefreshRunRepository,
+    priority_failure_codes: tuple[str, ...] = (),
 ) -> ManualJobLibraryRefreshResult:
     try:
         written = repository.save(run)
@@ -1594,7 +1823,12 @@ def _persist(
         if written.status is JobLibraryRefreshWriteStatus.UNCHANGED
         else run.overall_status
     )
-    return ManualJobLibraryRefreshResult(status, written.run, None)
+    return ManualJobLibraryRefreshResult(
+        status,
+        written.run,
+        None,
+        priority_failure_codes=priority_failure_codes,
+    )
 
 
 async def refresh_job_library(
@@ -1608,6 +1842,10 @@ async def refresh_job_library(
     repository: JobLibraryRefreshRunRepository,
     intent_policy_provider: SearchProfileIntentPolicyProvider | None = None,
     accepted_intent_repository: AcceptedJobIntentRepository | None = None,
+    prioritization_policy_provider: (
+        ActivePrioritizationPolicyProvider | None
+    ) = None,
+    progress_observer: JobLibraryRefreshProgressObserver | None = None,
 ) -> ManualJobLibraryRefreshResult:
     """Run one manual refresh and apply only explicit profile intent policy."""
 
@@ -1676,7 +1914,23 @@ async def refresh_job_library(
         return _persist(run=run, repository=repository)
     profiles = listed.profiles
     profiles_by_id = {profile.profile_id: profile for profile in profiles}
-    snapshot_hash = _profile_snapshot(profiles)
+    active_policy = None
+    if prioritization_policy_provider is not None:
+        try:
+            active_policy = prioritization_policy_provider.get_active_policy(
+                command.subject_id
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            active_policy = None
+    discovery_queries = _discovery_queries(profiles, active_policy)
+    snapshot_hash = _profile_snapshot(
+        profiles,
+        policy_content_hash=(
+            active_policy.policy_content_hash
+            if active_policy is not None
+            else None
+        ),
+    )
     if not profiles:
         run = JobLibraryRefreshRun.create(
             command=command,
@@ -1689,27 +1943,94 @@ async def refresh_job_library(
         )
         return _persist(run=run, repository=repository)
 
+    await _emit_progress(
+        progress_observer,
+        JobLibraryRefreshProgress(
+            phase=JobLibraryRefreshProgressPhase.SEARCHING,
+            enabled_profiles=len(discovery_queries),
+            profile_results=(),
+            unique_candidates=0,
+            candidates_processed=0,
+            discovery_summary=_empty_discovery(),
+        ),
+    )
+
+    search_limit = asyncio.Semaphore(4)
+
+    async def search_profile(
+        profile: SearchProfile,
+        request: JobSearchRequest,
+    ) -> tuple[
+        SearchProfile,
+        SearchProfileRefreshResult,
+        tuple[SearchCandidate, ...],
+    ]:
+        async with search_limit:
+            try:
+                search_request = getattr(
+                    search_executor, "search_request", None
+                )
+                if request is profile.search_request or not callable(
+                    search_request
+                ):
+                    raw_search_result = search_executor.search(profile)
+                else:
+                    raw_search_result = search_request(
+                        source=profile.source,
+                        request=request,
+                    )
+                search_result = await _resolve(raw_search_result)
+                profile_result, candidates = _profile_result(
+                    profile,
+                    search_result,
+                    expected_request_id=request.request_id,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                profile_result = SearchProfileRefreshResult.create(
+                    profile_id=profile.profile_id,
+                    profile_version=profile.profile_version,
+                    source=profile.source,
+                    search_status=ProfileRefreshSearchStatus.FAILED,
+                    candidate_count=0,
+                    reason=ProfileRefreshFailureReason.SEARCH_EXCEPTION,
+                    source_reason="SEARCH_EXECUTOR_EXCEPTION",
+                )
+                candidates = ()
+            return profile, profile_result, candidates
+
+    completed_searches: dict[
+        str, tuple[SearchProfileRefreshResult, tuple[SearchCandidate, ...]]
+    ] = {}
+    search_tasks = tuple(
+        asyncio.create_task(search_profile(profile, request))
+        for profile, request in discovery_queries
+    )
+    for completed in asyncio.as_completed(search_tasks):
+        profile, profile_result, candidates = await completed
+        completed_searches[profile.profile_id] = (profile_result, candidates)
+        ordered_progress = tuple(
+            completed_searches[item.profile_id][0]
+            for item, _request in discovery_queries
+            if item.profile_id in completed_searches
+        )
+        await _emit_progress(
+            progress_observer,
+            JobLibraryRefreshProgress(
+                phase=JobLibraryRefreshProgressPhase.SEARCHING,
+                enabled_profiles=len(discovery_queries),
+                profile_results=ordered_progress,
+                unique_candidates=0,
+                candidates_processed=0,
+                discovery_summary=_empty_discovery(),
+            ),
+        )
+
     profile_results: list[SearchProfileRefreshResult] = []
     candidates_by_url: dict[
         str, tuple[SearchCandidate, list[str]]
     ] = {}
-    for profile in profiles:
-        try:
-            search_result = await _resolve(search_executor.search(profile))
-            profile_result, candidates = _profile_result(
-                profile, search_result
-            )
-        except (OSError, RuntimeError, TypeError, ValueError):
-            profile_result = SearchProfileRefreshResult.create(
-                profile_id=profile.profile_id,
-                profile_version=profile.profile_version,
-                source=profile.source,
-                search_status=ProfileRefreshSearchStatus.FAILED,
-                candidate_count=0,
-                reason=ProfileRefreshFailureReason.SEARCH_EXCEPTION,
-                source_reason="SEARCH_EXECUTOR_EXCEPTION",
-            )
-            candidates = ()
+    for profile, _request in discovery_queries:
+        profile_result, candidates = completed_searches[profile.profile_id]
         profile_results.append(profile_result)
         for candidate in candidates:
             try:
@@ -1725,13 +2046,41 @@ async def refresh_job_library(
             elif profile.profile_id not in existing_candidate[1]:
                 existing_candidate[1].append(profile.profile_id)
 
+    await _emit_progress(
+        progress_observer,
+        JobLibraryRefreshProgress(
+            phase=JobLibraryRefreshProgressPhase.IMPORTING,
+            enabled_profiles=len(discovery_queries),
+            profile_results=tuple(profile_results),
+            unique_candidates=len(candidates_by_url),
+            candidates_processed=0,
+            discovery_summary=_empty_discovery(),
+        ),
+    )
+
     candidate_results: list[JobCandidateRefreshResult] = []
+
+    async def record_candidate(result: JobCandidateRefreshResult) -> None:
+        candidate_results.append(result)
+        partial = tuple(candidate_results)
+        await _emit_progress(
+            progress_observer,
+            JobLibraryRefreshProgress(
+                phase=JobLibraryRefreshProgressPhase.IMPORTING,
+                enabled_profiles=len(discovery_queries),
+                profile_results=tuple(profile_results),
+                unique_candidates=len(candidates_by_url),
+                candidates_processed=len(partial),
+                discovery_summary=_discovery_summary(partial),
+            ),
+        )
+
     for candidate_url, (candidate, source_ids) in candidates_by_url.items():
         profile_ids = tuple(source_ids)
         try:
             canonical_url = normalized_job_url(candidate.source_url)
         except (TypeError, ValueError):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1744,11 +2093,15 @@ async def refresh_job_library(
             )
             continue
         try:
-            read_result = await _resolve(
-                public_job_reader(ReadJobRequest(canonical_url))
+            read_result = (
+                ReadJobResult.succeeded(candidate.observation)
+                if candidate.observation is not None
+                else await _resolve(
+                    public_job_reader(ReadJobRequest(canonical_url))
+                )
             )
         except (OSError, RuntimeError, TypeError, ValueError):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1761,7 +2114,7 @@ async def refresh_job_library(
             )
             continue
         if not isinstance(read_result, ReadJobResult):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1777,7 +2130,7 @@ async def refresh_job_library(
             read_result.status is not ReadJobStatus.SUCCEEDED
             or read_result.observation is None
         ):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1813,7 +2166,7 @@ async def refresh_job_library(
                 )
             )
         except (OSError, RuntimeError, TypeError, ValueError):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1826,7 +2179,7 @@ async def refresh_job_library(
             )
             continue
         if not isinstance(subject_result, SubjectJobDiscoveryResult):
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1839,7 +2192,7 @@ async def refresh_job_library(
             )
             continue
         if subject_result.status is SubjectJobDiscoveryStatus.NOT_ACCEPTED:
-            candidate_results.append(
+            await record_candidate(
                 _stopped_candidate(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1860,7 +2213,7 @@ async def refresh_job_library(
             )
             or subject_result.membership_status is None
         ):
-            candidate_results.append(
+            await record_candidate(
                 _candidate_with_membership_failure(
                     profile_ids=profile_ids,
                     candidate=candidate,
@@ -1899,7 +2252,58 @@ async def refresh_job_library(
                 policy_provider=intent_policy_provider,
                 accepted_intent_repository=accepted_intent_repository,
             )
-        candidate_results.append(candidate_result)
+        await record_candidate(candidate_result)
+
+    typed_profiles = tuple(profile_results)
+    typed_candidates = tuple(candidate_results)
+    discovery_summary = _discovery_summary(typed_candidates)
+    await _emit_progress(
+        progress_observer,
+        JobLibraryRefreshProgress(
+            phase=JobLibraryRefreshProgressPhase.IMPORTING,
+            enabled_profiles=len(discovery_queries),
+            profile_results=typed_profiles,
+            unique_candidates=len(candidates_by_url),
+            candidates_processed=len(typed_candidates),
+            discovery_summary=discovery_summary,
+        ),
+    )
+
+    changed_job_ids = tuple(
+        dict.fromkeys(
+            item.job_id
+            for item in typed_candidates
+            if item.job_id is not None
+            and item.discovery_status
+            in {
+                CandidateDiscoveryStatus.CREATED,
+                CandidateDiscoveryStatus.UPDATED,
+            }
+        )
+    )
+    priority_scope = (
+        JobLibraryRefreshPriorityScope.NEW_OR_CHANGED
+        if changed_job_ids
+        else JobLibraryRefreshPriorityScope.EXISTING
+    )
+    priority_requested = (
+        min(len(changed_job_ids), command.max_reprioritizations)
+        if changed_job_ids
+        else command.max_reprioritizations
+    )
+    await _emit_progress(
+        progress_observer,
+        JobLibraryRefreshProgress(
+            phase=JobLibraryRefreshProgressPhase.PRIORITIZING,
+            enabled_profiles=len(discovery_queries),
+            profile_results=typed_profiles,
+            unique_candidates=len(candidates_by_url),
+            candidates_processed=len(typed_candidates),
+            discovery_summary=discovery_summary,
+            priority_scope=priority_scope,
+            priority_requested=priority_requested,
+        ),
+    )
 
     try:
         priority_result = await _resolve(
@@ -1907,6 +2311,7 @@ async def refresh_job_library(
                 SelectiveBatchReprioritizationCommand(
                     subject_id=command.subject_id,
                     now=command.now,
+                    job_ids=changed_job_ids or None,
                     max_jobs=command.max_reprioritizations,
                 )
             )
@@ -1923,9 +2328,6 @@ async def refresh_job_library(
         )
     except (AttributeError, TypeError, ValueError):
         priority_summary = None
-    typed_profiles = tuple(profile_results)
-    typed_candidates = tuple(candidate_results)
-    discovery_summary = _discovery_summary(typed_candidates)
     run = JobLibraryRefreshRun.create(
         command=command,
         profile_snapshot_hash=snapshot_hash,
@@ -1939,7 +2341,11 @@ async def refresh_job_library(
             priority=priority_summary,
         ),
     )
-    return _persist(run=run, repository=repository)
+    return _persist(
+        run=run,
+        repository=repository,
+        priority_failure_codes=_priority_failure_codes(priority_result),
+    )
 
 
 __all__ = [
@@ -1954,6 +2360,10 @@ __all__ = [
     "DiscoveryRefreshSummary",
     "JobCandidateRefreshResult",
     "JobLibraryRefreshFailureReason",
+    "JobLibraryRefreshProgress",
+    "JobLibraryRefreshProgressObserver",
+    "JobLibraryRefreshProgressPhase",
+    "JobLibraryRefreshPriorityScope",
     "JobLibraryRefreshReadResult",
     "JobLibraryRefreshReadStatus",
     "JobLibraryRefreshRun",

@@ -42,7 +42,7 @@ from core.policy import (
 
 
 EXPECTED_TAXONOMY_HASH = (
-    "bc002c0a9d63dc2863c786797868d061803f77d88eebfffcafe4751cee46a079"
+    "35acf81d557aa88342a069a35a2432a1c35ae9691877fd6767c51d8ea612bebd"
 )
 
 
@@ -112,6 +112,57 @@ def test_contact_legal_demographic_and_attestation_metadata_differ() -> None:
     )
 
 
+def test_migrated_sensitive_answer_metadata_is_exact_and_never_ordinary() -> None:
+    expected = {
+        "employment_status": (
+            CanonicalAnswerValueType.ENUM,
+            CanonicalAnswerSensitivity.EMPLOYMENT,
+        ),
+        "graduation_date": (
+            CanonicalAnswerValueType.TEXT,
+            CanonicalAnswerSensitivity.EDUCATION,
+        ),
+        "accommodation": (
+            CanonicalAnswerValueType.ENUM,
+            CanonicalAnswerSensitivity.HEALTH,
+        ),
+        "full_time_experience": (
+            CanonicalAnswerValueType.ENUM,
+            CanonicalAnswerSensitivity.EMPLOYMENT,
+        ),
+        "office_attendance": (
+            CanonicalAnswerValueType.ENUM,
+            CanonicalAnswerSensitivity.PERSONAL,
+        ),
+        "work_authorization_detail": (
+            CanonicalAnswerValueType.ENUM,
+            CanonicalAnswerSensitivity.LEGAL,
+        ),
+    }
+
+    for key, (value_type, sensitivity) in expected.items():
+        definition = canonical_application_answer_definition(key)
+        assert definition.value_type is value_type
+        assert definition.sensitivity is sensitivity
+        assert definition.automation_category is (
+            CanonicalAnswerAutomationCategory.SENSITIVE_FACT
+        )
+        assert definition.semantic_mapping_status.value == "needs_review"
+
+    familiarity = canonical_application_answer_definition(
+        "company_familiarity"
+    )
+    source = canonical_application_answer_definition("job_discovery_source")
+    assert familiarity.value_type is CanonicalAnswerValueType.ENUM
+    assert familiarity.automation_category is (
+        CanonicalAnswerAutomationCategory.ORDINARY_FACT
+    )
+    assert source.value_type is CanonicalAnswerValueType.MULTI_SELECT
+    assert source.automation_category is (
+        CanonicalAnswerAutomationCategory.ORDINARY_FACT
+    )
+
+
 def test_phone_alias_normalizes_at_explicit_boundaries() -> None:
     assert normalize_canonical_application_answer_key(
         "phone_number", allow_legacy_alias=True
@@ -152,6 +203,12 @@ def test_semantic_mapper_sensitive_categories_need_review() -> None:
         "race_ethnicity",
         "veteran_status",
         "disability_status",
+        "employment_status",
+        "graduation_date",
+        "accommodation",
+        "full_time_experience",
+        "office_attendance",
+        "work_authorization_detail",
         "attestation",
         "consent",
         "signature",

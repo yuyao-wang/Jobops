@@ -30,6 +30,32 @@ class VerificationArtifactKind(StrEnum):
     LINK = "LINK"
 
 
+class MailAuthenticationResult(StrEnum):
+    """Sanitized result for one mailbox-projected email-auth mechanism."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class MailAuthenticationEvidence:
+    """Typed SPF/DKIM/DMARC projection with no raw header material."""
+
+    spf: MailAuthenticationResult = MailAuthenticationResult.UNKNOWN
+    dkim: MailAuthenticationResult = MailAuthenticationResult.UNKNOWN
+    dmarc: MailAuthenticationResult = MailAuthenticationResult.UNKNOWN
+
+    @property
+    def sender_is_authenticated(self) -> bool:
+        """Require aligned DMARC plus at least one passing auth mechanism."""
+
+        return self.dmarc is MailAuthenticationResult.PASS and (
+            self.spf is MailAuthenticationResult.PASS
+            or self.dkim is MailAuthenticationResult.PASS
+        )
+
+
 @dataclass(frozen=True)
 class MailboxMessage:
     """Minimal message projection; providers should not return full inbox data."""
@@ -41,6 +67,9 @@ class MailboxMessage:
     subject: str
     text: str = ""
     html: str = ""
+    authentication: MailAuthenticationEvidence = field(
+        default_factory=MailAuthenticationEvidence
+    )
 
 
 @dataclass(frozen=True)

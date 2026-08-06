@@ -1218,13 +1218,24 @@ async def orchestrate_single_job_priority(
     )
     proposal = proposal_result.proposal
     if proposal is None:
+        proposal_reason = (
+            proposal_result.reason_code.value
+            if proposal_result.reason_code is not None
+            else "UNKNOWN"
+        )
         try:
-            orchestration_repository.release_claim(binding)
+            orchestration_repository.fail(
+                binding,
+                reason=(
+                    f"{SingleJobPriorityReason.PROPOSAL_FAILED.value}:"
+                    f"{proposal_reason}"
+                ),
+            )
         except SingleJobPriorityRepositoryError:
             return _failure(
                 command,
                 SingleJobPriorityReason.ORCHESTRATION_PERSISTENCE_FAILED,
-                "The empty Proposal claim could not be released safely.",
+                "The safe Proposal failure could not be persisted.",
                 input_binding=binding.input_binding,
                 retryable=True,
                 proposal_result=proposal_result,

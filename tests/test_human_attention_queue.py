@@ -352,26 +352,17 @@ async def test_completed_without_attention_is_absent(tmp_path: Path) -> None:
     assert result.item_count == result.affected_plan_count == 0
 
 
-async def test_completed_answer_set_expands_only_blocking_items(
+async def test_runtime_conditional_attestations_are_absent_from_attention(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
-    _plan_value, run, *_ = await _completed_with_real_answers(home)
+    await _completed_with_real_answers(home)
 
     result = _queue(home)
 
     assert result.status is HumanAttentionQueueStatus.SUCCEEDED
-    assert result.item_count == 3
-    assert all(
-        item.source_preparation_run_id == run.run_id
-        and item.attention_kind
-        is HumanAttentionKind.USER_ATTESTATION_REQUIRED
-        and item.canonical_answer_key is not None
-        for item in result.items
-    )
-    assert {
-        item.canonical_answer_key.value for item in result.items
-    } == {"attestation", "consent", "signature"}
+    assert result.items == ()
+    assert result.item_count == 0
 
 
 @pytest.mark.parametrize(
@@ -722,7 +713,7 @@ class _StaticAnswerRepository:
         )
 
 
-async def test_missing_or_mismatched_answer_binding_fails_closed(
+async def test_nonblocking_answers_do_not_require_answer_repository_read(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -737,14 +728,11 @@ async def test_missing_or_mismatched_answer_binding_fails_closed(
         answer_set_repository=_MissingAnswerRepository(),
     )
 
-    assert result.status is HumanAttentionQueueStatus.FAILED
-    assert result.reason_code is (
-        HumanAttentionQueueFailureReason.ANSWER_SET_NOT_FOUND
-    )
+    assert result.status is HumanAttentionQueueStatus.SUCCEEDED
     assert result.items == ()
 
 
-async def test_answer_set_plan_binding_mismatch_fails_closed(
+async def test_nonblocking_answers_ignore_unrelated_answer_set(
     tmp_path: Path,
 ) -> None:
     home = PrivateHome(tmp_path / "private")
@@ -775,10 +763,8 @@ async def test_answer_set_plan_binding_mismatch_fails_closed(
         ),
     )
 
-    assert result.status is HumanAttentionQueueStatus.FAILED
-    assert result.reason_code is (
-        HumanAttentionQueueFailureReason.ANSWER_SET_BINDING_MISMATCH
-    )
+    assert result.status is HumanAttentionQueueStatus.SUCCEEDED
+    assert result.items == ()
 
 
 async def test_build_is_zero_write_and_calls_no_preparation_surface(

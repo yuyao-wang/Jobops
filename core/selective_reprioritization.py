@@ -15,6 +15,7 @@ from .current_priority_queue import (
     CurrentPriorityQueueResult,
     CurrentPriorityQueueStatus,
 )
+from .job_prioritization import PriorityProposalReason
 from .single_job_priority import (
     SingleJobPriorityChange,
     SingleJobPriorityCommand,
@@ -353,6 +354,28 @@ class SelectiveBatchReprioritizationResult:
             or self.reason_code is not expected_reason
         ):
             raise ValueError("batch overall outcome is inconsistent")
+
+    @property
+    def continuable_system_failure_count(self) -> int:
+        """Count model/contract failures that have no external side effect."""
+
+        continuable = {
+            PriorityProposalReason.AGENT_OUTPUT_INVALID,
+            PriorityProposalReason.AGENT_TIMEOUT,
+            PriorityProposalReason.AGENT_UNAVAILABLE,
+        }
+        count = 0
+        for item in self.items:
+            result = getattr(item, "single_job_result", None)
+            proposal_result = getattr(result, "proposal_result", None)
+            if (
+                getattr(result, "reason_code", None)
+                is SingleJobPriorityReason.PROPOSAL_FAILED
+                and getattr(proposal_result, "reason_code", None)
+                in continuable
+            ):
+                count += 1
+        return count
 
 
 def _empty_summary() -> SelectiveBatchSummary:

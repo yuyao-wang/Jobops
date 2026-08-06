@@ -527,6 +527,55 @@ async def test_current_item_returns_existing_artifacts_without_agent_or_writes(
 
 
 @pytest.mark.asyncio
+async def test_same_utc_day_clock_advance_keeps_completed_decision_current(
+    tmp_path: Path,
+) -> None:
+    services = _services(tmp_path)
+    seeded = await _seed_completed(services)
+    agent_calls = len(services["agent"].calls)
+    before = {
+        path: path.read_bytes()
+        for path in services["home"].root.rglob("*.json")
+    }
+
+    result = await _build(
+        services,
+        now=NOW + timedelta(hours=1),
+        read_only=True,
+    )
+
+    item = result.items[0]
+    assert item.status is CurrentPriorityItemStatus.CURRENT
+    assert item.expected_binding == item.stored_binding
+    assert item.expected_binding.evaluated_at == "2026-07-27T18:00:00Z"
+    assert item.proposal == seeded.proposal
+    assert item.decision == seeded.decision
+    assert len(services["agent"].calls) == agent_calls
+    assert before == {
+        path: path.read_bytes()
+        for path in services["home"].root.rglob("*.json")
+    }
+
+
+@pytest.mark.asyncio
+async def test_next_utc_day_makes_completed_decision_stale(
+    tmp_path: Path,
+) -> None:
+    services = _services(tmp_path)
+    await _seed_completed(services)
+
+    result = await _build(services, now=NOW + timedelta(days=1))
+
+    item = result.items[0]
+    assert item.status is CurrentPriorityItemStatus.STALE
+    assert item.stale_reasons == (
+        CurrentPriorityStaleReason.EVALUATION_TIME_CHANGED,
+    )
+    assert item.proposal is None
+    assert item.decision is None
+
+
+@pytest.mark.asyncio
 async def test_missing_and_exact_incomplete_are_distinct(
     tmp_path: Path,
 ) -> None:
@@ -563,7 +612,31 @@ async def test_missing_and_exact_incomplete_are_distinct(
     failed = await _build(incomplete_services, read_only=True)
     assert failed.items[0].status is CurrentPriorityItemStatus.INCOMPLETE
     assert failed.items[0].orchestration_id == binding.input_binding
+    assert failed.items[0].latest_failure_reason == "synthetic-interrupted"
     assert not incomplete_services["agent"].calls
+
+    retryable_view = await _build(
+        incomplete_services,
+        now=NOW + timedelta(minutes=1),
+        read_only=True,
+    )
+    assert retryable_view.items[0].status is CurrentPriorityItemStatus.MISSING
+    assert retryable_view.items[0].orchestration_id is None
+    assert retryable_view.items[0].latest_failure_reason == (
+        "synthetic-interrupted"
+    )
+
+    incomplete_services["job_repository"].jobs[0] = _job(
+        revision=2,
+        content_hash="9" * 64,
+    )
+    changed_inputs = await _build(
+        incomplete_services,
+        now=NOW + timedelta(minutes=2),
+        read_only=True,
+    )
+    assert changed_inputs.items[0].status is CurrentPriorityItemStatus.MISSING
+    assert changed_inputs.items[0].latest_failure_reason is None
 
 
 @pytest.mark.asyncio
@@ -670,7 +743,7 @@ def test_all_version_stale_reasons_come_from_binding_fields() -> None:
 
 
 @pytest.mark.asyncio
-async def test_changed_agent_prompt_model_and_time_are_stale_in_queue(
+async def test_changed_agent_prompt_and_model_are_stale_within_same_utc_day(
     tmp_path: Path,
 ) -> None:
     services = _services(tmp_path)
@@ -690,7 +763,6 @@ async def test_changed_agent_prompt_model_and_time_are_stale_in_queue(
         CurrentPriorityStaleReason.AGENT_VERSION_CHANGED,
         CurrentPriorityStaleReason.PROMPT_VERSION_CHANGED,
         CurrentPriorityStaleReason.MODEL_VERSION_CHANGED,
-        CurrentPriorityStaleReason.EVALUATION_TIME_CHANGED,
     )
 
 

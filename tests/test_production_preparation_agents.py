@@ -4,6 +4,7 @@ import base64
 import copy
 import shutil
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -468,6 +469,14 @@ async def test_factory_builds_and_executes_all_nine_typed_ports_once():
         for call in _FakeStructuredBackend.calls
         if call.component_id == "resume_visual_qa"
     )
+    cover = next(
+        call
+        for call in _FakeStructuredBackend.calls
+        if call.component_id == "cover_letter"
+    )
+    assert cover.output_schema["properties"]["paragraphs"]["items"][
+        "properties"
+    ]["evidence_ids"]["items"]["enum"] == ["evidence-synthetic"]
     assert len(visual.images) == 1
     assert visual.images[0].content == _PNG
     assert all(
@@ -637,7 +646,7 @@ async def test_request_projection_is_bounded_and_diagnostics_are_secret_safe(
     assert b"OPENAI_API_KEY" not in serialized
     assert b"/Users/" not in serialized
     assert request.max_images == 4
-    assert request.timeout_seconds == 120
+    assert request.timeout_seconds == 300
     assert bundle.resume_visual_qa.call_metadata.model_id == "synthetic-model-v2"
     replay = build_production_preparation_agent_adapters(
         ai_config=_config(model="synthetic-model-v2"),
@@ -649,6 +658,46 @@ async def test_request_projection_is_bounded_and_diagnostics_are_secret_safe(
     )
     assert "Synthetic evidence" not in caplog.text
     assert "/Users/" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_provider_default_model_is_not_passed_as_a_fake_model_name():
+    _FakeStructuredBackend.calls.clear()
+    bundle = build_production_preparation_agent_adapters(
+        ai_config=_config(model=""),
+        backend_registry={"synthetic_structured": _FakeStructuredBackend},
+    )
+
+    await bundle.resume_selection.evaluate(_contexts()["resume_selection"])
+
+    request = _FakeStructuredBackend.calls[-1]
+    assert request.model_id is None
+    assert (
+        bundle.resume_selection.call_metadata.model_id
+        == "synthetic_structured-provider-default"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tailoring_context_projects_domain_timestamps():
+    bundle = build_production_preparation_agent_adapters(
+        ai_config=_config(model="synthetic-model-v2"),
+        backend_registry={"synthetic_structured": _FakeStructuredBackend},
+    )
+    context = replace(
+        _contexts()["resume_tailoring"],
+        source_projection={
+            "projected_at": datetime(2026, 8, 5, tzinfo=timezone.utc),
+        },
+    )
+
+    await bundle.resume_tailoring.tailor(context)
+
+    request = _FakeStructuredBackend.calls[-1]
+    assert (
+        request.input_data["context"]["source_projection"]["projected_at"]
+        == "2026-08-05T00:00:00+00:00"
+    )
 
 
 @pytest.mark.asyncio

@@ -63,6 +63,7 @@ def _plan(
     *,
     subject_id: str = SUBJECT,
     revision: int = 1,
+    priority: ProposedPriorityLevel = ProposedPriorityLevel.P1,
 ) -> tuple[ApplicationPlan, PrivateHomeApplicationPlanRepository]:
     plan = ApplicationPlan.create(
         subject_id=subject_id,
@@ -74,7 +75,7 @@ def _plan(
         policy_version=1,
         policy_content_hash="a" * 64,
         accepted_job_intent_id=f"intent-{revision}",
-        priority_level=ProposedPriorityLevel.P1,
+        priority_level=priority,
         created_at=NOW,
     )
     repository = PrivateHomeApplicationPlanRepository(home)
@@ -241,8 +242,9 @@ async def _run(
     *,
     recipe: ApplicationPreparationRecipe | None = None,
     now: datetime = NOW,
+    priority: ProposedPriorityLevel = ProposedPriorityLevel.P1,
 ):
-    plan, plan_repository = _plan(home)
+    plan, plan_repository = _plan(home, priority=priority)
     run_repository = PrivateHomeApplicationPreparationRunRepository(home)
     result = await run_application_preparation(
         RunApplicationPreparationCommand(
@@ -255,6 +257,40 @@ async def _run(
         run_repository=run_repository,
     )
     return result, plan, plan_repository, run_repository
+
+
+async def test_p2_reuses_selected_resume_without_tailoring_or_latex(
+    tmp_path: Path,
+) -> None:
+    recorder = _Recorder()
+    result, *_ = await _run(
+        PrivateHome(tmp_path / "private"),
+        recorder,
+        priority=ProposedPriorityLevel.P2,
+    )
+
+    skipped = {
+        ApplicationPreparationStage.RESUME_TAILORING,
+        ApplicationPreparationStage.RESUME_FACT_QA,
+        ApplicationPreparationStage.BASE_LATEX_SELECTION,
+        ApplicationPreparationStage.LATEX_CONSTRUCTION,
+        ApplicationPreparationStage.RESUME_COMPILATION,
+        ApplicationPreparationStage.RESUME_VISUAL_QA,
+        ApplicationPreparationStage.RESUME_LAYOUT_REVISION,
+    }
+    assert result.status is ApplicationPreparationStatus.COMPLETED
+    assert result.run is not None
+    assert {
+        item.stage
+        for item in result.run.stage_results
+        if item.execution_status is PreparationStageExecutionStatus.SKIPPED
+    } == skipped
+    assert not skipped.intersection(
+        request.stage for request in recorder.requests
+    )
+    assert ApplicationPreparationStage.RESUME_PUBLICATION in {
+        request.stage for request in recorder.requests
+    }
 
 
 async def test_happy_path_is_serial_ordered_and_complete(tmp_path: Path) -> None:
@@ -646,6 +682,40 @@ async def test_completed_replay_is_unchanged_with_zero_slice_calls(
     assert second_recorder.requests == []
 
 
+@pytest.mark.parametrize(
+    "terminal_status",
+    (PublicStageStatus.DEFERRED, PublicStageStatus.FAILED),
+)
+async def test_terminal_replay_does_not_retry_slices(
+    tmp_path: Path,
+    terminal_status: PublicStageStatus,
+) -> None:
+    home = PrivateHome(tmp_path / terminal_status.value.lower())
+    stage = ApplicationPreparationStage.RESUME_TAILORING
+    first_recorder = _Recorder(statuses={stage: terminal_status})
+    first, plan, plans, runs = await _run(home, first_recorder)
+    replay_recorder = _Recorder()
+
+    replay = await run_application_preparation(
+        RunApplicationPreparationCommand(
+            subject_id=SUBJECT,
+            application_plan_id=plan.plan_id,
+            now=NOW + timedelta(days=1),
+        ),
+        application_plan_repository=plans,
+        recipe=_recipe(replay_recorder),
+        run_repository=runs,
+    )
+
+    assert replay.status is ApplicationPreparationStatus(
+        terminal_status.value
+    )
+    assert replay.run is not None and first.run is not None
+    assert replay.run.run_id == first.run.run_id
+    assert replay.retryable is False
+    assert replay_recorder.requests == []
+
+
 async def test_changed_input_binding_creates_new_run_and_reinvokes_slices(
     tmp_path: Path,
 ) -> None:
@@ -673,6 +743,43 @@ async def test_changed_input_binding_creates_new_run_and_reinvokes_slices(
     assert len(
         tuple(home.paths.application_preparation_runs.rglob("*.json"))
     ) == 2
+
+
+async def test_changed_fact_snapshot_creates_new_preparation_run(
+    tmp_path: Path,
+) -> None:
+    home = PrivateHome(tmp_path / "private-fact-snapshot")
+    first_recorder = _Recorder()
+    plan, plans = _plan(home)
+    runs = PrivateHomeApplicationPreparationRunRepository(home)
+    first = await run_application_preparation(
+        RunApplicationPreparationCommand(
+            subject_id=SUBJECT,
+            application_plan_id=plan.plan_id,
+            now=NOW,
+            input_snapshot_hash="a" * 64,
+        ),
+        application_plan_repository=plans,
+        recipe=_recipe(first_recorder),
+        run_repository=runs,
+    )
+    second_recorder = _Recorder()
+    second = await run_application_preparation(
+        RunApplicationPreparationCommand(
+            subject_id=SUBJECT,
+            application_plan_id=plan.plan_id,
+            now=NOW + timedelta(minutes=1),
+            input_snapshot_hash="b" * 64,
+        ),
+        application_plan_repository=plans,
+        recipe=_recipe(second_recorder),
+        run_repository=runs,
+    )
+
+    assert first.run is not None and second.run is not None
+    assert second.status is ApplicationPreparationStatus.COMPLETED
+    assert second.run.run_id != first.run.run_id
+    assert second_recorder.requests
 
 
 async def test_stage_lineage_and_run_are_immutable_and_restart_stable(
@@ -891,7 +998,7 @@ async def test_real_public_application_answers_slice_composes_at_final_stage(
     assert result.run.final_prepared_application_answer_set_id.startswith(
         "prepared-application-answer-set-"
     )
-    assert result.run.human_attention_required is True
+    assert result.run.human_attention_required is False
 
 
 async def test_source_has_no_slice_private_repository_or_execution_imports() -> None:

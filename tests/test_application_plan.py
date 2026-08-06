@@ -27,6 +27,11 @@ from core.application_plan import (
     PrivateHomeApplicationPlanRepository,
     create_application_plan,
 )
+from core.accepted_job_intent import (
+    AcceptedJobIntent,
+    AcceptedJobIntentSourceProvenance,
+    AcceptedJobIntentSourceType,
+)
 from core.current_priority_queue import CurrentPriorityItemStatus
 from core.job_prioritization import ProposedPriorityLevel
 from core.private_home import PrivateHome
@@ -309,6 +314,60 @@ async def test_identical_creator_replay_is_unchanged_without_duplicate_file(
     assert second.plan.created_at == NOW
     assert len(tuple(home.paths.application_plans.glob("*.json"))) == 1
     assert len(first_reader.calls) == len(replay_reader.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_creator_reuses_preferred_progress_across_equivalent_refresh_intent(
+    tmp_path: Path,
+) -> None:
+    first_queue = _runnable_result(level=ProposedPriorityLevel.P2)
+    home = PrivateHome(tmp_path / "private")
+    repository = PrivateHomeApplicationPlanRepository(home)
+    first = await create_application_plan(
+        CreateApplicationPlanCommand(SUBJECT, "job-plan", NOW),
+        runnable_queue_reader=_QueueReader(first_queue),
+        repository=repository,
+    )
+    assert first.plan is not None
+
+    refreshed_intent = AcceptedJobIntent.create(
+        subject_id=SUBJECT,
+        job_id="job-plan",
+        intent=first_queue.items[0].application_intent.intent,
+        intake_proposal_id="refresh-proposal-two",
+        discovery_run_id="refresh-run-two",
+        recorded_at=NOW + timedelta(minutes=5),
+        provenance=AcceptedJobIntentSourceProvenance(
+            source_type=AcceptedJobIntentSourceType.SEARCH_PROFILE_REFRESH,
+            source_id="refresh-source-two",
+            source_profile_ids=("search-profile-two",),
+        ),
+    )
+    refreshed_queue = replace(
+        first_queue,
+        now=NOW + timedelta(minutes=5),
+        items=(
+            replace(
+                first_queue.items[0],
+                application_intent=refreshed_intent,
+            ),
+        ),
+    )
+    resumed = await create_application_plan(
+        CreateApplicationPlanCommand(
+            SUBJECT,
+            "job-plan",
+            refreshed_queue.now,
+            preferred_application_plan_id=first.plan.plan_id,
+        ),
+        runnable_queue_reader=_QueueReader(refreshed_queue),
+        repository=repository,
+    )
+
+    assert resumed.status is CreateApplicationPlanStatus.UNCHANGED
+    assert resumed.plan == first.plan
+    assert resumed.plan.accepted_job_intent_id != refreshed_intent.accepted_job_intent_id
+    assert len(tuple(home.paths.application_plans.glob("*.json"))) == 1
 
 
 def test_repository_replay_preserves_original_created_at(

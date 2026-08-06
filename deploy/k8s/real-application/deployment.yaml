@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobops
+  labels:
+    app.kubernetes.io/name: jobops
+    app.kubernetes.io/component: real-application-control-plane
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jobops
+      app.kubernetes.io/component: real-application-control-plane
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jobops
+        app.kubernetes.io/component: real-application-control-plane
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: control-plane
+          image: jobops-control-plane:real-application
+          imagePullPolicy: IfNotPresent
+          args:
+            - python
+            - -m
+            - jobops.control_plane
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "9000"
+          envFrom:
+            - configMapRef:
+                name: jobops-real-application
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/jobops
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: jobops-real-application-state
+        - name: tmp
+          emptyDir: {}

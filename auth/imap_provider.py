@@ -32,7 +32,11 @@ from email.utils import getaddresses, parsedate_to_datetime
 from typing import Callable, Protocol, Sequence
 
 from .credentials import CredentialStore
-from .mailbox import MailboxMessage
+from .mailbox import (
+    MailAuthenticationEvidence,
+    MailAuthenticationResult,
+    MailboxMessage,
+)
 
 
 _MAX_LIMIT = 25
@@ -42,6 +46,8 @@ _DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024
 _DEFAULT_MAX_CANDIDATE_UIDS = 100
 _MAX_SEARCH_RESPONSE_BYTES = 128 * 1024
 _MAX_HEADER_CHARS = 1_024
+_MAX_AUTHENTICATION_RESULTS_HEADERS = 8
+_MAX_AUTHENTICATION_RESULTS_HEADER_CHARS = 4_096
 _MAX_MIME_PARTS = 32
 _IMAP_MONTHS = (
     "Jan",
@@ -75,6 +81,10 @@ _SIZE_PATTERN = re.compile(rb"\bRFC822\.SIZE\s+([0-9]{1,12})\b", re.IGNORECASE)
 _INTERNAL_DATE_PATTERN = re.compile(
     rb'\bINTERNALDATE\s+"([0-9]{1,2}-[A-Za-z]{3}-[0-9]{4} '
     rb'[0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4})"',
+    re.IGNORECASE,
+)
+_AUTHENTICATION_RESULT_PATTERN = re.compile(
+    r"(?:^|[;\s])(spf|dkim|dmarc)\s*=\s*([A-Za-z0-9_-]{1,32})",
     re.IGNORECASE,
 )
 
@@ -115,6 +125,7 @@ class IMAPProviderConfig:
     keychain_service: str = field(default="", repr=False)
     port: int = 993
     mailbox: str = "INBOX"
+    trusted_authserv_ids: tuple[str, ...] = ()
     timeout_seconds: float = 15.0
     max_search_window: timedelta = _DEFAULT_MAX_SEARCH_WINDOW
     max_message_bytes: int = _DEFAULT_MAX_MESSAGE_BYTES
@@ -321,6 +332,14 @@ def _validate_config(config: IMAPProviderConfig) -> None:
         or not _MAILBOX_PATTERN.fullmatch(config.mailbox)
     ):
         raise IMAPProviderError("IMAP provider configuration is invalid")
+    if not isinstance(config.trusted_authserv_ids, tuple) or any(
+        not isinstance(value, str)
+        or value != value.casefold()
+        or len(value) > 253
+        or not _HOST_PATTERN.fullmatch(value)
+        for value in config.trusted_authserv_ids
+    ):
+        raise IMAPProviderError("IMAP provider configuration is invalid")
     if (
         isinstance(config.timeout_seconds, bool)
         or not isinstance(config.timeout_seconds, (int, float))
@@ -423,6 +442,79 @@ def _parse_fetch_response(
         subject=subject,
         text=text,
         html=html,
+        authentication=_authentication_evidence(
+            message,
+            trusted_authserv_ids=config.trusted_authserv_ids,
+        ),
+    )
+
+
+def _authentication_evidence(
+    message: Message,
+    *,
+    trusted_authserv_ids: tuple[str, ...],
+) -> MailAuthenticationEvidence:
+    """Reduce Authentication-Results to typed outcomes, never raw headers.
+
+    Only headers created by a configured, trusted receiving authentication
+    service are considered.  This prevents an untrusted sender from adding a
+    forged ``Authentication-Results`` header that claims PASS.  Among trusted
+    headers, any explicit non-pass result wins for that mechanism so ambiguous
+    or conflicting evidence fails closed.  Missing, oversized, malformed, or
+    untrusted evidence remains ``UNKNOWN``.
+    """
+
+    raw_headers = tuple(message.get_all("Authentication-Results", ()))
+    if (
+        not trusted_authserv_ids
+        or not raw_headers
+        or len(raw_headers) > _MAX_AUTHENTICATION_RESULTS_HEADERS
+    ):
+        return MailAuthenticationEvidence()
+
+    trusted = frozenset(trusted_authserv_ids)
+    results: dict[str, list[MailAuthenticationResult]] = {
+        "spf": [],
+        "dkim": [],
+        "dmarc": [],
+    }
+    for raw_header in raw_headers:
+        header = str(raw_header)
+        if len(header) > _MAX_AUTHENTICATION_RESULTS_HEADER_CHARS:
+            return MailAuthenticationEvidence()
+        authserv_segment, separator, authenticated_results = header.partition(";")
+        if not separator:
+            continue
+        authserv_tokens = authserv_segment.strip().split(None, 1)
+        if not authserv_tokens:
+            continue
+        authserv_token = authserv_tokens[0]
+        authserv_id = authserv_token.split("/", 1)[0].casefold()
+        if authserv_id not in trusted:
+            continue
+        for match in _AUTHENTICATION_RESULT_PATTERN.finditer(
+            authenticated_results
+        ):
+            mechanism = match.group(1).casefold()
+            value = match.group(2).casefold()
+            results[mechanism].append(
+                MailAuthenticationResult.PASS
+                if value == "pass"
+                else MailAuthenticationResult.FAIL
+            )
+
+    def reduced(mechanism: str) -> MailAuthenticationResult:
+        values = results[mechanism]
+        if not values:
+            return MailAuthenticationResult.UNKNOWN
+        if all(value is MailAuthenticationResult.PASS for value in values):
+            return MailAuthenticationResult.PASS
+        return MailAuthenticationResult.FAIL
+
+    return MailAuthenticationEvidence(
+        spf=reduced("spf"),
+        dkim=reduced("dkim"),
+        dmarc=reduced("dmarc"),
     )
 
 
